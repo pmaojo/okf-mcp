@@ -98,7 +98,7 @@ async fn mcp_handler(method: Method, headers: HeaderMap, body: Bytes) -> Respons
     };
 
     // 2. Obtener pool de base de datos e instanciar servicios de forma efímera
-    let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let db_url = std::env::var("POSTGRES_URL").expect("POSTGRES_URL must be set");
     let pool = get_db_pool(&db_url).await;
     let store = SupabaseStore::new(pool);
     let tools = MemoryTools::new(store, actor, budget);

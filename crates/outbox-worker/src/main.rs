@@ -50,7 +50,7 @@ struct GeminiEmbeddingResponse {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Iniciando worker de Outbox...");
 
-    let db_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let db_url = env::var("POSTGRES_URL").expect("POSTGRES_URL must be set");
     let github_token = env::var("GITHUB_TOKEN").ok();
     let github_repo = env::var("GITHUB_REPO").ok(); // formato: "usuario/repositorio"
     let gemini_key = env::var("GEMINI_API_KEY").ok();

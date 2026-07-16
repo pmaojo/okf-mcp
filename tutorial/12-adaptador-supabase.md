@@ -119,7 +119,7 @@ Cada iteración de la suite realiza un `TRUNCATE` de la base de datos de pruebas
 ## 8. Frontera de producción
 
 Para conectar Supabase con Vercel:
-1. Añade la variable de entorno `DATABASE_URL` en tu proyecto de Vercel.
+1. Añade la variable de entorno `POSTGRES_URL` en tu proyecto de Vercel.
 2. Asegúrate de que apunta al pooler de Supabase en modo de transacción (puerto 6543) en entornos con autoescala.
 3. El adaptador serverless traducirá las llamadas HTTP entrantes al repositorio Supabase de forma completamente transparente.
 
