@@ -22,11 +22,21 @@ repositorio. Cada capítulo sigue la misma plantilla:
 | 7 | [El repositorio](07-repositorio.md) | ownership, `Arc<str>`, `&mut` como mutex | **L**, D |
 | 8 | [El protocolo MCP](08-protocolo-mcp.md) | inyección por traits, E/S acotada | **D**, todo junto |
 
+## Hito 2 — hacia la red (en curso)
+
+| # | Capítulo | Rust | SOLID protagonista |
+|---|----------|------|--------------------|
+| 9 | [El contrato ejecutable](09-contrato-liskov.md) | traits genéricos como ley, fábricas `FnMut() -> R` | **L**, hecho literal |
+| 10 | [HTTP sin estado](10-http-sin-estado.md) | parseo HTTP acotado, `TcpListener`, DNS-rebinding | S, D |
+
+Falta por escribir (necesita tus credenciales de Vercel/Supabase):
+un adaptador `SupabaseStore` que pase el contrato del capítulo 9
+contra Postgres real, el despliegue del transporte HTTP en Vercel
+(`vercel-entry`, con `tokio` + `vercel_runtime`), y el outbox
+transaccional.
+
 ## Hitos siguientes (capítulos por escribir)
 
-- **Hito 2:** Streamable HTTP sin estado en Vercel + persistencia
-  Supabase (adaptadores con dependencias: `serde_json`, HTTP, el
-  contrato `MemoryRepository` contra Postgres, outbox transaccional).
 - **Hito 3:** OAuth 2.1 — el servidor MCP como *resource server*
   (JWKS, validación de JWT, audiencias RFC 8707, el token del
   cliente JAMÁS se reenvía a Supabase).

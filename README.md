@@ -15,8 +15,10 @@ didáctico** de Rust y de principios SOLID: ver [`tutorial/`](tutorial/).
 - 🟨 **Hito 2 (en curso):** transporte HTTP sin estado (`mcp-http`,
   local con `TcpListener`, mismo contrato que usará Vercel) +
   contrato ejecutable `MemoryRepository` para el futuro adaptador
-  Supabase. Falta: el adaptador Supabase real y el despliegue en
-  Vercel (requieren tus credenciales; ver `tutorial/09-http-sin-estado.md`).
+  Supabase — ver [`tutorial/09-contrato-liskov.md`](tutorial/09-contrato-liskov.md)
+  y [`tutorial/10-http-sin-estado.md`](tutorial/10-http-sin-estado.md).
+  Falta: el adaptador Supabase real y el despliegue en Vercel
+  (requieren tus credenciales — ver la sección de más abajo).
 - ⬜ Hito 3: OAuth 2.1 (resource server, JWKS, RFC 8707).
 - ⬜ Hito 4: outbox → Git y embeddings (pgvector).
 
