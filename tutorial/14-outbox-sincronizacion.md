@@ -112,7 +112,7 @@ Para desplegar el worker:
 1. Configura `GITHUB_TOKEN` (Personal Access Token de GitHub con permisos de escritura en el repo).
 2. Configura `GITHUB_REPO` (formato `usuario/repositorio`).
 3. Configura `GEMINI_API_KEY` (clave de la API de Google AI Studio).
-4. Configura `DATABASE_URL` apuntando a tu base de datos de Supabase.
+4. Configura `POSTGRES_URL` apuntando a tu base de datos de Supabase.
 
 ## 9. Principios SOLID en juego
 
