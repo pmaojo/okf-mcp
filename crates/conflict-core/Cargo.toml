@@ -1,0 +1,8 @@
+[package]
+name = "conflict-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+memory-model = { path = "../memory-model" }

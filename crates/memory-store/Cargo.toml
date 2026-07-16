@@ -1,0 +1,12 @@
+[package]
+name = "memory-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+memory-model = { path = "../memory-model" }
+hash-core = { path = "../hash-core" }
+okf-core = { path = "../okf-core" }
+graph-core = { path = "../graph-core" }
+conflict-core = { path = "../conflict-core" }

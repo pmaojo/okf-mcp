@@ -1,0 +1,20 @@
+[package]
+name = "mcp-http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+memory-model = { path = "../memory-model" }
+memory-store = { path = "../memory-store" }
+mcp-core = { path = "../mcp-core" }
+mcp-stdio = { path = "../mcp-stdio" }
+
+[dev-dependencies]
+# json-mini aquí es solo para PARSEAR aserciones en los tests; route()
+# nunca la usa (delega en mcp-core, que ya la conoce).
+json-mini = { path = "../json-mini" }
+
+[[bin]]
+name = "okf-memory-http"
+path = "src/main.rs"

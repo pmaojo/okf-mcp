@@ -1,0 +1,8 @@
+[package]
+name = "json-mini"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# ninguna — solo std

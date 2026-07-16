@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/memory-model",
+    "crates/hash-core",
+    "crates/json-mini",
+    "crates/okf-core",
+    "crates/graph-core",
+    "crates/conflict-core",
+    "crates/memory-store",
+    "crates/mcp-core",
+    "crates/mcp-stdio",
+    "crates/mcp-http",
+]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+
+# Regla del proyecto: ningún crate de este workspace declara dependencias
+# externas en el hito 1. Solo `std` y dependencias internas (path).
