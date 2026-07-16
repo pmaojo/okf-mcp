@@ -1,0 +1,29 @@
+# ADAPTADOR: dependencias externas permitidas.
+#
+# Este es el ÚNICO crate del workspace donde eso es cierto (aparte de
+# la dev-dependency de test en mcp-http). El runtime de Vercel para
+# Rust exige tokio + vercel_runtime (con su feature "axum" para tener
+# control total de status/cabeceras); no existe una forma std-only de
+# arrancar una función serverless de Vercel. Todo lo demás que este
+# crate importa (mcp-http, mcp-core, memory-store, ...) sigue siendo
+# 100% std por debajo. Ver tutorial/11-adaptador-vercel.md.
+[package]
+name = "vercel-entry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+vercel_runtime = { version = "2.4", features = ["axum"] }
+axum = { version = "0.8" }
+tower = { version = "0.5" }
+memory-model = { path = "../memory-model" }
+memory-store = { path = "../memory-store" }
+mcp-core = { path = "../mcp-core" }
+mcp-http = { path = "../mcp-http" }
+mcp-stdio = { path = "../mcp-stdio" }
+
+[[bin]]
+name = "mcp"
+path = "api/mcp.rs"

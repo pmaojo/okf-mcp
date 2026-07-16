@@ -11,12 +11,22 @@ members = [
     "crates/mcp-core",
     "crates/mcp-stdio",
     "crates/mcp-http",
+    "crates/vercel-entry",
 ]
 
 [workspace.package]
 edition = "2021"
 version = "0.1.0"
 license = "MIT"
+
+# Perfil de release compartido por todo el workspace (Cargo ignora
+# [profile.*] declarado en un Cargo.toml de crate miembro: solo se
+# lee aquí, en la raíz). El binario de Vercel lo necesita para
+# arrancar en frío con la menor latencia posible.
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3
 
 # Regla del proyecto: ningún crate de este workspace declara dependencias
 # externas en el hito 1. Solo `std` y dependencias internas (path).
