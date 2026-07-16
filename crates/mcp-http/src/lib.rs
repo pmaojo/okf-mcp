@@ -135,7 +135,7 @@ pub fn route<H: ToolHandler>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mcp_stdio::MemoryTools;
+    use memory_tools::MemoryTools;
     use memory_model::Principal;
     use memory_store::InMemoryStore;
 

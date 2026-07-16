@@ -59,9 +59,11 @@ crates/
   okf-core/        frontmatter YAML (subconjunto) + escáner de [[enlaces]]
   graph-core/      BFS acotado sobre un trait de adyacencia
   conflict-core/   decisiones compare-and-swap puras
-  memory-store/    blobs inmutables + cabezas móviles + revisiones
+  store-core/      trait MemoryRepository + contract.rs de Liskov
+  memory-store/    InMemoryStore (implementación en RAM)
+  memory-tools/    MemoryTools (las 4 herramientas MCP, genéricas sobre el trait)
   mcp-core/        JSON-RPC 2.0 + ciclo de vida MCP + despacho
-  mcp-stdio/       las 4 herramientas + transporte stdin/stdout
+  mcp-stdio/       transporte stdin/stdout
 ```
 
 Dos reglas se cumplen en TODOS los crates y los tests lo verifican:
@@ -99,8 +101,8 @@ Cuando llegue Postgres, el algoritmo de BFS no se enterará.
 | 4 | frontmatter OKF (`okf-core`) | borrowing, `split_inclusive`, errores con línea |
 | 5 | grafo acotado (`graph-core`) | traits, genéricos, `VecDeque`, presupuestos |
 | 6 | CAS (`conflict-core`) | funciones puras, pattern matching exhaustivo |
-| 7 | repositorio (`memory-store`) | ownership, `Arc<str>`, invariantes de almacén |
-| 8 | protocolo (`mcp-core` + `mcp-stdio`) | inyección por traits, E/S acotada, integración |
+| 7 | repositorio (`store-core` + `memory-store`) | ownership, `Arc<str>`, invariantes de almacén y contratos |
+| 8 | protocolo (`mcp-core` + `memory-tools` + `mcp-stdio`) | inyección por traits, E/S acotada, integración y desacoplamiento de transportes |
 
 ## Cómo leer cada capítulo
 

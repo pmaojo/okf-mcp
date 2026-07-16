@@ -1,7 +1,6 @@
 # Capítulo 8 — El protocolo MCP y el transporte: strings entran, strings salen
 
-Crates: [`crates/mcp-core`](../crates/mcp-core/src/lib.rs) y
-[`crates/mcp-stdio`](../crates/mcp-stdio/src)
+Crates: [`crates/mcp-core`](../crates/mcp-core/src/lib.rs), [`crates/memory-tools`](../crates/memory-tools/src/lib.rs) y [`crates/mcp-stdio`](../crates/mcp-stdio/src)
 
 ## 1. El problema
 
@@ -58,7 +57,7 @@ resultado con `isError` lo ve el MODELO, que es quien puede leer
 canales hace tu servidor técnicamente correcto e inútil en la
 práctica.
 
-**Las herramientas** (mcp-stdio/lib.rs) son la capa de traducción
+**Las herramientas** (memory-tools/src/lib.rs) son la capa de traducción
 JSON ↔ dominio, genérica sobre el repositorio:
 
 ```rust

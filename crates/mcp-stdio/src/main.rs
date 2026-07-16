@@ -10,7 +10,7 @@
 
 #![forbid(unsafe_code)]
 
-use mcp_stdio::MemoryTools;
+use memory_tools::MemoryTools;
 use memory_model::{Budget, Principal};
 use memory_store::InMemoryStore;
 use std::io::{BufRead, Write};

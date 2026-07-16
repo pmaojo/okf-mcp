@@ -1,6 +1,6 @@
 # Capítulo 9 — El contrato ejecutable: Liskov antes de que exista Supabase
 
-Crate: [`crates/memory-store/src/contract.rs`](../crates/memory-store/src/contract.rs)
+Crate: [`crates/store-core/src/contract.rs`](../crates/store-core/src/contract.rs)
 
 ## 1. El problema
 
@@ -81,7 +81,7 @@ es deliberadamente aburrido:
 ```rust
 #[test]
 fn in_memory_cumple_el_contrato() {
-    memory_store::contract::run_all(memory_store::InMemoryStore::new);
+    store_core::contract::run_all(memory_store::InMemoryStore::new);
 }
 ```
 

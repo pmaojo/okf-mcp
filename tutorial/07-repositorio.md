@@ -1,6 +1,6 @@
 # Capítulo 7 — El repositorio: blobs inmutables, cabezas móviles
 
-Crate: [`crates/memory-store`](../crates/memory-store/src/lib.rs)
+Crates: [`crates/store-core`](../crates/store-core/src/lib.rs) (API) y [`crates/memory-store`](../crates/memory-store/src/lib.rs) (en memoria)
 
 ## 1. El problema
 

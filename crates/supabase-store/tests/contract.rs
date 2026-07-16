@@ -26,7 +26,7 @@ fn supabase_cumple_el_contrato() {
         pool
     });
 
-    memory_store::contract::run_all(|| {
+    store_core::contract::run_all(|| {
         let pool = pool.clone();
         block_on(async {
             sqlx::query("TRUNCATE TABLE links, revisions, heads, blobs CASCADE")

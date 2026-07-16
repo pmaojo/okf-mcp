@@ -4,5 +4,5 @@
 
 #[test]
 fn in_memory_cumple_el_contrato() {
-    memory_store::contract::run_all(memory_store::InMemoryStore::new);
+    store_core::contract::run_all(memory_store::InMemoryStore::new);
 }

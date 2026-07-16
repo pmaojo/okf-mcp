@@ -29,15 +29,17 @@ vercel-entry (bin)  ADAPTADOR: axum + vercel_runtime → route() (mismo código)
    ├── mcp-core          JSON-RPC 2.0 + ciclo de vida MCP + despacho
    │      └── json-mini  parser/serializador JSON educativo
    │
-   └── MemoryTools       las 4 herramientas, genéricas sobre el trait
+   ├── memory-tools      MemoryTools (las 4 herramientas MCP, genéricas sobre el trait)
+   │
+   └── store-core        contrato de datos (trait MemoryRepository + contract.rs de Liskov)
           │
-          └── memory-store   blobs inmutables + cabezas + revisiones
-                 │      └── contract.rs   contrato ejecutable de MemoryRepository
-                 ├── okf-core        frontmatter YAML (subconjunto) + enlaces [[...]]
-                 ├── graph-core      BFS acotado (trait NeighborSource)
-                 ├── conflict-core   decisiones compare-and-swap puras
-                 ├── hash-core       SHA-256 a mano (vectores NIST)
-                 └── memory-model    ConceptId, ContentId, Budget, Revision
+          ├── memory-store   InMemoryStore (implementación en RAM)
+          ├── supabase-store SupabaseStore (adaptador de base de datos)
+          ├── okf-core       frontmatter YAML (subconjunto) + enlaces [[...]]
+          ├── graph-core     BFS acotado (trait NeighborSource)
+          ├── conflict-core  decisiones compare-and-swap puras
+          ├── hash-core      SHA-256 a mano (vectores NIST)
+          └── memory-model   ConceptId, ContentId, Budget, Revision
 ```
 
 Regla del workspace: **ningún crate declara dependencias externas** en

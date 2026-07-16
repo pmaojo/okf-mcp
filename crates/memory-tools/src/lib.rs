@@ -19,7 +19,7 @@ use graph_core::NeighborSource;
 use json_mini::{arr, n, obj, s, Value};
 use mcp_core::{ToolError, ToolHandler, ToolSpec};
 use memory_model::{Budget, ConceptId, ContentId, Principal};
-use memory_store::{CommitRequest, MemoryRepository, SearchQuery, StoreError};
+use store_core::{CommitRequest, MemoryRepository, SearchQuery, StoreError};
 use std::convert::Infallible;
 
 pub struct MemoryTools<R> {

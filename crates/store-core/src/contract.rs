@@ -1,17 +1,18 @@
 //! El contrato de [`MemoryRepository`], como tests ejecutables.
 //!
 //! Liskov ejecutable: estas funciones prueban COMPORTAMIENTO usando
-//! solo el trait. `InMemoryStore` las pasa hoy; el adaptador de
-//! Supabase (hito 2) deberá pasarlas byte a byte, con los MISMOS
-//! errores ante las mismas situaciones. Si ambas implementaciones
+//! solo el trait. `InMemoryStore` (hito 1) y `SupabaseStore` (hito 2)
+//! deben ser indistinguibles para quien use el trait: mismos
+//! errores, mismas garantías CAS. Si ambas implementaciones
 //! pasan esta suite, son sustituibles; si el contrato necesita un
 //! test que el trait no permite escribir, eso es un detalle de
 //! implementación y NO forma parte del contrato.
 //!
 //! Uso desde los tests de cualquier implementación:
 //!
-//! ```rust
-//! use memory_store::{contract, InMemoryStore};
+//! ```rust,ignore
+//! use store_core::contract;
+//! use memory_store::InMemoryStore;
 //! contract::run_all(InMemoryStore::new);
 //! ```
 

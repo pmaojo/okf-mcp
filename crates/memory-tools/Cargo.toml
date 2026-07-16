@@ -1,5 +1,5 @@
 [package]
-name = "memory-store"
+name = "memory-tools"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,7 +7,6 @@ license.workspace = true
 [dependencies]
 memory-model = { path = "../memory-model" }
 store-core = { path = "../store-core" }
-hash-core = { path = "../hash-core" }
-okf-core = { path = "../okf-core" }
 graph-core = { path = "../graph-core" }
-conflict-core = { path = "../conflict-core" }
+json-mini = { path = "../json-mini" }
+mcp-core = { path = "../mcp-core" }

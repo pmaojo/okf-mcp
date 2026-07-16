@@ -22,7 +22,7 @@ memory-model = { path = "../memory-model" }
 memory-store = { path = "../memory-store" }
 mcp-core = { path = "../mcp-core" }
 mcp-http = { path = "../mcp-http" }
-mcp-stdio = { path = "../mcp-stdio" }
+memory-tools = { path = "../memory-tools" }
 supabase-store = { path = "../supabase-store" }
 sqlx = { version = "0.7", features = ["runtime-tokio", "postgres", "tls-rustls"] }
 jsonwebtoken = "9"

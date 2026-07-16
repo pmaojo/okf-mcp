@@ -198,7 +198,7 @@ fn reason_phrase(status: u16) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mcp_stdio::MemoryTools;
+    use memory_tools::MemoryTools;
     use memory_model::Principal;
     use memory_store::InMemoryStore;
     use std::net::Shutdown;

@@ -19,7 +19,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Router;
 use mcp_core::McpServer;
 use mcp_http::{route, HttpRequest};
-use mcp_stdio::MemoryTools;
+use memory_tools::MemoryTools;
 use memory_model::{Budget, Principal};
 use supabase_store::SupabaseStore;
 use std::sync::OnceLock;

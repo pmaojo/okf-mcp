@@ -8,7 +8,7 @@ license.workspace = true
 memory-model = { path = "../memory-model" }
 memory-store = { path = "../memory-store" }
 mcp-core = { path = "../mcp-core" }
-mcp-stdio = { path = "../mcp-stdio" }
+memory-tools = { path = "../memory-tools" }
 
 [dev-dependencies]
 # json-mini aquí es solo para PARSEAR aserciones en los tests; route()

@@ -6,10 +6,11 @@ license.workspace = true
 
 [dependencies]
 memory-model = { path = "../memory-model" }
-okf-core = { path = "../okf-core" }
-graph-core = { path = "../graph-core" }
 memory-store = { path = "../memory-store" }
+memory-tools = { path = "../memory-tools" }
 mcp-core = { path = "../mcp-core" }
+
+[dev-dependencies]
 json-mini = { path = "../json-mini" }
 
 [[bin]]

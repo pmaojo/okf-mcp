@@ -4,7 +4,7 @@ use conflict_core::{decide, CommitDecision};
 use graph_core::NeighborSource;
 use hash_core::sha256;
 use memory_model::{Budget, ConceptId, ContentId, Principal, Revision};
-use memory_store::{
+use store_core::{
     CommitOutcome, CommitRequest, DocumentView, MemoryRepository, SearchHit, SearchQuery, StoreError,
 };
 use sqlx::{PgPool, Row};
