@@ -11,7 +11,7 @@
 
 #![forbid(unsafe_code)]
 
-mod auth;
+use vercel_entry::auth;
 
 use axum::body::Bytes;
 use axum::http::{HeaderMap, Method, StatusCode};
