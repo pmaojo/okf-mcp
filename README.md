@@ -14,21 +14,25 @@ didáctico** de Rust y de principios SOLID: ver [`tutorial/`](tutorial/).
 - ✅ **Hito 1:** núcleo `std`-only + servidor MCP por stdio.
 - 🟨 **Hito 2 (en curso):** transporte HTTP sin estado (`mcp-http`,
   local con `TcpListener`, mismo contrato que usará Vercel) +
-  contrato ejecutable `MemoryRepository` para el futuro adaptador
-  Supabase — ver [`tutorial/09-contrato-liskov.md`](tutorial/09-contrato-liskov.md)
-  y [`tutorial/10-http-sin-estado.md`](tutorial/10-http-sin-estado.md).
-  Falta: el adaptador Supabase real y el despliegue en Vercel
-  (requieren tus credenciales — ver la sección de más abajo).
+  contrato ejecutable `MemoryRepository` + adaptador de Vercel
+  (`vercel-entry`, compila contra `axum`/`vercel_runtime` reales) —
+  ver [`tutorial/09-contrato-liskov.md`](tutorial/09-contrato-liskov.md),
+  [`tutorial/10-http-sin-estado.md`](tutorial/10-http-sin-estado.md) y
+  [`tutorial/11-adaptador-vercel.md`](tutorial/11-adaptador-vercel.md).
+  Falta: el adaptador Supabase real, y que tú importes el repo en
+  Vercel (ver "Desplegar en Vercel" más abajo).
 - ⬜ Hito 3: OAuth 2.1 (resource server, JWKS, RFC 8707).
 - ⬜ Hito 4: outbox → Git y embeddings (pgvector).
 
 ## Arquitectura
 
 ```text
-mcp-stdio (bin)          E/S por stdin/stdout, presupuesto de lectura
-mcp-http  (bin)          HTTP/1.1 sin estado sobre TcpListener, POST /mcp
-   │           │
-   │           └── server.rs   parseo HTTP acotado ↔ route() (puro)
+mcp-stdio    (bin)  E/S por stdin/stdout, presupuesto de lectura
+mcp-http     (bin)  HTTP/1.1 sin estado sobre TcpListener, POST /mcp
+vercel-entry (bin)  ADAPTADOR: axum + vercel_runtime → route() (mismo código)
+   │            │           │
+   │            │           └── el único crate con deps externas de producción
+   │            └── server.rs   parseo HTTP acotado ↔ route() (puro)
    │
    ├── mcp-core          JSON-RPC 2.0 + ciclo de vida MCP + despacho
    │      └── json-mini  parser/serializador JSON educativo
@@ -45,10 +49,15 @@ mcp-http  (bin)          HTTP/1.1 sin estado sobre TcpListener, POST /mcp
 ```
 
 Regla del workspace: **ningún crate declara dependencias externas** en
-sus dependencias de producción. Todos los `Cargo.toml` solo
-referencian crates internos por `path` (la única excepción es
-`json-mini` como *dev-dependency* de test en `mcp-http`, para parsear
-aserciones — nunca se usa en el código servido). Todos los crates
+sus dependencias de producción, con UNA excepción marcada
+explícitamente: `crates/vercel-entry` (necesita `tokio` + `axum` +
+`vercel_runtime` — no hay forma std-only de arrancar una función
+serverless de Vercel; ver `tutorial/11-adaptador-vercel.md`). Su
+`Cargo.toml` lleva el marcador `# ADAPTADOR: dependencias externas
+permitidas` en la primera línea, y `scripts/check-std-only.sh` lo
+reconoce y lo excluye explícitamente del resto de la comprobación.
+(La otra excepción, menor, es `json-mini` como *dev-dependency* de
+test en `mcp-http`, solo para parsear aserciones.) Todos los crates
 llevan `#![forbid(unsafe_code)]`.
 
 ## Uso
@@ -99,6 +108,26 @@ pasa — aceptable en desarrollo, nunca en producción.
 | `memory_resolve` | Markdown exacto + vecindario acotado del grafo de `[[enlaces]]`  |
 | `memory_commit`  | escritura con compare-and-swap (`expected_hash`)                 |
 | `memory_history` | revisiones de más reciente a más antigua, paginadas              |
+
+## Desplegar en Vercel
+
+1. En el dashboard de Vercel: **Add New Project** → importa
+   `pmaojo/okf-mcp` desde GitHub.
+2. **Importante:** en la configuración del proyecto, fija
+   **Root Directory** = `crates/vercel-entry` — ahí es donde vive el
+   `Cargo.toml` + `api/mcp.rs` que el *builder* de Rust de Vercel
+   espera encontrar (el repo entero es un *workspace* de Cargo; este
+   crate es el único que sabe hablar con Vercel).
+3. Configura la variable de entorno `ALLOWED_ORIGINS` (lista
+   separada por comas) antes de servir tráfico real — sin ella,
+   cualquier `Origin` de navegador se acepta.
+4. La integración de Supabase en el marketplace de Vercel puede
+   inyectar las credenciales (`SUPABASE_URL`, claves, cadena de
+   conexión) directamente como variables de entorno del proyecto;
+   el adaptador que las use todavía está por construir.
+
+`vercel.json` en la raíz reescribe `/mcp` → `/api/mcp` para que la
+URL pública sea la que promete el resto de esta documentación.
 
 ## Tutorial
 

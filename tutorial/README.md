@@ -28,12 +28,11 @@ repositorio. Cada capítulo sigue la misma plantilla:
 |---|----------|------|--------------------|
 | 9 | [El contrato ejecutable](09-contrato-liskov.md) | traits genéricos como ley, fábricas `FnMut() -> R` | **L**, hecho literal |
 | 10 | [HTTP sin estado](10-http-sin-estado.md) | parseo HTTP acotado, `TcpListener`, DNS-rebinding | S, D |
+| 11 | [El adaptador de Vercel](11-adaptador-vercel.md) | `axum` extractors, la frontera hecha código | **D**, el arco cerrado |
 
-Falta por escribir (necesita tus credenciales de Vercel/Supabase):
-un adaptador `SupabaseStore` que pase el contrato del capítulo 9
-contra Postgres real, el despliegue del transporte HTTP en Vercel
-(`vercel-entry`, con `tokio` + `vercel_runtime`), y el outbox
-transaccional.
+Falta por escribir (necesita tus credenciales de Supabase): un
+adaptador `SupabaseStore` que pase el contrato del capítulo 9 contra
+Postgres real, y el outbox transaccional.
 
 ## Hitos siguientes (capítulos por escribir)
 

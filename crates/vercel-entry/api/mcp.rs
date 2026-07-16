@@ -8,6 +8,12 @@
 //! Todo lo demás — parseo JSON-RPC, las cuatro herramientas, el
 //! presupuesto, la comprobación de `Origin` — es exactamente el
 //! código que ya corre con `cargo run -p mcp-http`.
+//!
+//! `forbid(unsafe_code)` aquí no promete que TODO el binario esté
+//! libre de `unsafe` (sus dependencias pueden usarlo internamente);
+//! promete que NUESTRO código en este archivo no lo necesita.
+
+#![forbid(unsafe_code)]
 
 use axum::body::Bytes;
 use axum::http::{HeaderMap, Method, StatusCode};
