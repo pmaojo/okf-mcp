@@ -22,25 +22,26 @@ repositorio. Cada capítulo sigue la misma plantilla:
 | 7 | [El repositorio](07-repositorio.md) | ownership, `Arc<str>`, `&mut` como mutex | **L**, D |
 | 8 | [El protocolo MCP](08-protocolo-mcp.md) | inyección por traits, E/S acotada | **D**, todo junto |
 
-## Hito 2 — hacia la red (en curso)
+## Hito 2 — hacia la red (Persistencia relacional)
 
 | # | Capítulo | Rust | SOLID protagonista |
 |---|----------|------|--------------------|
 | 9 | [El contrato ejecutable](09-contrato-liskov.md) | traits genéricos como ley, fábricas `FnMut() -> R` | **L**, hecho literal |
 | 10 | [HTTP sin estado](10-http-sin-estado.md) | parseo HTTP acotado, `TcpListener`, DNS-rebinding | S, D |
 | 11 | [El adaptador de Vercel](11-adaptador-vercel.md) | `axum` extractors, la frontera hecha código | **D**, el arco cerrado |
+| 12 | [El adaptador de Supabase](12-adaptador-supabase.md) | `sqlx`, CAS relacional, `FOR UPDATE` | **L**, S, I |
 
-Falta por escribir (necesita tus credenciales de Supabase): un
-adaptador `SupabaseStore` que pase el contrato del capítulo 9 contra
-Postgres real, y el outbox transaccional.
+## Hito 3 — OAuth 2.1 (Autenticación sin estado)
 
-## Hitos siguientes (capítulos por escribir)
+| # | Capítulo | Rust | SOLID protagonista |
+|---|----------|------|--------------------|
+| 13 | [OAuth 2.1 Resource Server](13-oauth2-resource-server.md) | firmas JWT, JWKS caching asíncrono | S, D, O |
 
-- **Hito 3:** OAuth 2.1 — el servidor MCP como *resource server*
-  (JWKS, validación de JWT, audiencias RFC 8707, el token del
-  cliente JAMÁS se reenvía a Supabase).
-- **Hito 4:** worker de sincronización a Git y búsqueda semántica
-  (pgvector), como índices derivados de los blobs inmutables.
+## Hito 4 — Eventual Consistency (Integraciones asíncronas)
+
+| # | Capítulo | Rust | SOLID protagonista |
+|---|----------|------|--------------------|
+| 14 | [Outbox transaccional y pgvector](14-outbox-sincronizacion.md) | outbox pattern, `SKIP LOCKED`, pgvector | S, D |
 
 ## Cómo seguirlo
 

@@ -1,0 +1,21 @@
+# ADAPTADOR: dependencias externas permitidas
+#
+# Este crate implementa la persistencia utilizando Supabase (PostgreSQL)
+# y requiere sqlx para la comunicación con la base de datos.
+[package]
+name = "supabase-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.7", features = ["runtime-tokio", "postgres", "tls-rustls"] }
+memory-model = { path = "../memory-model" }
+memory-store = { path = "../memory-store" }
+okf-core = { path = "../okf-core" }
+hash-core = { path = "../hash-core" }
+graph-core = { path = "../graph-core" }
+conflict-core = { path = "../conflict-core" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0" }

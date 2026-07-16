@@ -1,0 +1,439 @@
+#![forbid(unsafe_code)]
+
+use conflict_core::{decide, CommitDecision};
+use graph_core::NeighborSource;
+use hash_core::sha256;
+use memory_model::{Budget, ConceptId, ContentId, Principal, Revision};
+use memory_store::{
+    CommitOutcome, CommitRequest, DocumentView, MemoryRepository, SearchHit, SearchQuery, StoreError,
+};
+use sqlx::{PgPool, Row};
+use std::convert::Infallible;
+use std::sync::Arc;
+
+/// Ejecuta un Future de forma síncrona, tolerando si ya nos encontramos
+/// dentro de un runtime de Tokio (como en Axum/Vercel) o fuera de él (tests).
+fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fut)),
+        Err(_) => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(fut),
+    }
+}
+
+/// Adaptador de repositorio que persiste los datos en una base de datos Supabase / PostgreSQL.
+#[derive(Debug, Clone)]
+pub struct SupabaseStore {
+    pool: PgPool,
+}
+
+impl SupabaseStore {
+    pub fn new(pool: PgPool) -> Self {
+        SupabaseStore { pool }
+    }
+}
+
+impl MemoryRepository for SupabaseStore {
+    fn get(&self, id: &ConceptId) -> Result<Option<DocumentView>, StoreError> {
+        let res = block_on(async {
+            sqlx::query(
+                "SELECT h.content_id, h.version, b.raw, h.doc_type, h.title, h.tags
+                 FROM heads h
+                 JOIN blobs b ON h.content_id = b.content_id
+                 WHERE h.concept_id = $1",
+            )
+            .bind(id.as_str())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))
+        })?;
+
+        match res {
+            None => Ok(None),
+            Some(row) => {
+                let content_id_hex: String = row.get("content_id");
+                let content_id = ContentId::from_hex(&content_id_hex)
+                    .ok_or_else(|| StoreError::Backend("hash de contenido corrupto en base de datos".to_string()))?;
+                
+                let raw: String = row.get("raw");
+                // Analizar el documento para extraer enlaces (no persistidos directamente en la tabla heads/blobs)
+                let doc = okf_core::parse_document(&raw, &Budget::default())?;
+
+                let version: i64 = row.get("version");
+                let doc_type: String = row.get("doc_type");
+                let title: Option<String> = row.get("title");
+                let tags: Vec<String> = row.get("tags");
+
+                Ok(Some(DocumentView {
+                    concept_id: id.clone(),
+                    content_id,
+                    version: version as u64,
+                    raw: Arc::from(raw),
+                    doc_type,
+                    title,
+                    tags,
+                    links: doc.links,
+                }))
+            }
+        }
+    }
+
+    fn search(&self, query: &SearchQuery, budget: &Budget) -> Result<Vec<SearchHit>, StoreError> {
+        let limit = query
+            .limit
+            .unwrap_or(budget.max_search_results)
+            .min(budget.max_search_results) as i64;
+
+        let res = block_on(async {
+            sqlx::query(
+                "SELECT h.concept_id, h.content_id, h.doc_type, h.title, h.tags
+                 FROM heads h
+                 JOIN blobs b ON h.content_id = b.content_id
+                 WHERE ($1::text IS NULL OR h.doc_type = $1)
+                   AND ($2::text IS NULL OR $2 = ANY(h.tags))
+                   AND ($3::text IS NULL OR (
+                       h.concept_id ILIKE $4 OR
+                       h.title ILIKE $4 OR
+                       b.raw ILIKE $4 OR
+                       EXISTS (SELECT 1 FROM unnest(h.tags) t WHERE t ILIKE $4)
+                   ))
+                 ORDER BY h.concept_id
+                 LIMIT $5",
+            )
+            .bind(query.doc_type.as_deref())
+            .bind(query.tag.as_deref())
+            .bind(query.text.as_deref())
+            .bind(query.text.as_ref().map(|t| format!("%{}%", t)).as_deref())
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))
+        })?;
+
+        let hits = res
+            .into_iter()
+            .map(|row| {
+                let content_id_hex: String = row.get("content_id");
+                let content_id = ContentId::from_hex(&content_id_hex).expect("hash de db válido");
+                let concept_id_str: String = row.get("concept_id");
+                let concept_id = ConceptId::parse(&concept_id_str).expect("concept_id de db válido");
+                let doc_type: String = row.get("doc_type");
+                let title: Option<String> = row.get("title");
+                let tags: Vec<String> = row.get("tags");
+
+                SearchHit {
+                    concept_id,
+                    content_id,
+                    doc_type,
+                    title,
+                    tags,
+                }
+            })
+            .collect();
+
+        Ok(hits)
+    }
+
+    fn commit(
+        &mut self,
+        request: CommitRequest,
+        actor: &Principal,
+        budget: &Budget,
+    ) -> Result<CommitOutcome, StoreError> {
+        // 1. Validar el formato OKF del documento antes de realizar transacciones
+        let doc = okf_core::parse_document(&request.markdown, budget)?;
+
+        let incoming_hash = sha256(request.markdown.as_bytes());
+        let incoming = ContentId(incoming_hash);
+        let incoming_hex = incoming.to_hex();
+
+        let res = block_on(async {
+            let mut tx = self.pool.begin().await.map_err(|e| StoreError::Backend(e.to_string()))?;
+
+            // Bloquear la fila de la cabeza actual para evitar escrituras concurrentes
+            let current_head = sqlx::query(
+                "SELECT content_id, version FROM heads WHERE concept_id = $1 FOR UPDATE",
+            )
+            .bind(request.concept_id.as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+
+            let current_content_id = current_head
+                .as_ref()
+                .map(|h| {
+                    let hex: String = h.get("content_id");
+                    ContentId::from_hex(&hex).expect("hash de db válido")
+                });
+
+            let decision = decide(current_content_id, request.expected, incoming);
+
+            match decision {
+                CommitDecision::Conflict(c) => {
+                    tx.rollback().await.map_err(|e| StoreError::Backend(e.to_string()))?;
+                    Err(StoreError::Conflict(c))
+                }
+                CommitDecision::NoChange => {
+                    let h = current_head.unwrap();
+                    let version: i64 = h.get("version");
+                    tx.rollback().await.map_err(|e| StoreError::Backend(e.to_string()))?;
+                    Ok(CommitOutcome {
+                        revision: None,
+                        content_id: incoming,
+                        version: version as u64,
+                        created: false,
+                        no_change: true,
+                    })
+                }
+                CommitDecision::Create | CommitDecision::Update => {
+                    let created = matches!(decision, CommitDecision::Create);
+                    let base_hex = current_content_id.map(|h| h.to_hex());
+                    let new_version = current_head.as_ref().map(|h| h.get::<i64, _>("version") + 1).unwrap_or(1);
+
+                    // Insertar blob si no existe
+                    sqlx::query(
+                        "INSERT INTO blobs (content_id, raw) VALUES ($1, $2) ON CONFLICT (content_id) DO NOTHING",
+                    )
+                    .bind(&incoming_hex)
+                    .bind(&request.markdown)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| StoreError::Backend(e.to_string()))?;
+
+                    // Actualizar o crear la cabeza del documento
+                    if created {
+                        sqlx::query(
+                            "INSERT INTO heads (concept_id, content_id, version, doc_type, title, tags)
+                             VALUES ($1, $2, $3, $4, $5, $6)",
+                        )
+                        .bind(request.concept_id.as_str())
+                        .bind(&incoming_hex)
+                        .bind(new_version)
+                        .bind(&doc.doc_type)
+                        .bind(&doc.title)
+                        .bind(&doc.tags)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|e| StoreError::Backend(e.to_string()))?;
+                    } else {
+                        sqlx::query(
+                            "UPDATE heads SET content_id = $1, version = $2, doc_type = $3, title = $4, tags = $5
+                             WHERE concept_id = $6",
+                        )
+                        .bind(&incoming_hex)
+                        .bind(new_version)
+                        .bind(&doc.doc_type)
+                        .bind(&doc.title)
+                        .bind(&doc.tags)
+                        .bind(request.concept_id.as_str())
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|e| StoreError::Backend(e.to_string()))?;
+                    }
+
+                    // Insertar la revisión correspondiente
+                    let seq = sqlx::query_scalar::<_, i64>(
+                        "INSERT INTO revisions (concept_id, base, result, actor_subject, actor_client_id, reason)
+                         VALUES ($1, $2, $3, $4, $5, $6)
+                         RETURNING seq",
+                    )
+                    .bind(request.concept_id.as_str())
+                    .bind(base_hex.as_deref())
+                    .bind(&incoming_hex)
+                    .bind(&actor.subject)
+                    .bind(&actor.client_id)
+                    .bind(&request.reason)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(|e| StoreError::Backend(e.to_string()))?;
+
+                    // Actualizar los enlaces salientes (derived metadata)
+                    sqlx::query(
+                        "DELETE FROM links WHERE source_id = $1",
+                    )
+                    .bind(request.concept_id.as_str())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| StoreError::Backend(e.to_string()))?;
+
+                    for link in &doc.links {
+                        sqlx::query(
+                            "INSERT INTO links (source_id, target_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                        )
+                        .bind(request.concept_id.as_str())
+                        .bind(link.as_str())
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|e| StoreError::Backend(e.to_string()))?;
+                    }
+
+                    // Registrar evento en el Outbox transaccional
+                    let payload = serde_json::json!({
+                        "concept_id": request.concept_id.as_str(),
+                        "content_id": incoming_hex,
+                        "markdown": request.markdown,
+                        "reason": request.reason,
+                        "actor": {
+                            "subject": actor.subject,
+                            "client_id": actor.client_id
+                        }
+                    });
+
+                    sqlx::query(
+                        "INSERT INTO outbox (event_type, concept_id, content_id, payload)
+                         VALUES ('commit', $1, $2, $3)"
+                    )
+                    .bind(request.concept_id.as_str())
+                    .bind(&incoming_hex)
+                    .bind(payload)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| StoreError::Backend(e.to_string()))?;
+
+                    tx.commit().await.map_err(|e| StoreError::Backend(e.to_string()))?;
+
+                    let revision = Revision {
+                        seq: seq as u64,
+                        concept_id: request.concept_id.clone(),
+                        base: current_content_id,
+                        result: incoming,
+                        actor: actor.clone(),
+                        reason: request.reason,
+                    };
+
+                    Ok(CommitOutcome {
+                        revision: Some(revision),
+                        content_id: incoming,
+                        version: new_version as u64,
+                        created,
+                        no_change: false,
+                    })
+                }
+            }
+        })?;
+
+        Ok(res)
+    }
+
+    fn history(
+        &self,
+        id: &ConceptId,
+        limit: usize,
+        before_seq: Option<u64>,
+    ) -> Result<Vec<Revision>, StoreError> {
+        let before = before_seq.unwrap_or(i64::MAX as u64) as i64;
+        let limit = limit as i64;
+
+        let res = block_on(async {
+            // Verificar si el concepto existe en heads o revisiones
+            let exists = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM heads WHERE concept_id = $1)
+                 OR EXISTS(SELECT 1 FROM revisions WHERE concept_id = $1)",
+            )
+            .bind(id.as_str())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+
+            if !exists {
+                return Err(StoreError::NotFound(id.clone()));
+            }
+
+            let rows = sqlx::query(
+                "SELECT seq, base, result, actor_subject, actor_client_id, reason
+                 FROM revisions
+                 WHERE concept_id = $1 AND seq < $2
+                 ORDER BY seq DESC
+                 LIMIT $3",
+            )
+            .bind(id.as_str())
+            .bind(before)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+
+            let mut revisions = Vec::new();
+            for r in rows {
+                let seq: i64 = r.get("seq");
+                let base_hex: Option<String> = r.get("base");
+                let base = base_hex.map(|b| ContentId::from_hex(&b).expect("hash de db válido"));
+                let result_hex: String = r.get("result");
+                let result = ContentId::from_hex(&result_hex).expect("hash de db válido");
+                let actor_subject: String = r.get("actor_subject");
+                let actor_client_id: String = r.get("actor_client_id");
+                let reason: String = r.get("reason");
+
+                revisions.push(Revision {
+                    seq: seq as u64,
+                    concept_id: id.clone(),
+                    base,
+                    result,
+                    actor: Principal {
+                        subject: actor_subject,
+                        client_id: actor_client_id,
+                    },
+                    reason,
+                });
+            }
+            Ok(revisions)
+        })?;
+
+        Ok(res)
+    }
+}
+
+impl NeighborSource for SupabaseStore {
+    type Error = Infallible;
+
+    fn neighbors(&self, id: &ConceptId) -> Result<Vec<ConceptId>, Self::Error> {
+        let res = block_on(async {
+            sqlx::query_scalar::<_, String>(
+                "SELECT target_id FROM links WHERE source_id = $1 ORDER BY target_id",
+            )
+            .bind(id.as_str())
+            .fetch_all(&self.pool)
+            .await
+        });
+
+        match res {
+            Ok(rows) => {
+                let parsed = rows
+                    .into_iter()
+                    .filter_map(|r| ConceptId::parse(&r).ok())
+                    .collect();
+                Ok(parsed)
+            }
+            Err(e) => {
+                eprintln!("Error cargando vecinos del concepto {id} desde la base de datos: {e}");
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    fn document_size(&self, id: &ConceptId) -> Result<Option<usize>, Self::Error> {
+        let res = block_on(async {
+            sqlx::query_scalar::<_, String>(
+                "SELECT b.raw
+                 FROM heads h
+                 JOIN blobs b ON h.content_id = b.content_id
+                 WHERE h.concept_id = $1",
+            )
+            .bind(id.as_str())
+            .fetch_optional(&self.pool)
+            .await
+        });
+
+        match res {
+            Ok(Some(raw)) => Ok(Some(raw.len())),
+            Ok(None) => Ok(None),
+            Err(e) => {
+                eprintln!("Error cargando tamaño del documento {id} desde la base de datos: {e}");
+                Ok(None)
+            }
+        }
+    }
+}

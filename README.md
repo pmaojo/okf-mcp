@@ -12,17 +12,9 @@ didáctico** de Rust y de principios SOLID: ver [`tutorial/`](tutorial/).
 ## Estado
 
 - ✅ **Hito 1:** núcleo `std`-only + servidor MCP por stdio.
-- 🟨 **Hito 2 (en curso):** transporte HTTP sin estado (`mcp-http`,
-  local con `TcpListener`, mismo contrato que usará Vercel) +
-  contrato ejecutable `MemoryRepository` + adaptador de Vercel
-  (`vercel-entry`, compila contra `axum`/`vercel_runtime` reales) —
-  ver [`tutorial/09-contrato-liskov.md`](tutorial/09-contrato-liskov.md),
-  [`tutorial/10-http-sin-estado.md`](tutorial/10-http-sin-estado.md) y
-  [`tutorial/11-adaptador-vercel.md`](tutorial/11-adaptador-vercel.md).
-  Falta: el adaptador Supabase real, y que tú importes el repo en
-  Vercel (ver "Desplegar en Vercel" más abajo).
-- ⬜ Hito 3: OAuth 2.1 (resource server, JWKS, RFC 8707).
-- ⬜ Hito 4: outbox → Git y embeddings (pgvector).
+- ✅ **Hito 2:** transporte HTTP sin estado (`mcp-http`) + contrato ejecutable `MemoryRepository` + adaptador de Vercel (`vercel-entry`) + adaptador de base de datos PostgreSQL (`supabase-store`).
+- ✅ **Hito 3:** OAuth 2.1 (Resource Server, validación criptográfica de JWTs mediante firmas y JWKS).
+- ✅ **Hito 4:** Transactional Outbox (`outbox-worker` con procesamiento concurrente `SKIP LOCKED` sincronizando a Git y base de datos vectorial `pgvector`).
 
 ## Arquitectura
 
