@@ -120,11 +120,11 @@ async fn authorize_proxy_handler(uri: Uri) -> Response {
 /// `POST /token`: reenvía tal cual al `token_endpoint` real de
 /// Supabase y devuelve su respuesta sin modificar.
 ///
-/// No custodia ningún secreto de cliente: Supabase acepta clientes
-/// públicos autenticados solo por PKCE
-/// (`token_endpoint_auth_methods_supported` incluye `"none"`), así
-/// que este proxy es un simple reenvío de bytes, no un participante
-/// de la negociación.
+/// Reenvía también `Authorization` si viene presente: si la OAuth App
+/// en Supabase está registrada para `client_secret_basic` (no
+/// `none`), el `client_secret` viaja ahí, en Basic Auth — no en el
+/// cuerpo. El proxy nunca LEE ni construye esa cabecera, solo la
+/// deja pasar: sigue sin custodiar ningún secreto propio.
 async fn token_proxy_handler(headers: HeaderMap, body: Bytes) -> Response {
     let issuer = match std::env::var("OAUTH_ISSUER") {
         Ok(v) => v,
@@ -137,13 +137,13 @@ async fn token_proxy_handler(headers: HeaderMap, body: Bytes) -> Response {
         .to_string();
 
     let client = reqwest::Client::new();
-    let upstream = match client
+    let mut req = client
         .post(format!("{issuer}/oauth/token"))
-        .header("content-type", content_type)
-        .body(body.to_vec())
-        .send()
-        .await
-    {
+        .header("content-type", content_type);
+    if let Some(auth) = headers.get("authorization") {
+        req = req.header("authorization", auth.clone());
+    }
+    let upstream = match req.body(body.to_vec()).send().await {
         Ok(r) => r,
         Err(e) => {
             return (
