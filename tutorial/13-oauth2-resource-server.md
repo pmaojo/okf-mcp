@@ -127,10 +127,12 @@ Para este despliegue concreto (Supabase como Authorization Server), las variable
 |---|---|---|
 | `JWKS_URL` | `https://<proyecto>.supabase.co/auth/v1/.well-known/jwks.json` | Llaves públicas para verificar la firma del JWT (`auth.rs`) |
 | `OAUTH_ISSUER` | `https://<proyecto>.supabase.co/auth/v1` | Se anuncia en `/.well-known/oauth-protected-resource` como `authorization_servers` |
-| `JWT_AUDIENCE` | el `client_id` de la OAuth App registrada en Supabase (**obligatoria si `JWKS_URL` está seteada**) | Restringe qué tokens acepta el servidor (comparando contra el claim `client_id`) |
+| `JWT_AUDIENCE` | el `client_id` esperado de la OAuth App (**opcional**) | Restringe qué tokens acepta el servidor (comparando contra el claim `client_id`) |
 | `SUPABASE_ANON_KEY` | la anon key pública de tu proyecto de Supabase | Requerida por la página de consentimiento para comunicarse con GoTrue |
 
-`JWT_AUDIENCE` no es opcional en producción. Validar qué aplicación pidió el token es un requisito de la especificación de autorización de MCP — el servidor "debe validar que el token fue emitido específicamente para él como audiencia esperada". En Supabase Auth, todos los tokens llevan la audiencia estándar fija `aud: "authenticated"`, por lo que no podemos usar el validador automático de audiencia de JWT. En su lugar, desactivamos ese validador y comprobamos manualmente que el claim `client_id` (o en su defecto `azp`) coincida exactamente con la variable de entorno `JWT_AUDIENCE`. Sin este chequeo manual, cualquier token válido emitido por el mismo Authorization Server para OTRA aplicación bajo el mismo proyecto Supabase sería aceptado igualmente. Por eso `mcp.rs` devuelve `500` si `JWKS_URL` está presente pero `JWT_AUDIENCE` no — falla cerrado en vez de aceptar tokens sin verificar quién los pidió.
+`JWT_AUDIENCE` es opcional. Validar qué aplicación pidió el token es un requisito de la especificación de autorización de MCP (audiencia esperada). En Supabase Auth, todos los tokens llevan la audiencia estándar fija `aud: "authenticated"`, por lo que no podemos usar el validador automático de audiencia de JWT. En su lugar, desactivamos ese validador y, si `JWT_AUDIENCE` está configurada, comprobamos manualmente que el claim `client_id` (o en su defecto `azp`) coincida exactamente. 
+
+Sin embargo, si habilitamos el **Registro Dinámico de Clientes (DCR)** en el servidor OAuth de Supabase, el cliente de Claude se registrará automáticamente en cada sesión, obteniendo un `client_id` dinámico recién generado. Si tuviéramos `JWT_AUDIENCE` fijada a un único valor estático en producción, el flujo DCR fallaría inmediatamente. Por ello, si no configuras `JWT_AUDIENCE`, el servidor MCP acepta cualquier token correctamente firmado por nuestro emisor (Supabase Auth). En este escenario, la barrera de seguridad real y el límite de confianza residen en la pantalla de inicio de sesión de Supabase Auth más la aprobación explícita del usuario en `/oauth/consent`, y no en la validación estática de un identificador de cliente.
 
 Puedes confirmar que tu proyecto de Supabase emite JWTs firmados de forma asimétrica (necesario para JWKS — un secreto compartido HS256 no se puede publicar como llave pública) consultando:
 
@@ -141,7 +143,7 @@ curl https://<proyecto>.supabase.co/auth/v1/.well-known/openid-configuration
 
 Si `jwks_uri` devuelve una lista de llaves (`"alg":"ES256"` o `"RS256"`), el proyecto ya emite tokens con firma asimétrica y esta pieza funciona sin cambios adicionales en Supabase.
 
-### La pieza manual: Supabase Auth no soporta registro automático de cliente
+### Registrar el cliente: manual, o automático con DCR
 
 Claude soporta tres formas de registrarse como cliente OAuth contra tu Authorization Server (documentado por Anthropic en su guía de autenticación de conectores):
 
@@ -149,9 +151,16 @@ Claude soporta tres formas de registrarse como cliente OAuth contra tu Authoriza
 2. **`oauth_cimd`** — Client ID Metadata Documents: Claude usa una URL HTTPS como `client_id`; el AS la resuelve para leer el `redirect_uri` de Claude. No requiere llamada de registro, pero exige que el AS soporte client-ids en formato URL (un draft de OAuth todavía poco extendido).
 3. **`oauth_anthropic_creds`** — Anthropic gestiona las credenciales directamente (requiere contactar `mcp-review@anthropic.com`).
 
-**Supabase Auth no soporta ninguna de las dos primeras hoy**: su discovery OIDC no anuncia `registration_endpoint` (confirmado: `/auth/v1/oauth/register` responde `404` sin credenciales de administrador), y tampoco hay indicios de soporte de CIMD.
+**Opción manual (sin tocar nada más en Supabase):** en **Settings → Connectors → Add custom connector → Advanced settings**, introduces directamente el `Client ID` (y opcionalmente `Client Secret`) de una OAuth App que registres tú mismo en el dashboard de Supabase (Authentication → OAuth Apps), usando el `redirect_uri` que Claude muestre en esa misma pantalla (`https://claude.ai/api/mcp/auth_callback` para Claude.ai web/desktop/mobile/Cowork). Ese `client_id` es el valor que le darías a `JWT_AUDIENCE` si quisieras restringir el servidor a ese único cliente.
 
-Esto no bloquea el flujo — Claude permite una cuarta vía, más manual, que no depende de que el AS soporte ninguno de los mecanismos anteriores: al añadir un conector personalizado en **Settings → Connectors → Add custom connector → Advanced settings**, puedes introducir directamente el `Client ID` (y opcionalmente `Client Secret`) de una OAuth App que registres tú mismo en el dashboard de Supabase (Authentication → OAuth Apps), usando el `redirect_uri` que Claude muestre en esa misma pantalla (`https://claude.ai/api/mcp/auth_callback` para Claude.ai web/desktop/mobile/Cowork). Ese `client_id` es el valor que corresponde a `JWT_AUDIENCE` en la tabla de arriba.
+**Opción DCR (sin tocar nada en Claude):** Supabase Auth SÍ soporta `oauth_dcr`, pero apagado por defecto y con una trampa de nomenclatura real. Actívalo en **Authentication → OAuth Server → Allow dynamic client registration**; el efecto observable es que `registration_endpoint` aparece (o desaparece) en `<issuer>/.well-known/oauth-authorization-server`. La trampa: el path real que anuncia ese campo es `/auth/v1/oauth/clients/register` — **no** `/auth/v1/oauth/register`, que es el que uno tiende a probar primero (y que responde `404` tanto con DCR activo como apagado, porque simplemente no existe). Verificar el endpoint real siempre pasa por leer el discovery document, nunca por adivinar la convención:
+
+```bash
+curl https://<proyecto>.supabase.co/auth/v1/.well-known/oauth-authorization-server \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["registration_endpoint"])'
+```
+
+Con DCR activo, cada vez que Claude conecta se auto-registra como un cliente nuevo (`registration_type: dynamic` en `auth.oauth_clients`) — por eso la sección anterior insiste en que `JWT_AUDIENCE` debe quedar sin definir en este modo: fijarla a un cliente pre-registrado rechazaría sistemáticamente al cliente dinámico que Claude acaba de crear.
 
 El cliente MCP deberá incluir la cabecera `Authorization: Bearer <token_jwt>` en cada petición POST — esto ya funcionaba antes de esta sección; lo nuevo es cómo el cliente *consigue* ese token sin que el protocolo de registro sea automático (el registro de la OAuth App en Supabase sí es manual, una vez).
 
@@ -206,4 +215,4 @@ Esta solución combina la potencia de GoTrue (el motor OAuth 2.1 e identidad de 
 1. **Guiado.** ¿Qué problemas de seguridad surgen si un token JWT no especifica fecha de expiración (`exp`)? ¿Cómo reacciona `jsonwebtoken` por defecto?
 2. **Medio.** Modifica `auth.rs` para permitir múltiples audiencias válidas (p. ej., si tu servidor MCP es compartido por una aplicación web y una extensión de navegador).
 3. **Abierto.** Diseña una estrategia para rotar las llaves de firma del JWKS en caliente sin causar errores temporales en peticiones concurrentes de usuarios legítimos.
-4. **Abierto.** La sección 9 documenta que Supabase Auth no soporta Dynamic Client Registration (RFC 7591). Investiga qué otros Authorization Servers (Auth0, WorkOS, Ory Hydra) sí lo soportan de forma nativa, y qué tendría que cambiar en `mcp.rs`/`auth.rs` si migraras el `issuer` a uno de ellos — ¿alguna línea de código lo requeriría, o solo variables de entorno?
+4. **Abierto.** Con DCR activo, cualquier cliente MCP puede auto-registrarse contra tu Supabase Auth y llegar hasta la pantalla de consentimiento — el usuario sigue teniendo que aprobar, pero nada impide que un cliente malicioso pida scopes amplios con un nombre engañoso. Diseña una estrategia para que `/oauth/consent` muestre suficiente contexto (o registre lo suficiente) como para que esa aprobación sea informada. ¿Le pedirías a `execute_sql`/`auth.oauth_clients` una lista de clientes de confianza, en vez de aceptar cualquier `client_id` dinámico sin más?
