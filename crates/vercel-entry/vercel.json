@@ -8,6 +8,14 @@
     {
       "source": "/.well-known/oauth-protected-resource",
       "destination": "/api/mcp"
+    },
+    {
+      "source": "/authorize",
+      "destination": "/api/mcp"
+    },
+    {
+      "source": "/token",
+      "destination": "/api/mcp"
     }
   ]
 }

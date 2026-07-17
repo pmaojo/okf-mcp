@@ -149,6 +149,27 @@ Esto no bloquea el flujo — Claude permite una cuarta vía, más manual, que no
 
 El cliente MCP deberá incluir la cabecera `Authorization: Bearer <token_jwt>` en cada petición POST — esto ya funcionaba antes de esta sección; lo nuevo es cómo el cliente *consigue* ese token sin que el protocolo de registro sea automático (el registro de la OAuth App en Supabase sí es manual, una vez).
 
+### La sorpresa real: el Client ID manual no sigue el descubrimiento
+
+Con todo lo anterior en su sitio — `/.well-known/oauth-protected-resource` respondiendo, `authorization_servers` apuntando a Supabase, el `client_id` metido a mano en Claude — el flujo seguía fallando: Claude generaba la URL de autorización contra **nuestro propio dominio** (`https://tu-dominio/authorize?...`), no contra el `authorization_endpoint` real de Supabase. Se comprobó a fondo que no era un fallo de descubrimiento: tanto `<issuer>/.well-known/openid-configuration` como `<issuer>/.well-known/oauth-authorization-server` (las dos convenciones de RFC 8414) responden con el `authorization_endpoint` correcto.
+
+La conclusión, tras descartar todo lo demás: el modo "Client ID manual" de Claude para conectores MCP no delega en el `authorization_servers` anunciado — asume que el propio servidor MCP aloja el Authorization Server en su mismo dominio, con los paths estándar `/authorize` y `/token`. Es una limitación observada del cliente, no algo que la especificación MCP exija.
+
+La solución no es pelearse con Claude, es dárselo: [mcp.rs](../crates/vercel-entry/api/mcp.rs) implementa `/authorize` y `/token` como un **proxy transparente** hacia los endpoints reales de Supabase.
+
+```rust
+async fn authorize_proxy_handler(uri: Uri) -> Response {
+    let issuer = std::env::var("OAUTH_ISSUER")...;
+    let query = uri.query().unwrap_or("");
+    let location = format!("{issuer}/oauth/authorize?{query}");
+    (StatusCode::FOUND, [("location", location)]).into_response()
+}
+```
+
+`GET /authorize` reenvía la query string EXACTA (sin reparsear ni un solo parámetro — el `code_challenge` es un valor base64url sensible a cualquier re-encoding) como un 302 hacia `<issuer>/oauth/authorize`. `POST /token` hace lo mismo con el cuerpo de la petición hacia `<issuer>/oauth/token`, y devuelve la respuesta de Supabase sin tocarla. Ninguno de los dos custodia un secreto: Supabase acepta clientes públicos autenticados solo por PKCE (`token_endpoint_auth_methods_supported` incluye `"none"`), así que el proxy es puro reenvío de bytes — nunca ve ni necesita el `client_secret`.
+
+Esto significa que, para Claude, `tu-dominio` SÍ es el Authorization Server — solo que cada endpoint es una línea que reenvía a Supabase. El cliente nunca necesita enterarse.
+
 ## 10. Principios SOLID en juego
 
 * **S (Responsabilidad Única):** La validación criptográfica y la lógica de JWKS reside exclusivamente en [auth.rs](../crates/vercel-entry/src/auth.rs). El enrutador `mcp.rs` solo invoca la función y reacciona ante el éxito o el error 401.

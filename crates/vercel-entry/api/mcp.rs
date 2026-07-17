@@ -14,9 +14,9 @@
 use vercel_entry::auth;
 
 use axum::body::Bytes;
-use axum::http::{HeaderMap, Method, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use mcp_core::McpServer;
 use mcp_http::{route, HttpRequest};
@@ -92,6 +92,87 @@ async fn protected_resource_metadata_handler(headers: HeaderMap) -> Response {
         base_url(&headers)
     );
     (StatusCode::OK, [("content-type", "application/json")], body).into_response()
+}
+
+/// `GET /authorize`: proxy transparente hacia el `authorization_endpoint`
+/// real de Supabase.
+///
+/// Existe por una limitación observada en el modo "Client ID manual"
+/// de Claude para conectores MCP: en vez de seguir el
+/// `authorization_servers` que anunciamos en
+/// `/.well-known/oauth-protected-resource` (RFC 9728), asume que el
+/// propio servidor MCP aloja el Authorization Server en su mismo
+/// dominio. En vez de pelearnos con eso, se lo damos: este endpoint
+/// reenvía la query string tal cual al `authorization_endpoint` real,
+/// sin tocar ni un parámetro (ni siquiera el `code_challenge` —
+/// cualquier re-serialización podría cambiar el encoding y romper la
+/// verificación PKCE en el otro extremo).
+async fn authorize_proxy_handler(uri: Uri) -> Response {
+    let issuer = match std::env::var("OAUTH_ISSUER") {
+        Ok(v) => v,
+        Err(_) => return (StatusCode::NOT_FOUND, "OAUTH_ISSUER no configurado").into_response(),
+    };
+    let query = uri.query().unwrap_or("");
+    let location = format!("{issuer}/oauth/authorize?{query}");
+    (StatusCode::FOUND, [("location", location)]).into_response()
+}
+
+/// `POST /token`: reenvía tal cual al `token_endpoint` real de
+/// Supabase y devuelve su respuesta sin modificar.
+///
+/// No custodia ningún secreto de cliente: Supabase acepta clientes
+/// públicos autenticados solo por PKCE
+/// (`token_endpoint_auth_methods_supported` incluye `"none"`), así
+/// que este proxy es un simple reenvío de bytes, no un participante
+/// de la negociación.
+async fn token_proxy_handler(headers: HeaderMap, body: Bytes) -> Response {
+    let issuer = match std::env::var("OAUTH_ISSUER") {
+        Ok(v) => v,
+        Err(_) => return (StatusCode::NOT_FOUND, "OAUTH_ISSUER no configurado").into_response(),
+    };
+    let content_type = headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/x-www-form-urlencoded")
+        .to_string();
+
+    let client = reqwest::Client::new();
+    let upstream = match client
+        .post(format!("{issuer}/oauth/token"))
+        .header("content-type", content_type)
+        .body(body.to_vec())
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("no se pudo contactar con el Authorization Server: {e}"),
+            )
+                .into_response();
+        }
+    };
+
+    let status = StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let resp_content_type = upstream
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/json")
+        .to_string();
+    let bytes = match upstream.bytes().await {
+        Ok(b) => b,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("no se pudo leer la respuesta del Authorization Server: {e}"),
+            )
+                .into_response();
+        }
+    };
+
+    (status, [("content-type", resp_content_type)], bytes).into_response()
 }
 
 /// Handler único: da igual la ruta pública que el cliente use
@@ -184,14 +265,16 @@ async fn mcp_handler(method: Method, headers: HeaderMap, body: Bytes) -> Respons
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    // Única ruta explícita: la metadata de descubrimiento OAuth
-    // (RFC 9728), que un cliente MCP consulta ANTES de tener un
-    // token. Todo lo demás cae en el fallback de siempre.
+    // Rutas explícitas: la metadata de descubrimiento OAuth (RFC 9728)
+    // y el proxy transparente de `/authorize` + `/token` hacia
+    // Supabase. Todo lo demás cae en el fallback de siempre.
     let router = Router::new()
         .route(
             "/.well-known/oauth-protected-resource",
             get(protected_resource_metadata_handler),
         )
+        .route("/authorize", get(authorize_proxy_handler))
+        .route("/token", post(token_proxy_handler))
         .fallback(mcp_handler);
     let app = ServiceBuilder::new().layer(VercelLayer::new()).service(router);
     run(app).await
