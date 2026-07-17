@@ -120,8 +120,14 @@ pasa — aceptable en desarrollo, nunca en producción.
    conexión) directamente como variables de entorno del proyecto;
    el adaptador que las use todavía está por construir.
 
-`vercel.json` en la raíz reescribe `/mcp` → `/api/mcp` para que la
-URL pública sea la que promete el resto de esta documentación.
+[`crates/vercel-entry/vercel.json`](crates/vercel-entry/vercel.json)
+reescribe `/mcp` → `/api/mcp` (y el descubrimiento OAuth,
+`/.well-known/oauth-protected-resource` → `/api/mcp`) para que la URL
+pública sea la que promete el resto de esta documentación. Vive
+DENTRO de `crates/vercel-entry`, no en la raíz del repo: como el
+**Root Directory** del proyecto está fijado ahí (punto anterior),
+Vercel solo lee `vercel.json` relativo a esa carpeta — un
+`vercel.json` en la raíz del repo se ignora en silencio.
 
 ## Tutorial
 

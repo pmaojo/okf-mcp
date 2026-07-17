@@ -112,7 +112,7 @@ Validar el JWT no basta: un cliente MCP genérico (Claude, u otro agente) no sab
 
 El cliente sigue la cadena: `401` → lee `WWW-Authenticate` → descarga `/.well-known/oauth-protected-resource` → obtiene el `issuer` del Authorization Server → descubre allí `authorization_endpoint` y `token_endpoint` vía `<issuer>/.well-known/openid-configuration` (Supabase Auth expone descubrimiento OIDC estándar en esa ruta) → inicia el flujo `authorization_code` + PKCE.
 
-Nótese que `vercel.json` necesita un `rewrite` explícito para `/.well-known/oauth-protected-resource` → `/api/mcp`, igual que para `/mcp`: Vercel solo invoca la función Rust para las rutas que le indiques.
+Nótese que `vercel.json` necesita un `rewrite` explícito para `/.well-known/oauth-protected-resource` → `/api/mcp`, igual que para `/mcp`: Vercel solo invoca la función Rust para las rutas que le indiques. Y una trampa real que costó depurar: ese `vercel.json` tiene que vivir en el **Root Directory** configurado del proyecto (`crates/vercel-entry`, ver capítulo 11), no en la raíz del repositorio — uno puesto en la raíz del repo se ignora sin ningún aviso, y el síntoma es exactamente que `/mcp` y `/.well-known/...` responden 404 de la propia plataforma Vercel (no de nuestro código) mientras `/api/mcp` funciona perfectamente, porque ese sí sale del enrutado automático por convención de carpetas.
 
 ## 9. Frontera de producción: variables de entorno reales
 
