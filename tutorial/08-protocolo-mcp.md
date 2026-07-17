@@ -211,10 +211,15 @@ declarada del capítulo 3, §9).
    `Arc<Mutex<McpServer<...>>>` (solo `std::thread` y
    `std::sync::mpsc`). ¿Qué garantía del capítulo 7 te salva de
    corromper datos y POR QUÉ compila sin cambiar el almacén?
-3. **Abierto.** Implementa `resources/list` y `resources/read` de
-   MCP sirviendo `okf://<concept-id>` (el Markdown exacto). Las URIs
-   ya viajan en `memory_search` y `memory_resolve` esperándote.
-   Decide: ¿qué presupuesto aplica a `resources/read`?
+3. **Abierto (parcialmente resuelto).** El capítulo 15 termina
+   implementando `resources/list` y `resources/read` genéricos en
+   `mcp-core` — pero para servir recursos `ui://` (vistas MCP Apps),
+   no `okf://<concept-id>` (el Markdown exacto de un concepto). La
+   máquina genérica ya existe y es la misma para ambos casos; lo que
+   queda abierto es añadir un segundo tipo de `UiResource` (o un trait
+   separado) para exponer `okf://` también. Las URIs ya viajan en
+   `memory_search` y `memory_resolve` esperándote. Decide: ¿qué
+   presupuesto aplica a `resources/read`?
 
 ---
 

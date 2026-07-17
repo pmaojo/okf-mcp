@@ -44,6 +44,12 @@ repositorio. Cada capítulo sigue la misma plantilla:
 |---|----------|------|--------------------|
 | 14 | [Outbox transaccional y pgvector](14-outbox-sincronizacion.md) | outbox pattern, `SKIP LOCKED`, pgvector | S, D |
 
+## Hito 5 — MCP Apps (Visualizaciones interactivas, opcional)
+
+| # | Capítulo | Rust | SOLID protagonista |
+|---|----------|------|--------------------|
+| 15 | [MCP Apps: grafo e historial](15-mcp-apps-visualizaciones.md) (opcional — extensión negociable, no forma parte del núcleo) | métodos de trait con cuerpo por defecto, `&'static str` embebido | **O**, I, D |
+
 ## Cómo seguirlo
 
 ```bash

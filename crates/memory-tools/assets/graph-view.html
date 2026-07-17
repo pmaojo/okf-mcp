@@ -223,7 +223,7 @@
       node(v.concept_id, pos[v.concept_id].x, pos[v.concept_id].y, {
         r: 10,
         broken: !v.exists,
-        color: v.exists ? null : undefined,
+        color: v.exists ? "var(--neighbor)" : undefined,
         label: v.concept_id,
         tooltip: v.concept_id + (v.exists ? "" : " (enlace roto)"),
       });

@@ -188,9 +188,15 @@ sin haberlo conocido jamás.
 
 ## 10. Ejercicios
 
-1. **Guiado.** Añade `Visited::parent: Option<ConceptId>` para poder
+1. ~~**Guiado.** Añade `Visited::parent: Option<ConceptId>` para poder
    reconstruir el CAMINO desde el origen a cada nodo. ¿Dónde se
-   captura el padre con el mínimo de clones?
+   captura el padre con el mínimo de clones?~~ Implementado en el
+   capítulo 15 — resultó ser exactamente lo que hacía falta para que
+   una visualización de grafo pudiera dibujar aristas reales en vez de
+   solo profundidades. El padre se captura en el único punto donde se
+   ENCOLA un vecino nuevo (`queue.push_back((neighbor, depth + 1,
+   Some(id.clone())))`) — un clon más, del nodo que ya tenías en la
+   mano, no de toda la cadena.
 2. **Medio.** Implementa `NeighborSource` para un grafo INVERSO
    (¿quién enlaza A alice?) sin cambiar `graph-core`. ¿Qué índice
    necesita mantener el almacén para servirlo en O(1)?
