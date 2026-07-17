@@ -487,11 +487,16 @@ async fn mcp_handler(method: Method, headers: HeaderMap, body: Bytes) -> Respons
     let actor = match std::env::var("JWKS_URL") {
         Ok(jwks_url) => {
             // La especificación de autorización de MCP exige validar que
-            // el token fue emitido para ESTE recurso (claim `aud`). Con
+            // el token fue emitido para ESTE cliente OAuth. Supabase Auth
+            // firma todo JWT con `aud: "authenticated"` (es el rol de
+            // Postgres, no identifica al cliente) — lo que identifica al
+            // cliente es el claim `client_id`, que es lo que
+            // `validate_jwt` compara contra JWT_AUDIENCE (nombre de la env
+            // var sin cambiar para no tocar la config ya desplegada). Con
             // JWKS_URL activo ya no estamos en modo abierto de desarrollo,
             // así que exigimos también JWT_AUDIENCE: aceptar cualquier
-            // audiencia dejaría pasar tokens emitidos para otra app bajo
-            // el mismo Authorization Server (p. ej. otro cliente OAuth de
+            // cliente dejaría pasar tokens emitidos para otra app bajo el
+            // mismo Authorization Server (p. ej. otro cliente OAuth de
             // Supabase que no es este servidor MCP).
             let audience = match std::env::var("JWT_AUDIENCE") {
                 Ok(v) => v,

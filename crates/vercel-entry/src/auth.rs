@@ -151,10 +151,14 @@ async fn get_decoding_key(jwks_url: &str, kid: &str) -> Result<DecodingKey, Auth
     }
 }
 
+/// `expected_client_id`: si se pasa, restringe la aceptación a tokens
+/// cuyo claim `client_id` (quién los pidió) coincida exactamente —
+/// NO es una audiencia JWT (`aud`) en el sentido estándar: Supabase
+/// Auth siempre firma `aud: "authenticated"` para todos sus tokens.
 pub async fn validate_jwt(
     auth_header: Option<&str>,
     jwks_url: &str,
-    expected_audience: Option<&str>,
+    expected_client_id: Option<&str>,
 ) -> Result<memory_model::Principal, AuthError> {
     let header_val = auth_header.ok_or_else(|| AuthError("missing Authorization header".to_string()))?;
     if !header_val.starts_with("Bearer ") {
@@ -167,12 +171,16 @@ pub async fn validate_jwt(
 
     let decoding_key = get_decoding_key(jwks_url, &kid).await?;
 
+    // Supabase Auth firma TODOS sus JWTs con `aud: "authenticated"` —
+    // es el rol de Postgres al que se autentica PostgREST, no tiene
+    // nada que ver con qué cliente OAuth pidió el token (confirmado
+    // contra la guía "Token Security & RLS" de Supabase: la
+    // audiencia siempre es `authenticated`; el cliente que emitió el
+    // token va en un claim aparte, `client_id`). Validar `aud` contra
+    // el client_id esperado — como hacía esta función antes —
+    // rechaza SIEMPRE, porque esa comparación nunca puede coincidir.
     let mut validation = Validation::new(header.alg);
-    if let Some(aud) = expected_audience {
-        validation.set_audience(&[aud]);
-    } else {
-        validation.validate_aud = false; // Permitir cualquier audiencia si no se especifica
-    }
+    validation.validate_aud = false;
 
     let token_data = decode::<Claims>(token, &decoding_key, &validation)
         .map_err(|e| AuthError(format!("token validation failed: {e}")))?;
@@ -182,6 +190,17 @@ pub async fn validate_jwt(
         .client_id
         .or(claims.azp)
         .unwrap_or_else(|| "unknown".to_string());
+
+    // La restricción real de "solo tokens emitidos para ESTA app" —
+    // que exige la especificación de autorización de MCP — se hace
+    // aquí, comparando el claim `client_id` real del token.
+    if let Some(expected_client_id) = expected_client_id {
+        if client_id != expected_client_id {
+            return Err(AuthError(format!(
+                "token issued for a different OAuth client (got {client_id}, expected {expected_client_id})"
+            )));
+        }
+    }
 
     Ok(memory_model::Principal {
         subject: claims.sub,
