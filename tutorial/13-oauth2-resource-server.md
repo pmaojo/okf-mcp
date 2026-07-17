@@ -166,7 +166,9 @@ async fn authorize_proxy_handler(uri: Uri) -> Response {
 }
 ```
 
-`GET /authorize` reenvía la query string EXACTA (sin reparsear ni un solo parámetro — el `code_challenge` es un valor base64url sensible a cualquier re-encoding) como un 302 hacia `<issuer>/oauth/authorize`. `POST /token` hace lo mismo con el cuerpo de la petición hacia `<issuer>/oauth/token`, y devuelve la respuesta de Supabase sin tocarla. Ninguno de los dos custodia un secreto: Supabase acepta clientes públicos autenticados solo por PKCE (`token_endpoint_auth_methods_supported` incluye `"none"`), así que el proxy es puro reenvío de bytes — nunca ve ni necesita el `client_secret`.
+`GET /authorize` reenvía la query string EXACTA (sin reparsear ni un solo parámetro — el `code_challenge` es un valor base64url sensible a cualquier re-encoding) como un 302 hacia `<issuer>/oauth/authorize`. `POST /token` hace lo mismo con el cuerpo de la petición hacia `<issuer>/oauth/token`, y devuelve la respuesta de Supabase sin tocarla.
+
+Una corrección sobre la marcha, verificada contra el Supabase real: `token_endpoint_auth_methods_supported` anuncia `"none"` como opción (clientes públicos, solo PKCE), pero **la OAuth App concreta que registres puede estar configurada como confidencial** (`client_secret_basic`) — la primera prueba en vivo de este proxy falló exactamente así: `"client is registered for 'client_secret_basic' but 'none' was used"`. El proxy no genera ni conoce ningún secreto propio, pero si el cliente (Claude) manda uno vía la cabecera `Authorization` (Basic Auth), tiene que reenviarla igual que el resto — omitirla no es "no custodiar secretos", es simplemente perder una cabecera que el flujo necesita. `token_proxy_handler` reenvía `Authorization` si está presente, sin leerla ni transformarla.
 
 Esto significa que, para Claude, `tu-dominio` SÍ es el Authorization Server — solo que cada endpoint es una línea que reenvía a Supabase. El cliente nunca necesita enterarse.
 
