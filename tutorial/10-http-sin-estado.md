@@ -129,6 +129,14 @@ el presupuesto contra el número que dice la cabecera — nunca contra
 lo que realmente llegó. Si el cliente promete 4 GiB, la petición
 muere en la comparación, sin que se reserve ni un byte del cuerpo.
 
+## 3.5. Conceptos de Rust en este capítulo
+
+Este capítulo implementa un parser HTTP y nos enseña a manejar la asignación de memoria dinámica de forma segura:
+
+* **Asignaciones de vectores controladas (`vec![value; size]`):** La macro `vec![0u8; content_length]` crea un vector en el heap lleno de ceros con la longitud exacta indicada. En Rust, esto reserva memoria inmediatamente. Si realizáramos esta operación confiando a ciegas en el encabezado `Content-Length` del cliente sin comprobar antes contra nuestro `budget.max_request_bytes`, un cliente malicioso podría agotar toda la memoria RAM del servidor de forma instantánea enviando un número enorme.
+* **`read` frente a `read_exact` en Sockets:** Cuando leemos de un socket de red mediante el trait `Read`, el método `read()` estándar lee "lo que esté disponible en ese momento", lo que puede ser menos de lo solicitado (una lectura parcial). Si queremos rellenar un búfer de tamaño fijo completo, debemos usar `read_exact()`, el cual garantiza que se leerá la cantidad exacta de bytes solicitada o devolverá un error si el socket se cierra antes de tiempo.
+* **Métodos útiles de colecciones (`bytes.last()`):** El método `.last()` de un vector devuelve un `Option<&T>` que contiene una referencia al último elemento si el vector no está vacío. En el parser HTTP, lo usamos para comprobar si la línea leída termina con el retorno de carro de HTTP (`\r` en `\r\n`) de forma limpia haciendo: `if bytes.last() == Some(&b'\r') { bytes.pop(); }`.
+
 ## 4. Una versión deliberadamente rota
 
 ```rust

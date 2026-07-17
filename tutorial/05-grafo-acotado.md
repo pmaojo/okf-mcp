@@ -86,6 +86,16 @@ Detalles de Rust:
   base de conocimiento viva siempre hay enlaces a conceptos que aún
   no se escribieron; el agente los ve y puede decidir crearlos.
 
+## 3.5. Conceptos de Rust en este capítulo
+
+Este capítulo utiliza abstracciones de comportamiento y estructuras de datos optimizadas:
+
+* **Traits (Interfaces):** Un `trait` define un contrato de comportamiento. En `pub trait NeighborSource`, establecemos qué funciones debe tener cualquier objeto para que el BFS pueda consultarle los vecinos. La diferencia con otros lenguajes es que los traits se implementan de forma separada a la definición de la estructura mediante `impl Trait for MiEstructura`.
+* **Tipos asociados (`type Error`):** Dentro del trait `NeighborSource` declaramos `type Error;`. Esto es un tipo asociado: un hueco para que cada implementación decida su propio tipo de error. Por ejemplo, en los tests usamos `Infallible` (un tipo especial de Rust que indica que nunca habrá un error), mientras que en producción Postgres usará su propio tipo de error de base de datos. El algoritmo BFS es genérico y funciona para ambos sin cambiar una sola línea.
+* **`VecDeque` para colas eficientes:** `Vec` es muy rápido para añadir o quitar elementos del final, pero muy lento para quitar elementos del principio (ya que tiene que desplazar todos los demás elementos de la memoria). `VecDeque` es una cola de dos extremos implementada como un búfer circular. Permite hacer `pop_front()` (extraer el primer elemento) en tiempo constante $O(1)$, lo cual es ideal para algoritmos de búsqueda en anchura (BFS).
+* **Uso de `.clone()` y Propiedad:** Verás que clonamos los identificadores (`start.clone()`). Como `ConceptId` contiene un `String` (guardado en el heap), no implementa la copia automática. Si insertamos el identificador en `visited_set`, esa variable "pierde la propiedad" del identificador. Si queremos meterlo también en la cola de procesamiento `queue`, tenemos que duplicar el valor explícitamente con `.clone()`.
+* **Aritmética segura con `checked_add`:** Al sumar los bytes acumulados del grafo, no usamos `+`. Usamos `acumulado.checked_add(nuevo_tamaño)`. Si la suma desbordara el tamaño máximo de `usize`, devuelve `None` en lugar de dar la vuelta al contador de forma silenciosa, lo cual podría saltarse las restricciones de presupuesto.
+
 ## 4. Una versión deliberadamente rota
 
 ```rust

@@ -47,6 +47,14 @@ let token_data = decode::<Claims>(token, &decoding_key, &validation)?;
 
 Si el token es válido, se extrae el sujeto (`sub`) y el ID del cliente (`client_id`) para conformar el `Principal` del actor de forma dinámica para esta petición.
 
+## 3.5. Conceptos de Rust en este capítulo
+
+Este capítulo implementa criptografía y caché asíncrono avanzado empleando mecanismos de sincronización concurrentes:
+
+* **Bloqueos de Lectura/Escritura con `RwLock`:** A diferencia de un `Mutex` (que solo permite el acceso a un hilo a la vez, ya sea para leer o escribir), un `RwLock` (Read-Write Lock) permite que **múltiples hilos lean los datos de forma simultánea** (`read().await`) sin bloquearse entre sí. El bloqueo completo de exclusión mutua solo ocurre cuando un hilo necesita actualizar el caché (`write().await`), lo cual es ideal para las llaves JWKS que cambian muy raramente (ej. una vez al día) pero se leen en cada petición de usuario.
+* **Caché estático seguro con `OnceLock`:** Declarar variables globales o estáticas en Rust requiere garantías estrictas de seguridad de hilos (thread-safety). Combinamos `OnceLock` (para inicializar el caché global de llaves exactamente una vez) con `Arc<RwLock<Option<...>>>`. Esta "cebolla" de tipos garantiza que múltiples hilos del servidor web asíncrono puedan acceder a las llaves criptográficas de forma segura y sin carreras de datos.
+* **Conversión de Errores con `jsonwebtoken` y `?`:** Las funciones de la librería externa `jsonwebtoken` devuelven errores específicos de su propio ecosistema. Para integrarlos limpiamente con nuestro sistema de control de errores, usamos mapeos de error (ej. `.map_err(...)`) o implementamos conversiones de tipo (`impl From<jsonwebtoken::errors::Error> for AuthError`) que permiten que el operador `?` los convierta de forma automática y transparente en el tipo de error propio del servidor.
+
 ## 4. Una versión deliberadamente rota
 
 Imagina que para simplificar la inicialización del servidor, mantienes una única instancia global de `McpServer` protegida por un `Mutex` y sobreescribes el actor antes de ejecutar el enrutamiento:

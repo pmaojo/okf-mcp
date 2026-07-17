@@ -79,6 +79,14 @@ Y el detalle que conecta con el capítulo 1: cada enlace pasa por
 `ConceptId::parse`. Un documento con `[[../etc/passwd]]` **no se
 guarda** — el error viaja con el offset del byte exacto.
 
+## 3.5. Conceptos de Rust en este capítulo
+
+En este capítulo vemos cómo trabajar con texto de forma eficiente y estructurar estados simples:
+
+* **Iteradores y `split_inclusive`:** En Rust, procesar texto se hace a través de iteradores, que son flujos de datos perezosos (lazy) que no procesan nada hasta que se lo pides. El método `split_inclusive('\n')` divide el texto en líneas, pero a diferencia de la mayoría de lenguajes, deja el carácter `\n` al final de cada línea. Esto nos permite acumular de forma exacta las longitudes de las líneas procesadas para saber el offset (la posición en bytes) de cada carácter en el documento original.
+* **Uso de Offsets frente a Copias de Datos:** En lugar de guardar una copia del cuerpo del texto en `OkfDocument` (lo cual implicaría duplicar la memoria en el heap), guardamos `body_offset: usize` (un simple número). El cuerpo del documento se lee "bajo demanda" haciendo un rebanado o *slice* del texto original: `&raw[doc.body_offset..]`. Esto no solo ahorra memoria, sino que asegura que no haya divergencia de datos.
+* **`Option` como máquina de estados:** Al parsear el frontmatter, usamos `open_list: Option<String>` para recordar si la línea anterior abrió una lista (como `tags:`). Si es `Some(nombre_clave)`, sabemos que estamos leyendo elementos de esa lista; si es `None`, estamos leyendo claves normales. En Rust, `Option` sustituye la necesidad de variables "centinela" (como strings vacíos o valores nulos) de forma segura.
+
 ## 4. Una versión deliberadamente rota
 
 La tentación de "normalizar al guardar":

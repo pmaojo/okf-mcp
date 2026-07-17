@@ -13,6 +13,7 @@ repositorio. Cada capítulo sigue la misma plantilla:
 | # | Capítulo | Rust | SOLID protagonista |
 |---|----------|------|--------------------|
 | 0 | [Introducción](00-introduccion.md) | el mapa del proyecto | visión de conjunto |
+| 0.5 | [Fundamentos de Rust](00a-fundamentos-rust.md) | sintaxis y conceptos clave | preparación |
 | 1 | [Identificadores seguros](01-identificadores-seguros.md) | newtypes, validación por lista blanca | S |
 | 2 | [SHA-256: la identidad es el contenido](02-sha256-identidad.md) | wrapping arithmetic, estado incremental | S, cuándo NO abstraer (L) |
 | 3 | [JSON a mano](03-json-a-mano.md) | enums recursivos, lifetimes, límites | S, deuda D documentada |

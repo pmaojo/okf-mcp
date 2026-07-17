@@ -88,6 +88,16 @@ debemos escribir es la del mensaje SIN el padding. Capturamos
 `bit_len` antes de tocar nada. Este tipo de orden-importa es el pan
 de cada día de los formatos binarios.
 
+## 3.5. Conceptos de Rust en este capítulo
+
+En este capítulo hemos visto estructuras de bajo nivel bastante interesantes:
+
+* **Arrays (`[T; N]`) vs Slices (`&[T]`):** 
+  * En `Sha256` definimos `state: [u32; 8]` y `buffer: [u8; 64]`. Son arrays de tamaño fijo y viven en el **stack** (la pila de memoria local rápida). Su tamaño no puede cambiar.
+  * Sin embargo, `update` recibe `data: &[u8]`. Esto es un **slice** (rebanada), una vista de solo lectura que apunta a cualquier cantidad de bytes que estén guardados en otra parte (ya sea un array o un vector). Siempre se usan con `&` porque su tamaño no se conoce en tiempo de compilación.
+* **Aritmética de desbordamiento (`wrapping_add`):** Por seguridad, si una operación aritmética clásica como `a + b` supera el valor máximo del tipo (2³² - 1 para `u32`), Rust detiene el programa en seco (*panic*) en modo de depuración para evitar bugs de corrupción. Como el algoritmo SHA-256 requiere que los números den la vuelta al desbordar, usamos `wrapping_add`, que realiza aritmética modular sin provocar errores.
+* **Métodos integrados (`to_be_bytes`, `rotate_right`):** En Rust, los tipos numéricos primitivos tienen métodos muy útiles. Por ejemplo, `bit_len.to_be_bytes()` convierte un `u64` en un array de bytes `[u8; 8]` en formato Big Endian (el orden estándar de bytes en red). `rotate_right(7)` rota los bits del número a la derecha de forma segura e inmediata, compilando directamente a la instrucción nativa del procesador.
+
 ## 4. Una versión deliberadamente rota
 
 ```rust

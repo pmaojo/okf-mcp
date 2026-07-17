@@ -92,6 +92,16 @@ Detalles que merecen mirada:
   dentro de un año, el test de `a/../b` seguirá fallando. Defensa en
   profundidad contra tu yo del futuro.
 
+## 3.5. Conceptos de Rust en este capítulo
+
+Si vienes de otro lenguaje, aquí tienes los detalles de la sintaxis usada:
+
+* **Tuple Struct (`pub struct ConceptId(String);`):** Es una estructura de tupla que envuelve un solo tipo. Como el campo `String` no tiene nombre y es privado (no lleva la palabra `pub` dentro del paréntesis), nadie fuera de este módulo puede acceder al string interno ni crear un `ConceptId` directamente haciendo `ConceptId("invalido")`. Esto obliga a usar `ConceptId::parse()`.
+* **`Result<Self, ConceptIdError>` y la palabra clave `Self`:** `Result` es el enum estándar para errores. `Self` (con la primera S mayúscula) es simplemente un alias que apunta al tipo sobre el que estamos implementando el método (en este caso, `ConceptId`).
+* **`&str` vs `String`:** `parse` recibe `s: &str` (un préstamo de solo lectura de los caracteres) para validar sin gastar memoria. Si todo está correcto, hacemos `s.to_string()` que copia esos caracteres en un nuevo bloque de memoria en el heap (memoria dinámica) propiedad del nuevo `ConceptId`.
+* **Iterar con `s.bytes().enumerate()`:** `.bytes()` nos da los bytes ASCII de la cadena uno a uno, y `.enumerate()` añade un contador que empieza en cero. La sintaxis `for (offset, byte)` desestructura esa pareja automáticamente en cada iteración para saber en qué posición exacta estamos.
+* **La macro `matches!`:** Es una forma abreviada de preguntar si algo coincide con un patrón. Devuelve `true` o `false`. Por ejemplo, `matches!(resultado, Err(ConceptIdError::InvalidByte { .. }))` verifica si la operación devolvió un error de tipo `InvalidByte`.
+
 ## 4. Una versión deliberadamente rota
 
 Así se valida en miles de servicios del mundo real:

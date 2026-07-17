@@ -81,6 +81,14 @@ Como el driver de base de datos no siempre implementa tipos de vectores nativos,
 let vector_str = format!("[{}]", values.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
 ```
 
+## 3.5. Conceptos de Rust en este capítulo
+
+Este capítulo combina APIs de terceros y transformaciones de datos para la sincronización eventual:
+
+* **Codificación y formateo de texto (`join`):** Para comunicarnos con sistemas externos como GitHub o bases de datos vectoriales, a menudo debemos formatear tipos nativos a texto. La expresión `values.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")` es muy idiomática en Rust: recorre los elementos (los valores decimales del vector), los convierte a string, los acumula en un vector intermedio e inserta comas entre ellos para crear la representación textual `"[x,y,z]"` que `pgvector` espera.
+* **Bucles en segundo plano (Daemon loops):** Para que el worker procese eventos continuamente en segundo plano sin devorar el 100% de la CPU, usamos un bucle `loop` combinado con pausas asíncronas (`tokio::time::sleep()`). Esto suspende la ejecución del worker temporalmente, liberando la CPU hasta que transcurra el tiempo configurado o llegue una señal del sistema.
+* **Integración con crates externos (Base64):** Rust no incluye codificación base64 en su biblioteca estándar. En este capítulo se utiliza el crate `base64` para codificar los archivos en el formato que exige la API REST de GitHub. En el `Cargo.toml` del worker declaramos esta dependencia, la cual se descarga y compila de forma aislada, manteniendo las fronteras limpias.
+
 ## 4. Una versión deliberadamente rota
 
 Imagina realizar las llamadas de API dentro de la lógica del repositorio:

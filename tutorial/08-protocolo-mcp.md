@@ -87,6 +87,13 @@ loop {
 `read_bounded_line` merece su §4 propio, porque su versión ingenua
 es el bug de memoria más común de los servidores de línea.
 
+## 3.5. Conceptos de Rust en este capítulo
+
+Este capítulo une todas las piezas del workspace y define la frontera de E/S:
+
+* **Cláusulas `where` para restricciones de Genéricos:** Al declarar `impl<R> ToolHandler for MemoryTools<R> where R: MemoryRepository + NeighborSource<Error = Infallible>`, estamos usando genéricos restringidos. La palabra clave `where` permite especificar de forma muy legible los requisitos que debe cumplir el tipo genérico `R`: debe ser capaz de actuar como un almacén de memoria (`MemoryRepository`) y a la vez poder listar sus vecinos en el grafo (`NeighborSource`), garantizando además que no producirá errores al recorrer el grafo (`Error = Infallible`).
+* **Entrada/Salida Síncrona y Búferes:** Para la comunicación del protocolo por línea de comandos (stdio), usamos los tipos estándares de entrada y salida (`std::io::stdin()` y `std::io::stdout()`). En Rust, realizar E/S se modela mediante traits como `std::io::Read` y `std::io::Write`. Usar un lector con búfer (`BufReader`) es indispensable para evitar hacer llamadas al sistema operativo por cada byte leído, acumulando los caracteres en memoria intermedia de forma automática.
+
 ## 4. Una versión deliberadamente rota
 
 ```rust

@@ -89,6 +89,14 @@ El día que exista `supabase_adapter::SupabaseStore`, su test de
 integración será literalmente esta misma línea con el nombre
 cambiado — apuntando a una base de datos real de pruebas.
 
+## 3.5. Conceptos de Rust en este capítulo
+
+Este capítulo hace un uso avanzado de genéricos y clausuras (closures) para automatizar el diseño:
+
+* **Funciones Genéricas con restricciones de Trait (`run_all<R: MemoryRepository>`):** El uso de `<R: MemoryRepository>` le dice al compilador: *"esta función puede trabajar con cualquier tipo `R`, siempre y cuando implemente el trait `MemoryRepository`"*. Esto nos permite escribir tests abstractos que sirven para probar la base de datos en memoria o en la nube, garantizando que ambas se comportan idénticamente.
+* **Clausuras (Closures) y el trait `FnMut`:** Una clausura en Rust es una función anónima (o lambda) que puede capturar variables de su entorno. En `impl FnMut() -> R`, estamos pidiendo una función fábrica que puede ser ejecutada varias veces y que devuelve una instancia de `R`. Al llamarla antes de cada test como `mk()`, creamos un almacén vacío y limpio para cada caso de prueba, evitando que el estado de un test contamine a los demás.
+* **Desestructuración en Pattern Matching (`StoreError::Conflict(c)`):** En el `match err`, cuando el error coincide con la variante `StoreError::Conflict`, no solo validamos el tipo de error, sino que extraemos el objeto `c` de su interior (`Conflict`) para inspeccionar sus propiedades (como `c.expected` y `c.current`). Esto permite realizar aserciones detalladas de los datos del error directamente en los brazos del `match`.
+
 ## 4. Una versión deliberadamente rota
 
 La alternativa que todo el mundo prueba primero: escribir los tests

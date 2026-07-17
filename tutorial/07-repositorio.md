@@ -82,6 +82,14 @@ El otro detalle de Rust con miga es `Arc<str>` para los blobs:
   los bytes (dos). Y `str` sin capacidad extra dice en el tipo lo
   que el invariante dice en prosa: **esto no crecerá jamás**.
 
+## 3.5. Conceptos de Rust en este capítulo
+
+Este capítulo combina estructuras para compartir memoria con seguridad de concurrencia garantizada por el compilador:
+
+* **Punteros Inteligentes con `Arc<str>`:** En Rust, cuando quieres compartir la propiedad de un dato entre varios sitios sin copiarlo, usas `Arc` (Atomic Reference Counted). Es un contador de referencias seguro para hilos: clonar un `Arc` solo incrementa un número en memoria (muy rápido) en lugar de duplicar los datos. Además, usamos `Arc<str>` en lugar de `Arc<String>`. Un `str` es inmutable y tiene la longitud exacta, lo que ahorra una indirección (un puntero intermedio en el heap) y asegura que los datos no puedan cambiar por accidente.
+* **`&mut self` como Mutex Estático:** El método `commit` toma `&mut self`. La regla de préstamos de Rust asegura que si alguien tiene una referencia mutable (`&mut`), nadie más puede estar leyendo o escribiendo en esa estructura al mismo tiempo. En un entorno síncrono, esto significa que el propio compilador garantiza la atomicidad de la transacción (nadie puede interferir en medio del commit) sin necesidad de usar semáforos o bloqueos (*locks*) en tiempo de ejecución.
+* **El patrón Entry API:** Para gestionar el diccionario de blobs de forma eficiente, usamos el Entry API de Rust: `self.blobs.entry(hash).or_insert_with(...)`. Esto busca la clave en el mapa y, si no existe, ejecuta la función para crear el valor e insertarlo, todo en una sola operación optimizada que evita buscar dos veces en el mapa.
+
 ## 4. Una versión deliberadamente rota
 
 El almacén "sencillo" que cualquiera escribe primero:

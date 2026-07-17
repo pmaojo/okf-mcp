@@ -69,6 +69,14 @@ fn block_on<F: std::future::Future>(fut: F) -> F::Output {
 }
 ```
 
+## 3.5. Conceptos de Rust en este capítulo
+
+Este capítulo aborda la convivencia entre el código síncrono clásico y el asíncrono que requiere la red:
+
+* **El puente entre Síncrono y Asíncrono (`block_on`):** El trait `MemoryRepository` define métodos síncronos (sin `async`), pero las llamadas a bases de datos con `sqlx` son obligatoriamente asíncronas. Para poder llamarlas, usamos la función `block_on`. Si ya estamos dentro del entorno de ejecución de Tokio (ej. procesando una petición de `axum`), usamos `block_in_place` para indicarle a Tokio que este hilo se va a bloquear temporalmente y que debe mover otras tareas a hilos libres. Si no, creamos un runtime rápido en el hilo actual para ejecutar el futuro.
+* **Consultas e inyección con SQLx (`bind`):** La sintaxis `sqlx::query("SELECT ... WHERE concept_id = $1").bind(...)` es la forma segura de interactuar con la base de datos. El método `bind()` asocia los parámetros de forma tipada, lo que impide por completo los ataques de inyección SQL (SQL Injection), uno de los fallos de seguridad más comunes de la web.
+* **El modismo de re-préstamo mutable (`&mut *tx`):** En la llamada `.fetch_optional(&mut *tx)`, el operador `*` desreferencia la transacción `tx` (que es un wrapper mutable) y luego `&mut` vuelve a tomar un préstamo mutable del valor interno de la transacción. Este es un patrón muy común en Rust para poder pasar el control de la transacción a una consulta sin perder la propiedad de la variable `tx` para los siguientes pasos del commit.
+
 ## 4. Una versión deliberadamente rota
 
 Imagina implementar el CAS en la aplicación en lugar de la base de datos:

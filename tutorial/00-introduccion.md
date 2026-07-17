@@ -130,4 +130,4 @@ cargo test              # si esto pasa, tienes todo lo necesario
 cargo run -p mcp-stdio  # y esto es el servidor completo
 ```
 
-Siguiente: [Capítulo 1 — Identificadores que no pueden hacer daño](01-identificadores-seguros.md).
+Siguiente: [Capítulo 0.5 — Fundamentos de Rust: Lo mínimo para no perderse](00a-fundamentos-rust.md).

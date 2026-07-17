@@ -97,6 +97,15 @@ sustituye por un cliente HTTP hacia Postgres — y `mcp_handler` no
 cambia una línea, porque `MemoryTools<R>` ya era genérico sobre `R`
 desde el capítulo 8.
 
+## 3.5. Conceptos de Rust en este capítulo
+
+En este capítulo entramos de lleno en la programación de red asíncrona moderna de Rust:
+
+* **Programación Asíncrona (`async` y `.await`):** En Rust, una función marcada con `async fn` no devuelve su resultado inmediatamente: devuelve un `Future` (un objeto que promete terminar el trabajo en el futuro). Cuando llamamos a `.await` sobre un futuro, el hilo actual no se queda bloqueado esperando; en su lugar, cede el control al planificador de tareas (el runtime de `tokio` que usa `axum` por debajo) para que procese otras peticiones mientras tanto.
+* **`OnceLock` para inicializaciones únicas:** En un entorno serverless como Vercel, las variables estáticas se inicializan una sola vez y se reutilizan entre peticiones próximas (camino caliente). `OnceLock` es un tipo de la biblioteca estándar de Rust que garantiza que un valor estático se inicializará exactamente una vez de forma segura entre hilos, actuando como un caché global del servidor.
+* **Exclusión mutua con `Mutex` y `.lock()`:** Como la variable estática del servidor puede ser consultada por múltiples hilos concurrentes que procesan peticiones, envolvemos el servidor en un `Mutex` (Mutual Exclusion). Para usar el servidor, llamamos a `.lock()`, lo cual bloquea temporalmente otros accesos hasta que terminemos de procesar la petición.
+* **El método `.expect()`:** Al hacer `.lock().expect(...)`, le decimos al compilador que si el candado está corrupto (lo cual solo pasaría si un hilo anterior hiciera *panic* mientras sostenía el bloqueo), el programa debe abortar inmediatamente con el mensaje de error provisto. Es una forma de desenvolver un `Result` indicando el motivo de un fallo crítico imposible de recuperar.
+
 ## 4. Una versión deliberadamente rota
 
 ```rust

@@ -70,6 +70,14 @@ nada que perder y por tanto no hay conflicto que declarar. Es
 **idempotencia por identidad de contenido** — un reintento de red
 duplicado no crea una revisión duplicada.
 
+## 3.5. Conceptos de Rust en este capítulo
+
+Este capítulo destaca por su sencillez estructural gracias a dos conceptos de Rust:
+
+* **Funciones puras y determinismo:** En Rust, las funciones son inmutables por defecto. La función `decide` es una *función pura*: toma datos de entrada por valor y devuelve un resultado sin realizar lecturas de disco, red ni modificar variables externas. Esto hace que sea predecible al 100% y que testearla requiera solo una línea de código, sin necesidad de simulaciones (mocks) complejas.
+* **Pattern matching sobre tuplas de `Option`:** En lugar de anidar múltiples sentencias `if`, Rust permite agrupar varios valores en una tupla y compararlos a la vez: `match (head, expected)`. El compilador analiza de forma matemática todas las combinaciones posibles de `Some` y `None` y te obliga a manejarlas todas. Si olvidas alguna, el programa no compila.
+* **El trait `Copy`:** El tipo `ContentId` implementa `Copy` porque internamente solo guarda un array fijo de 32 bytes (`[u8; 32]`). En Rust, los tipos simples y pequeños que implementan `Copy` se copian de forma automática y barata (un simple copiado de bits en el stack) al pasarse como parámetros o asignarse a otras variables. Esto elimina la necesidad de llamar a `.clone()` y evita problemas con el borrow checker. Los tipos grandes que manejan memoria en el heap (como `String`) no pueden implementar `Copy`.
+
 ## 4. Una versión deliberadamente rota
 
 La versión que casi todo el mundo escribe primero:
