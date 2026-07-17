@@ -18,7 +18,7 @@ Y una segunda promesa de diseño:
 
 ## 3. La implementación mínima
 
-El módulo de autorización ([auth.rs](../crates/vercel-entry/api/auth.rs)) implementa la verificación criptográfica. Primero se extrae el token del encabezado `Authorization: Bearer <token>` de la petición HTTP.
+El módulo de autorización ([auth.rs](../crates/vercel-entry/src/auth.rs)) implementa la verificación criptográfica. Primero se extrae el token del encabezado `Authorization: Bearer <token>` de la petición HTTP.
 
 Una llave RSA se compone de dos elementos matemáticos: el módulo (`n`) y el exponente (`e`). `jsonwebtoken` nos permite fabricar una llave de decodificación a partir de estos parámetros obtenidos del JWKS:
 
@@ -63,7 +63,7 @@ La solución es **instanciar `McpServer` de forma efímera** para cada petición
 
 ## 6. Memoria y asignación
 
-Para evitar descargar las llaves públicas de firma en cada llamada (lo que añadiría cientos de milisegundos de latencia y saturaría de peticiones al servidor de autorización), implementamos un cache local con expiración en un `RwLock` asíncrono global ([auth.rs](../crates/vercel-entry/api/auth.rs)):
+Para evitar descargar las llaves públicas de firma en cada llamada (lo que añadiría cientos de milisegundos de latencia y saturaría de peticiones al servidor de autorización), implementamos un cache local con expiración en un `RwLock` asíncrono global ([auth.rs](../crates/vercel-entry/src/auth.rs)):
 
 ```rust
 struct JwksCache {
@@ -79,21 +79,64 @@ El bloqueo de lectura (`read().await`) permite que múltiples peticiones verifiq
 
 Para probar la lógica de autenticación en desarrollo y pruebas unitarias, el validador es desactivado de manera transparente si la variable de entorno `JWKS_URL` no está definida. En este escenario, el sistema asume que opera en modo abierto y devuelve un actor por defecto (`Principal::local_dev()`).
 
-## 8. Frontera de producción
+## 8. Descubrimiento OAuth: cómo sabe el cliente MCP a dónde autenticarse
 
-Para habilitar la autenticación OAuth 2.1 en el despliegue de Vercel:
-1. Define `JWKS_URL` en las variables de entorno de Vercel (p. ej. `https://<supabase-id>.supabase.co/auth/v1/keys`).
-2. Opcionalmente, configura `JWT_AUDIENCE` para validar que la audiencia del token corresponde a tu aplicación.
-3. El cliente MCP deberá incluir la cabecera `Authorization: Bearer <token_jwt>` en cada petición POST.
+Validar el JWT no basta: un cliente MCP genérico (Claude, u otro agente) no sabe de antemano contra qué Authorization Server debe autenticarse, ni tiene un token todavía en su primera petición. Dos piezas del protocolo resuelven esto, implementadas en [mcp.rs](../crates/vercel-entry/api/mcp.rs):
 
-## 9. Principios SOLID en juego
+1. **`GET /.well-known/oauth-protected-resource`** (RFC 9728): un endpoint público, sin autenticación, que responde con el recurso protegido y la lista de Authorization Servers de confianza:
 
-* **S (Responsabilidad Única):** La validación criptográfica y la lógica de JWKS reside exclusivamente en [auth.rs](../crates/vercel-entry/api/auth.rs). El enrutador `mcp.rs` solo invoca la función y reacciona ante el éxito o el error 401.
+   ```json
+   {"resource": "https://tu-dominio/mcp", "authorization_servers": ["https://<proyecto>.supabase.co/auth/v1"]}
+   ```
+
+2. **Cabecera `WWW-Authenticate` en la respuesta 401**: cuando `validate_jwt` falla (token ausente, expirado o inválido), la respuesta incluye:
+
+   ```
+   WWW-Authenticate: Bearer resource_metadata="https://tu-dominio/.well-known/oauth-protected-resource"
+   ```
+
+   Esta cabecera es la que le dice al cliente "aquí no puedes actuar sin token, y esta es la URL donde puedes averiguar cómo conseguir uno".
+
+El cliente sigue la cadena: `401` → lee `WWW-Authenticate` → descarga `/.well-known/oauth-protected-resource` → obtiene el `issuer` del Authorization Server → descubre allí `authorization_endpoint` y `token_endpoint` vía `<issuer>/.well-known/openid-configuration` (Supabase Auth expone descubrimiento OIDC estándar en esa ruta) → inicia el flujo `authorization_code` + PKCE.
+
+Nótese que `vercel.json` necesita un `rewrite` explícito para `/.well-known/oauth-protected-resource` → `/api/mcp`, igual que para `/mcp`: Vercel solo invoca la función Rust para las rutas que le indiques.
+
+## 9. Frontera de producción: variables de entorno reales
+
+Para este despliegue concreto (Supabase como Authorization Server), las variables de entorno de Vercel son:
+
+| Variable | Valor | Para qué |
+|---|---|---|
+| `JWKS_URL` | `https://<proyecto>.supabase.co/auth/v1/.well-known/jwks.json` | Llaves públicas para verificar la firma del JWT (`auth.rs`) |
+| `OAUTH_ISSUER` | `https://<proyecto>.supabase.co/auth/v1` | Se anuncia en `/.well-known/oauth-protected-resource` como `authorization_servers` |
+| `JWT_AUDIENCE` | el `client_id` de la OAuth App registrada en Supabase (opcional pero recomendado) | Restringe qué tokens acepta el servidor (`aud` claim) |
+
+Puedes confirmar que tu proyecto de Supabase emite JWTs firmados de forma asimétrica (necesario para JWKS — un secreto compartido HS256 no se puede publicar como llave pública) consultando:
+
+```bash
+curl https://<proyecto>.supabase.co/auth/v1/.well-known/jwks.json
+curl https://<proyecto>.supabase.co/auth/v1/.well-known/openid-configuration
+```
+
+Si `jwks_uri` devuelve una lista de llaves (`"alg":"ES256"` o `"RS256"`), el proyecto ya emite tokens con firma asimétrica y esta pieza funciona sin cambios adicionales en Supabase.
+
+### La pieza manual: Supabase Auth no soporta Dynamic Client Registration
+
+El MCP estándar espera que el cliente (Claude) pueda auto-registrarse contra el Authorization Server (RFC 7591, `registration_endpoint`) sin intervención humana. **Supabase Auth, a fecha de este tutorial, no expone un `registration_endpoint` público** — su discovery OIDC no lo anuncia y el endpoint `/auth/v1/oauth/register` responde `404` sin credenciales de administrador.
+
+Esto significa que, para que Claude complete el flujo, primero debes registrar manualmente una "OAuth App" en el dashboard de Supabase (Authentication → OAuth Apps / third-party auth), obteniendo un `client_id` (y `client_secret` si aplica) con el `redirect_uri` exacto que Claude te muestre al añadir el conector. Ese `client_id` es el valor que corresponde a `JWT_AUDIENCE` arriba.
+
+3. El cliente MCP deberá incluir la cabecera `Authorization: Bearer <token_jwt>` en cada petición POST — esto ya funcionaba antes de esta sección; lo nuevo es cómo el cliente *consigue* ese token sin intervención manual del protocolo (salvo el registro de la OAuth App, que sí es manual).
+
+## 10. Principios SOLID en juego
+
+* **S (Responsabilidad Única):** La validación criptográfica y la lógica de JWKS reside exclusivamente en [auth.rs](../crates/vercel-entry/src/auth.rs). El enrutador `mcp.rs` solo invoca la función y reacciona ante el éxito o el error 401.
 * **D (Inversión de Dependencias):** El core del protocolo (`mcp-core`) y el enrutador HTTP (`mcp-http`) siguen siendo 100% agnósticos de la autenticación. No conocen JWT ni JWKS; simplemente propagan un objeto `Principal` tipado.
 * **O (Abierto-Cerrado):** Podemos cambiar el proveedor de identidad de Supabase a Auth0 simplemente actualizando la URL de JWKS en la configuración del entorno, sin tocar una sola línea de código en el repositorio.
 
-## 10. Ejercicios
+## 11. Ejercicios
 
 1. **Guiado.** ¿Qué problemas de seguridad surgen si un token JWT no especifica fecha de expiración (`exp`)? ¿Cómo reacciona `jsonwebtoken` por defecto?
 2. **Medio.** Modifica `auth.rs` para permitir múltiples audiencias válidas (p. ej., si tu servidor MCP es compartido por una aplicación web y una extensión de navegador).
 3. **Abierto.** Diseña una estrategia para rotar las llaves de firma del JWKS en caliente sin causar errores temporales en peticiones concurrentes de usuarios legítimos.
+4. **Abierto.** La sección 9 documenta que Supabase Auth no soporta Dynamic Client Registration (RFC 7591). Investiga qué otros Authorization Servers (Auth0, WorkOS, Ory Hydra) sí lo soportan de forma nativa, y qué tendría que cambiar en `mcp.rs`/`auth.rs` si migraras el `issuer` a uno de ellos — ¿alguna línea de código lo requeriría, o solo variables de entorno?

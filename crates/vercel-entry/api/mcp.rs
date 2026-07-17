@@ -16,6 +16,7 @@ use vercel_entry::auth;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
+use axum::routing::get;
 use axum::Router;
 use mcp_core::McpServer;
 use mcp_http::{route, HttpRequest};
@@ -30,6 +31,12 @@ use vercel_runtime::{run, Error};
 static DB_POOL: OnceLock<sqlx::PgPool> = OnceLock::new();
 
 /// Obtiene o inicializa el pool de conexiones de base de datos de manera thread-safe.
+///
+/// En el primer cold start de cada instancia serverless, aplica
+/// `schema.sql` contra `POSTGRES_URL` (mismo patrón que
+/// `outbox-worker`, ver `crates/outbox-worker/src/main.rs`). Es
+/// idempotente (`CREATE TABLE IF NOT EXISTS`), así que repetirlo en
+/// cada deploy/instancia nueva es seguro.
 async fn get_db_pool(db_url: &str) -> sqlx::PgPool {
     if let Some(pool) = DB_POOL.get() {
         return pool.clone();
@@ -37,6 +44,10 @@ async fn get_db_pool(db_url: &str) -> sqlx::PgPool {
     let pool = sqlx::PgPool::connect(db_url)
         .await
         .expect("Failed to connect to Supabase PostgreSQL database");
+    sqlx::query(include_str!("../../supabase-store/schema.sql"))
+        .execute(&pool)
+        .await
+        .expect("Failed to apply database schema");
     let _ = DB_POOL.set(pool.clone());
     pool
 }
@@ -51,6 +62,36 @@ fn allowed_origins() -> Vec<String> {
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+/// Reconstruye el origen público (esquema + host) a partir de las
+/// cabeceras de la petición, para anunciar URLs absolutas en la
+/// metadata de descubrimiento OAuth (RFC 9728) sin hardcodear el
+/// dominio de despliegue (útil también en preview deployments).
+fn base_url(headers: &HeaderMap) -> String {
+    let host = headers.get("host").and_then(|v| v.to_str().ok()).unwrap_or("localhost");
+    let scheme = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("https");
+    format!("{scheme}://{host}")
+}
+
+/// `GET /.well-known/oauth-protected-resource` (RFC 9728): le dice a
+/// un cliente MCP OAuth-aware (p. ej. Claude) contra qué
+/// Authorization Server debe autenticarse antes de llamar a `/mcp`.
+/// El AS mismo (aquí, Supabase Auth) expone su propio descubrimiento
+/// OIDC en `<issuer>/.well-known/openid-configuration`.
+async fn protected_resource_metadata_handler(headers: HeaderMap) -> Response {
+    let issuer = match std::env::var("OAUTH_ISSUER") {
+        Ok(v) => v,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let body = format!(
+        r#"{{"resource":"{}/mcp","authorization_servers":["{issuer}"]}}"#,
+        base_url(&headers)
+    );
+    (StatusCode::OK, [("content-type", "application/json")], body).into_response()
 }
 
 /// Handler único: da igual la ruta pública que el cliente use
@@ -82,9 +123,23 @@ async fn mcp_handler(method: Method, headers: HeaderMap, body: Bytes) -> Respons
             match auth::validate_jwt(auth_header, &jwks_url, audience.as_deref()).await {
                 Ok(principal) => principal,
                 Err(err) => {
+                    // Cabecera exigida por la especificación de autorización
+                    // de MCP: le dice al cliente dónde encontrar la metadata
+                    // del recurso protegido (RFC 9728) para iniciar el flujo
+                    // OAuth en lugar de fallar en silencio.
+                    let metadata_url = format!(
+                        "{}/.well-known/oauth-protected-resource",
+                        base_url(&headers)
+                    );
                     return (
                         StatusCode::UNAUTHORIZED,
-                        [("content-type", "text/plain")],
+                        [
+                            ("content-type", "text/plain".to_string()),
+                            (
+                                "www-authenticate",
+                                format!(r#"Bearer resource_metadata="{metadata_url}""#),
+                            ),
+                        ],
                         format!("Unauthorized: {}", err.0),
                     )
                         .into_response();
@@ -112,8 +167,15 @@ async fn mcp_handler(method: Method, headers: HeaderMap, body: Bytes) -> Respons
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    // Sin rutas registradas: TODA petición cae en el fallback.
-    let router = Router::new().fallback(mcp_handler);
+    // Única ruta explícita: la metadata de descubrimiento OAuth
+    // (RFC 9728), que un cliente MCP consulta ANTES de tener un
+    // token. Todo lo demás cae en el fallback de siempre.
+    let router = Router::new()
+        .route(
+            "/.well-known/oauth-protected-resource",
+            get(protected_resource_metadata_handler),
+        )
+        .fallback(mcp_handler);
     let app = ServiceBuilder::new().layer(VercelLayer::new()).service(router);
     run(app).await
 }

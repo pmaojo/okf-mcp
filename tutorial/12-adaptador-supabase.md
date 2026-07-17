@@ -123,6 +123,8 @@ Para conectar Supabase con Vercel:
 2. Asegúrate de que apunta al pooler de Supabase en modo de transacción (puerto 6543) en entornos con autoescala.
 3. El adaptador serverless traducirá las llamadas HTTP entrantes al repositorio Supabase de forma completamente transparente.
 
+No hace falta ejecutar `schema.sql` a mano contra la base de producción: como todas sus sentencias son `CREATE TABLE IF NOT EXISTS` (idempotentes), tanto `vercel-entry` ([mcp.rs](../crates/vercel-entry/api/mcp.rs)) como `outbox-worker` ([main.rs](../crates/outbox-worker/src/main.rs)) lo aplican vía `sqlx::query(include_str!(...))` en su primer arranque (cold start). Repetirlo en cada deploy o instancia nueva es seguro por construcción; `schema.sql` es la única fuente de verdad del esquema — si cambias una tabla, edítalo ahí y ambos binarios recogen el cambio en su próximo arranque.
+
 ## 9. Principios SOLID en juego
 
 * **L (Sustituibilidad de Liskov) en su máxima expresión:** `SupabaseStore` y `InMemoryStore` son completamente intercambiables para las herramientas de memoria (`MemoryTools`). Ambos se miden con la misma barra síncrona del trait `MemoryRepository` y pasan el mismo conjunto de leyes operacionales.
