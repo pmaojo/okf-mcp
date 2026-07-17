@@ -64,8 +64,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let pool = PgPool::connect(&db_url).await?;
 
-    // Ejecutar migraciones o verificar la existencia de las tablas
-    sqlx::query(include_str!("../../../crates/supabase-store/schema.sql"))
+    // Ejecutar migraciones o verificar la existencia de las tablas.
+    // `schema.sql` trae varias sentencias separadas por `;`; `sqlx::query`
+    // usa el protocolo extendido (prepared statement) y Postgres rechaza
+    // varios comandos en una sola consulta preparada. `raw_sql` usa el
+    // protocolo simple, que sí soporta scripts multi-sentencia (mismo
+    // fallo y mismo fix que en vercel-entry/api/mcp.rs).
+    sqlx::raw_sql(include_str!("../../../crates/supabase-store/schema.sql"))
         .execute(&pool)
         .await?;
 

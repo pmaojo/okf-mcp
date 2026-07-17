@@ -23,6 +23,8 @@ use mcp_http::{route, HttpRequest};
 use memory_tools::MemoryTools;
 use memory_model::{Budget, Principal};
 use supabase_store::SupabaseStore;
+use sqlx::postgres::PgConnectOptions;
+use std::str::FromStr;
 use std::sync::OnceLock;
 use tower::ServiceBuilder;
 use tower_http::cors::{AllowHeaders, AllowOrigin, CorsLayer};
@@ -42,7 +44,23 @@ async fn get_db_pool(db_url: &str) -> sqlx::PgPool {
     if let Some(pool) = DB_POOL.get() {
         return pool.clone();
     }
-    let pool = sqlx::PgPool::connect(db_url)
+    // `POSTGRES_URL` apunta al pooler de Supabase en modo transacción
+    // (puerto 6543, necesario en serverless con autoescala — ver
+    // capítulo 12 del tutorial). Ese pooler NO garantiza que la misma
+    // conexión física atienda siempre a la misma sesión lógica de
+    // sqlx: puede entregar la conexión a otra invocación entre
+    // sentencias. sqlx cachea prepared statements con nombres
+    // autogenerados (`sqlx_s_N`) asumiendo una conexión estable, así
+    // que dos invocaciones distintas pueden chocar sobre el mismo
+    // nombre en la misma conexión física reciclada por el pooler
+    // ("prepared statement \"sqlx_s_N\" already exists"). Desactivar
+    // el caché de prepared statements evita la colisión al precio de
+    // volver a preparar cada consulta — aceptable aquí porque cada
+    // invocación serverless ya es efímera.
+    let connect_options = PgConnectOptions::from_str(db_url)
+        .expect("Invalid POSTGRES_URL")
+        .statement_cache_capacity(0);
+    let pool = sqlx::PgPool::connect_with(connect_options)
         .await
         .expect("Failed to connect to Supabase PostgreSQL database");
     // `schema.sql` trae varias sentencias separadas por `;`. `sqlx::query`
