@@ -2520,6 +2520,7 @@ dependencies = [
  "supabase-store",
  "tokio",
  "tower",
+ "tower-http",
  "vercel_runtime",
 ]
 

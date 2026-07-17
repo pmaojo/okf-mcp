@@ -18,6 +18,7 @@ tokio = { version = "1", features = ["full"] }
 vercel_runtime = { version = "2.4", features = ["axum"] }
 axum = { version = "0.8" }
 tower = { version = "0.5" }
+tower-http = { version = "0.6", features = ["cors"] }
 memory-model = { path = "../memory-model" }
 memory-store = { path = "../memory-store" }
 mcp-core = { path = "../mcp-core" }

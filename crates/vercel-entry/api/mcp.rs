@@ -14,7 +14,7 @@
 use vercel_entry::auth;
 
 use axum::body::Bytes;
-use axum::http::{HeaderMap, Method, StatusCode, Uri};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
@@ -25,6 +25,7 @@ use memory_model::{Budget, Principal};
 use supabase_store::SupabaseStore;
 use std::sync::OnceLock;
 use tower::ServiceBuilder;
+use tower_http::cors::{AllowHeaders, AllowOrigin, CorsLayer};
 use vercel_runtime::axum::VercelLayer;
 use vercel_runtime::{run, Error};
 
@@ -62,6 +63,28 @@ fn allowed_origins() -> Vec<String> {
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+/// Cabeceras CORS (incluye la respuesta al preflight `OPTIONS`), sin
+/// las cuales un cliente MCP que llame desde el navegador (Claude.ai
+/// hace `fetch` directo al servidor MCP, no vía su backend) nunca
+/// llega a ver la respuesta: el navegador corta la petición en el
+/// preflight antes de que exista Authorization que validar. Reutiliza
+/// la misma lista de `ALLOWED_ORIGINS` que ya usa `mcp_http::route`
+/// para la comprobación anti DNS-rebinding — misma semántica: lista
+/// vacía es permisivo, lista no vacía restringe.
+fn cors_layer() -> CorsLayer {
+    let origins = allowed_origins();
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::predicate(move |origin: &HeaderValue, _| {
+            origins.is_empty()
+                || origin
+                    .to_str()
+                    .map(|o| origins.iter().any(|allowed| allowed == o))
+                    .unwrap_or(false)
+        }))
+        .allow_methods([Method::GET, Method::POST, Method::DELETE])
+        .allow_headers(AllowHeaders::mirror_request())
 }
 
 /// Reconstruye el origen público (esquema + host) a partir de las
@@ -567,7 +590,8 @@ async fn main() -> Result<(), Error> {
         .route("/authorize", get(authorize_proxy_handler))
         .route("/token", post(token_proxy_handler))
         .route("/oauth/consent", get(consent_page_handler))
-        .fallback(mcp_handler);
+        .fallback(mcp_handler)
+        .layer(cors_layer());
     let app = ServiceBuilder::new().layer(VercelLayer::new()).service(router);
     run(app).await
 }

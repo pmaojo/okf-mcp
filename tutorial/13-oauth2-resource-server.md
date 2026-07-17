@@ -32,20 +32,25 @@ fn decoding_key_from_jwk(jwk: &Jwk) -> Result<DecodingKey, AuthError> {
 }
 ```
 
-Una vez obtenida la llave de decodificación correspondiente al identificador `kid` (Key ID) que viaja en el encabezado del JWT, validamos los claims:
+Una vez obtenida la llave de decodificación correspondiente al identificador `kid` (Key ID) que viaja en el encabezado del JWT, validamos los claims. Dado que Supabase Auth firma **todos** sus JWTs con la audiencia fija `aud: "authenticated"` (el rol de base de datos de Postgres), la validación de audiencia estándar de JWT fallaría si la comparamos directamente con nuestro `client_id`. Por ello, desactivamos la comprobación de `aud` en la validación estándar y comparamos manualmente el claim `client_id` extraído:
 
 ```rust
 let mut validation = Validation::new(header.alg);
-if let Some(aud) = expected_audience {
-    validation.set_audience(&[aud]);
-} else {
-    validation.validate_aud = false;
-}
+validation.validate_aud = false; // Desactivado: aud es siempre "authenticated"
 
 let token_data = decode::<Claims>(token, &decoding_key, &validation)?;
+let client_id = token_data.claims.client_id
+    .or(token_data.claims.azp)
+    .unwrap_or_else(|| "unknown".to_string());
+
+if let Some(expected_client_id) = expected_client_id {
+    if client_id != expected_client_id {
+        return Err(AuthError("token issued for a different OAuth client".to_string()));
+    }
+}
 ```
 
-Si el token es válido, se extrae el sujeto (`sub`) y el ID del cliente (`client_id`) para conformar el `Principal` del actor de forma dinámica para esta petición.
+Si el token es válido y pertenece al cliente esperado, conformamos el `Principal` del actor de forma dinámica para esta petición.
 
 ## 3.5. Conceptos de Rust en este capítulo
 
@@ -122,9 +127,10 @@ Para este despliegue concreto (Supabase como Authorization Server), las variable
 |---|---|---|
 | `JWKS_URL` | `https://<proyecto>.supabase.co/auth/v1/.well-known/jwks.json` | Llaves públicas para verificar la firma del JWT (`auth.rs`) |
 | `OAUTH_ISSUER` | `https://<proyecto>.supabase.co/auth/v1` | Se anuncia en `/.well-known/oauth-protected-resource` como `authorization_servers` |
-| `JWT_AUDIENCE` | el `client_id` de la OAuth App registrada en Supabase (**obligatoria si `JWKS_URL` está seteada**) | Restringe qué tokens acepta el servidor (`aud` claim) |
+| `JWT_AUDIENCE` | el `client_id` de la OAuth App registrada en Supabase (**obligatoria si `JWKS_URL` está seteada**) | Restringe qué tokens acepta el servidor (comparando contra el claim `client_id`) |
+| `SUPABASE_ANON_KEY` | la anon key pública de tu proyecto de Supabase | Requerida por la página de consentimiento para comunicarse con GoTrue |
 
-`JWT_AUDIENCE` no es opcional en producción, aunque el código en algún punto lo trató así: validar la audiencia no es un extra, es un requisito de la especificación de autorización de MCP — el servidor "debe validar que el token fue emitido específicamente para él como audiencia esperada". Sin ese chequeo, cualquier token válido emitido por el mismo Authorization Server para OTRA aplicación (otro cliente OAuth bajo el mismo proyecto Supabase) sería aceptado igualmente. Por eso `mcp.rs` ahora devuelve `500` si `JWKS_URL` está presente pero `JWT_AUDIENCE` no — falla cerrado en vez de aceptar tokens sin verificar para quién fueron emitidos.
+`JWT_AUDIENCE` no es opcional en producción. Validar qué aplicación pidió el token es un requisito de la especificación de autorización de MCP — el servidor "debe validar que el token fue emitido específicamente para él como audiencia esperada". En Supabase Auth, todos los tokens llevan la audiencia estándar fija `aud: "authenticated"`, por lo que no podemos usar el validador automático de audiencia de JWT. En su lugar, desactivamos ese validador y comprobamos manualmente que el claim `client_id` (o en su defecto `azp`) coincida exactamente con la variable de entorno `JWT_AUDIENCE`. Sin este chequeo manual, cualquier token válido emitido por el mismo Authorization Server para OTRA aplicación bajo el mismo proyecto Supabase sería aceptado igualmente. Por eso `mcp.rs` devuelve `500` si `JWKS_URL` está presente pero `JWT_AUDIENCE` no — falla cerrado en vez de aceptar tokens sin verificar quién los pidió.
 
 Puedes confirmar que tu proyecto de Supabase emite JWTs firmados de forma asimétrica (necesario para JWKS — un secreto compartido HS256 no se puede publicar como llave pública) consultando:
 
@@ -171,6 +177,23 @@ async fn authorize_proxy_handler(uri: Uri) -> Response {
 Una corrección sobre la marcha, verificada contra el Supabase real: `token_endpoint_auth_methods_supported` anuncia `"none"` como opción (clientes públicos, solo PKCE), pero **la OAuth App concreta que registres puede estar configurada como confidencial** (`client_secret_basic`) — la primera prueba en vivo de este proxy falló exactamente así: `"client is registered for 'client_secret_basic' but 'none' was used"`. El proxy no genera ni conoce ningún secreto propio, pero si el cliente (Claude) manda uno vía la cabecera `Authorization` (Basic Auth), tiene que reenviarla igual que el resto — omitirla no es "no custodiar secretos", es simplemente perder una cabecera que el flujo necesita. `token_proxy_handler` reenvía `Authorization` si está presente, sin leerla ni transformarla.
 
 Esto significa que, para Claude, `tu-dominio` SÍ es el Authorization Server — solo que cada endpoint es una línea que reenvía a Supabase. El cliente nunca necesita enterarse.
+
+### El último reto: la pantalla de consentimiento personalizada
+
+Con el proxy transparente funcionando, Claude redirigirá la sesión del usuario a `https://tu-dominio/authorize`, que a su vez lo reenvía a la página de login de Supabase Auth. Sin embargo, hay un último obstáculo en el estándar de servidores OAuth personalizados: **la pantalla de consentimiento**.
+
+Supabase Auth espera que, tras iniciar sesión, el usuario acepte explícitamente conceder permisos a la aplicación externa (en este caso, el cliente de Claude). Pero **Supabase no aloja esta pantalla por defecto**. En su lugar, exige que el desarrollador proporcione una "Consent URI" (o *Authorization Path* en la configuración del OAuth Server en Supabase) que apunte a una interfaz web creada por nosotros.
+
+Para evitar tener que desplegar y mantener un frontend separado para un solo archivo HTML, [mcp.rs](../crates/vercel-entry/api/mcp.rs) aloja e implementa la pantalla de consentimiento directamente en la ruta **`GET /oauth/consent`**:
+
+1. **Servicio del HTML estático:** Rust lee una plantilla HTML/JS empotrada en el binario (`CONSENT_PAGE_TEMPLATE`) y reemplaza dinámicamente marcadores como `__OAUTH_ISSUER_JSON__` y `__SUPABASE_ANON_KEY_JSON__` con las variables de entorno reales.
+2. **Lógica de consentimiento en el cliente (JavaScript):**
+   - El script de la página comprueba si hay una sesión activa de Supabase Auth en el navegador del usuario. Si no la hay, muestra un formulario de login clásico que hace una llamada directa a `POST /token?grant_type=password` de GoTrue (Supabase Auth).
+   - Una vez autenticado, solicita los detalles de la autorización pendiente llamando a `GET /oauth/authorizations/{id}` utilizando el parámetro `authorization_id` que viaja en la URL. Esto permite renderizar en pantalla el nombre del cliente (ej. *"Claude.ai"*) y la lista de permisos (*scopes*) solicitados.
+   - Cuando el usuario hace clic en *"Permitir"* o *"Denegar"*, el JS envía la decisión del usuario mediante una petición `POST /oauth/authorizations/{id}/consent` con `{ "action": "approve" | "deny" }`.
+   - Si la acción fue aprobada, Supabase Auth responde con una `redirect_url` que contiene el código de autorización temporal. El script de la página redirige al usuario a esa URL, completando el flujo OAuth de regreso a Claude de forma transparente.
+
+Esta solución combina la potencia de GoTrue (el motor OAuth 2.1 e identidad de Supabase) con un hosting estático ultra-eficiente en nuestra propia función de Vercel, manteniendo un esquema de despliegue de **un solo binario serverless**.
 
 ## 10. Principios SOLID en juego
 
