@@ -16,6 +16,10 @@
     {
       "source": "/token",
       "destination": "/api/mcp"
+    },
+    {
+      "source": "/oauth/consent",
+      "destination": "/api/mcp"
     }
   ]
 }
