@@ -2515,6 +2515,7 @@ dependencies = [
  "memory-tools",
  "reqwest",
  "serde",
+ "serde_json",
  "sqlx",
  "supabase-store",
  "tokio",

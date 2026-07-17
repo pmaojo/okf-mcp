@@ -25,11 +25,24 @@ struct Claims {
     azp: Option<String>,
 }
 
+/// Una llave JWK puede ser RSA (`n`, `e`) o EC (`crv`, `x`, `y`) — el
+/// tipo lo indica `kty`. Supabase Auth firma con ES256 (EC P-256)
+/// por defecto, así que ambas formas deben soportarse: un proveedor
+/// distinto (o una futura rotación de Supabase) podría usar RSA.
 #[derive(Debug, Deserialize, Clone)]
 struct Jwk {
     kid: String,
-    n: String,
-    e: String,
+    kty: String,
+    #[serde(default)]
+    n: Option<String>,
+    #[serde(default)]
+    e: Option<String>,
+    #[serde(default)]
+    crv: Option<String>,
+    #[serde(default)]
+    x: Option<String>,
+    #[serde(default)]
+    y: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -64,6 +77,42 @@ async fn fetch_jwks(jwks_url: &str) -> Result<Vec<Jwk>, AuthError> {
     Ok(jwks.keys)
 }
 
+/// Fabrica la llave de decodificación según el tipo de llave (`kty`).
+/// Supabase Auth usa EC (P-256 / ES256); RSA se soporta también por
+/// si el proyecto o un proveedor futuro firma con RS256.
+fn decoding_key_from_jwk(jwk: &Jwk) -> Result<DecodingKey, AuthError> {
+    match jwk.kty.as_str() {
+        "RSA" => {
+            let (n, e) = jwk
+                .n
+                .as_deref()
+                .zip(jwk.e.as_deref())
+                .ok_or_else(|| AuthError("RSA JWK missing n/e components".to_string()))?;
+            DecodingKey::from_rsa_components(n, e)
+                .map_err(|e| AuthError(format!("invalid RSA key components: {e}")))
+        }
+        "EC" => {
+            // `jsonwebtoken::DecodingKey::from_ec_components` solo entiende
+            // P-256 (ES256); rechazamos otras curvas explícitamente en vez
+            // de dejar que la librería infiera algo incorrecto.
+            if jwk.crv.as_deref() != Some("P-256") {
+                return Err(AuthError(format!(
+                    "unsupported EC curve: {:?} (only P-256/ES256 is supported)",
+                    jwk.crv
+                )));
+            }
+            let (x, y) = jwk
+                .x
+                .as_deref()
+                .zip(jwk.y.as_deref())
+                .ok_or_else(|| AuthError("EC JWK missing x/y components".to_string()))?;
+            DecodingKey::from_ec_components(x, y)
+                .map_err(|e| AuthError(format!("invalid EC key components: {e}")))
+        }
+        other => Err(AuthError(format!("unsupported key type: {other}"))),
+    }
+}
+
 async fn get_decoding_key(jwks_url: &str, kid: &str) -> Result<DecodingKey, AuthError> {
     let cache_lock = get_cache();
 
@@ -73,8 +122,7 @@ async fn get_decoding_key(jwks_url: &str, kid: &str) -> Result<DecodingKey, Auth
         if let Some(cache) = &*r {
             if cache.expires_at > Instant::now() {
                 if let Some(key) = cache.keys.iter().find(|k| k.kid == kid) {
-                    return DecodingKey::from_rsa_components(&key.n, &key.e)
-                        .map_err(|e| AuthError(format!("invalid key components: {e}")));
+                    return decoding_key_from_jwk(key);
                 }
             }
         }
@@ -85,8 +133,7 @@ async fn get_decoding_key(jwks_url: &str, kid: &str) -> Result<DecodingKey, Auth
     if let Some(cache) = &*w {
         if cache.expires_at > Instant::now() {
             if let Some(key) = cache.keys.iter().find(|k| k.kid == kid) {
-                return DecodingKey::from_rsa_components(&key.n, &key.e)
-                    .map_err(|e| AuthError(format!("invalid key components: {e}")));
+                return decoding_key_from_jwk(key);
             }
         }
     }
@@ -98,8 +145,7 @@ async fn get_decoding_key(jwks_url: &str, kid: &str) -> Result<DecodingKey, Auth
     });
 
     if let Some(key) = keys.iter().find(|k| k.kid == kid) {
-        DecodingKey::from_rsa_components(&key.n, &key.e)
-            .map_err(|e| AuthError(format!("invalid key components: {e}")))
+        decoding_key_from_jwk(key)
     } else {
         Err(AuthError(format!("key id {kid} not found in JWKS")))
     }
@@ -141,4 +187,37 @@ pub async fn validate_jwt(
         subject: claims.sub,
         client_id,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Respuesta real de `https://<proyecto>.supabase.co/auth/v1/.well-known/jwks.json`.
+    /// Supabase Auth firma con ES256 (EC P-256), no RSA — este test
+    /// habría fallado con `missing field n` antes de soportar `kty: "EC"`.
+    #[test]
+    fn parsea_jwks_ec_real_de_supabase() {
+        let body = r#"{"keys":[{"alg":"ES256","crv":"P-256","ext":true,"key_ops":["verify"],"kid":"2f8b0ae7-873d-4eb1-b3f9-2a2e3cb1756a","kty":"EC","use":"sig","x":"49FWTTSm0IZInGtUGeoNCCfnYfKNtq3nI9zFVSxHmR8","y":"HFDKkCL1Tsp96ezQbwDXiPoFcD8ebgxUAvgUdQTlpHk"}]}"#;
+        let jwks: Jwks = serde_json::from_str(body).expect("debe parsear JWKS EC sin error");
+        let key = &jwks.keys[0];
+        assert_eq!(key.kty, "EC");
+        decoding_key_from_jwk(key).expect("debe fabricar una DecodingKey EC válida");
+    }
+
+    #[test]
+    fn rechaza_curva_ec_no_soportada() {
+        let mut jwk = Jwk {
+            kid: "x".to_string(),
+            kty: "EC".to_string(),
+            n: None,
+            e: None,
+            crv: Some("P-384".to_string()),
+            x: Some("AA".to_string()),
+            y: Some("AA".to_string()),
+        };
+        assert!(decoding_key_from_jwk(&jwk).is_err());
+        jwk.crv = None;
+        assert!(decoding_key_from_jwk(&jwk).is_err());
+    }
 }

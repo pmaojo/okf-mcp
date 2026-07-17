@@ -88,7 +88,7 @@ async fn protected_resource_metadata_handler(headers: HeaderMap) -> Response {
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
     let body = format!(
-        r#"{{"resource":"{}/mcp","authorization_servers":["{issuer}"]}}"#,
+        r#"{{"resource":"{}/mcp","authorization_servers":["{issuer}"],"bearer_methods_supported":["header"]}}"#,
         base_url(&headers)
     );
     (StatusCode::OK, [("content-type", "application/json")], body).into_response()
@@ -119,8 +119,25 @@ async fn mcp_handler(method: Method, headers: HeaderMap, body: Bytes) -> Respons
     let auth_header = headers.get("authorization").and_then(|v| v.to_str().ok());
     let actor = match std::env::var("JWKS_URL") {
         Ok(jwks_url) => {
-            let audience = std::env::var("JWT_AUDIENCE").ok();
-            match auth::validate_jwt(auth_header, &jwks_url, audience.as_deref()).await {
+            // La especificación de autorización de MCP exige validar que
+            // el token fue emitido para ESTE recurso (claim `aud`). Con
+            // JWKS_URL activo ya no estamos en modo abierto de desarrollo,
+            // así que exigimos también JWT_AUDIENCE: aceptar cualquier
+            // audiencia dejaría pasar tokens emitidos para otra app bajo
+            // el mismo Authorization Server (p. ej. otro cliente OAuth de
+            // Supabase que no es este servidor MCP).
+            let audience = match std::env::var("JWT_AUDIENCE") {
+                Ok(v) => v,
+                Err(_) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        [("content-type", "text/plain")],
+                        "Server misconfigured: JWKS_URL is set but JWT_AUDIENCE is missing".to_string(),
+                    )
+                        .into_response();
+                }
+            };
+            match auth::validate_jwt(auth_header, &jwks_url, Some(&audience)).await {
                 Ok(principal) => principal,
                 Err(err) => {
                     // Cabecera exigida por la especificación de autorización

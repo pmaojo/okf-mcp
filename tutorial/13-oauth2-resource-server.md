@@ -20,11 +20,16 @@ Y una segunda promesa de diseño:
 
 El módulo de autorización ([auth.rs](../crates/vercel-entry/src/auth.rs)) implementa la verificación criptográfica. Primero se extrae el token del encabezado `Authorization: Bearer <token>` de la petición HTTP.
 
-Una llave RSA se compone de dos elementos matemáticos: el módulo (`n`) y el exponente (`e`). `jsonwebtoken` nos permite fabricar una llave de decodificación a partir de estos parámetros obtenidos del JWKS:
+Un JWK puede publicar una llave RSA (módulo `n` y exponente `e`) o una llave EC (curva `crv` y coordenadas `x`, `y`) — el campo `kty` indica cuál es. **Esto no es un detalle académico:** Supabase Auth firma sus tokens con **ES256 (EC, curva P-256)** por defecto, no con RSA. Una implementación que solo entienda `n`/`e` falla al deserializar el JWKS real con `missing field n` — no es un caso hipotético, es lo primero que rompe si copias un tutorial que asume RSA sin comprobarlo contra tu proveedor real:
 
 ```rust
-let decoding_key = DecodingKey::from_rsa_components(&jwk.n, &jwk.e)
-    .map_err(|e| AuthError(format!("invalid key: {e}")))?;
+fn decoding_key_from_jwk(jwk: &Jwk) -> Result<DecodingKey, AuthError> {
+    match jwk.kty.as_str() {
+        "RSA" => DecodingKey::from_rsa_components(n, e)...,
+        "EC" => DecodingKey::from_ec_components(x, y)...,  // Supabase usa esta rama
+        other => Err(AuthError(format!("unsupported key type: {other}"))),
+    }
+}
 ```
 
 Una vez obtenida la llave de decodificación correspondiente al identificador `kid` (Key ID) que viaja en el encabezado del JWT, validamos los claims:
@@ -109,7 +114,9 @@ Para este despliegue concreto (Supabase como Authorization Server), las variable
 |---|---|---|
 | `JWKS_URL` | `https://<proyecto>.supabase.co/auth/v1/.well-known/jwks.json` | Llaves públicas para verificar la firma del JWT (`auth.rs`) |
 | `OAUTH_ISSUER` | `https://<proyecto>.supabase.co/auth/v1` | Se anuncia en `/.well-known/oauth-protected-resource` como `authorization_servers` |
-| `JWT_AUDIENCE` | el `client_id` de la OAuth App registrada en Supabase (opcional pero recomendado) | Restringe qué tokens acepta el servidor (`aud` claim) |
+| `JWT_AUDIENCE` | el `client_id` de la OAuth App registrada en Supabase (**obligatoria si `JWKS_URL` está seteada**) | Restringe qué tokens acepta el servidor (`aud` claim) |
+
+`JWT_AUDIENCE` no es opcional en producción, aunque el código en algún punto lo trató así: validar la audiencia no es un extra, es un requisito de la especificación de autorización de MCP — el servidor "debe validar que el token fue emitido específicamente para él como audiencia esperada". Sin ese chequeo, cualquier token válido emitido por el mismo Authorization Server para OTRA aplicación (otro cliente OAuth bajo el mismo proyecto Supabase) sería aceptado igualmente. Por eso `mcp.rs` ahora devuelve `500` si `JWKS_URL` está presente pero `JWT_AUDIENCE` no — falla cerrado en vez de aceptar tokens sin verificar para quién fueron emitidos.
 
 Puedes confirmar que tu proyecto de Supabase emite JWTs firmados de forma asimétrica (necesario para JWKS — un secreto compartido HS256 no se puede publicar como llave pública) consultando:
 
@@ -120,13 +127,19 @@ curl https://<proyecto>.supabase.co/auth/v1/.well-known/openid-configuration
 
 Si `jwks_uri` devuelve una lista de llaves (`"alg":"ES256"` o `"RS256"`), el proyecto ya emite tokens con firma asimétrica y esta pieza funciona sin cambios adicionales en Supabase.
 
-### La pieza manual: Supabase Auth no soporta Dynamic Client Registration
+### La pieza manual: Supabase Auth no soporta registro automático de cliente
 
-El MCP estándar espera que el cliente (Claude) pueda auto-registrarse contra el Authorization Server (RFC 7591, `registration_endpoint`) sin intervención humana. **Supabase Auth, a fecha de este tutorial, no expone un `registration_endpoint` público** — su discovery OIDC no lo anuncia y el endpoint `/auth/v1/oauth/register` responde `404` sin credenciales de administrador.
+Claude soporta tres formas de registrarse como cliente OAuth contra tu Authorization Server (documentado por Anthropic en su guía de autenticación de conectores):
 
-Esto significa que, para que Claude complete el flujo, primero debes registrar manualmente una "OAuth App" en el dashboard de Supabase (Authentication → OAuth Apps / third-party auth), obteniendo un `client_id` (y `client_secret` si aplica) con el `redirect_uri` exacto que Claude te muestre al añadir el conector. Ese `client_id` es el valor que corresponde a `JWT_AUDIENCE` arriba.
+1. **`oauth_dcr`** — Dynamic Client Registration (RFC 7591): Claude se auto-registra llamando a un `registration_endpoint` que el AS anuncia en su discovery.
+2. **`oauth_cimd`** — Client ID Metadata Documents: Claude usa una URL HTTPS como `client_id`; el AS la resuelve para leer el `redirect_uri` de Claude. No requiere llamada de registro, pero exige que el AS soporte client-ids en formato URL (un draft de OAuth todavía poco extendido).
+3. **`oauth_anthropic_creds`** — Anthropic gestiona las credenciales directamente (requiere contactar `mcp-review@anthropic.com`).
 
-3. El cliente MCP deberá incluir la cabecera `Authorization: Bearer <token_jwt>` en cada petición POST — esto ya funcionaba antes de esta sección; lo nuevo es cómo el cliente *consigue* ese token sin intervención manual del protocolo (salvo el registro de la OAuth App, que sí es manual).
+**Supabase Auth no soporta ninguna de las dos primeras hoy**: su discovery OIDC no anuncia `registration_endpoint` (confirmado: `/auth/v1/oauth/register` responde `404` sin credenciales de administrador), y tampoco hay indicios de soporte de CIMD.
+
+Esto no bloquea el flujo — Claude permite una cuarta vía, más manual, que no depende de que el AS soporte ninguno de los mecanismos anteriores: al añadir un conector personalizado en **Settings → Connectors → Add custom connector → Advanced settings**, puedes introducir directamente el `Client ID` (y opcionalmente `Client Secret`) de una OAuth App que registres tú mismo en el dashboard de Supabase (Authentication → OAuth Apps), usando el `redirect_uri` que Claude muestre en esa misma pantalla (`https://claude.ai/api/mcp/auth_callback` para Claude.ai web/desktop/mobile/Cowork). Ese `client_id` es el valor que corresponde a `JWT_AUDIENCE` en la tabla de arriba.
+
+El cliente MCP deberá incluir la cabecera `Authorization: Bearer <token_jwt>` en cada petición POST — esto ya funcionaba antes de esta sección; lo nuevo es cómo el cliente *consigue* ese token sin que el protocolo de registro sea automático (el registro de la OAuth App en Supabase sí es manual, una vez).
 
 ## 10. Principios SOLID en juego
 
