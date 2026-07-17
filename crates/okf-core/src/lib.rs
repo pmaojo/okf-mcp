@@ -287,8 +287,13 @@ fn parse_scalar(s: &str, line_no: usize) -> Result<String, OkfError> {
     }
     for marcador in ["|", ">", "&", "*", "{", "["] {
         if s.starts_with(marcador) {
+            let sugerencia = if marcador == "[" {
+                " — usa lista en bloque: la clave sola en su línea, luego '  - item' en líneas propias"
+            } else {
+                ""
+            };
             return Err(no_soportado(&format!(
-                "sintaxis YAML {marcador:?} fuera del subconjunto"
+                "sintaxis YAML {marcador:?} fuera del subconjunto{sugerencia}"
             )));
         }
     }

@@ -306,7 +306,19 @@ where
                 input_schema: schema(
                     [
                         ("concept_id", "string", "id lógico del concepto"),
-                        ("markdown", "string", "documento completo, con frontmatter '---'"),
+                        (
+                            "markdown",
+                            "string",
+                            "documento completo: '---' + frontmatter YAML + '---' + cuerpo Markdown. \
+                             El frontmatter es un SUBCONJUNTO de YAML, no YAML completo — sintaxis fuera \
+                             de él se rechaza con error, no se acepta en silencio. Soportado: escalares \
+                             de una línea ('type: person') y listas EN BLOQUE con guion y salto de línea \
+                             ('tags:' seguido de '  - a' / '  - b' en líneas propias). NO soportado — \
+                             falla si lo usas: listas o mapas de flujo entre corchetes/llaves \
+                             ('tags: [a, b]'), bloques literales/plegados ('|', '>'), anclas y alias \
+                             ('&', '*'). El campo 'type' es obligatorio; 'tags' (si aparece) debe ser \
+                             lista en bloque. Enlaces salientes se escriben en el cuerpo como '[[concept_id]]'.",
+                        ),
                         ("reason", "string", "por qué se hace este cambio"),
                         ("expected_hash", "string", "hash SHA-256 hex del contenido leído"),
                     ],
