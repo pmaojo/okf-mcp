@@ -208,6 +208,19 @@ El compilador de Rust compila cada crate por separado y gestiona sus dependencia
 
 ---
 
+## 10. Recursos Oficiales para profundizar
+
+Si quieres complementar lo aprendido en este tutorial con la documentación oficial del lenguaje, te recomendamos los siguientes recursos oficiales (disponibles en línea y offline mediante `rustup doc`):
+
+* **[El Libro de Rust (The Rust Programming Language)](https://doc.rust-lang.org/stable/book/)**: El manual oficial definitivo. Ideal para entender a fondo las reglas de propiedad (ownership) y la filosofía del lenguaje.
+* **[Rust by Example](https://doc.rust-lang.org/stable/rust-by-example/)**: Una colección de ejemplos prácticos y editables que muestran cómo usar la sintaxis de Rust sin rodeos teóricos.
+* **[Ejercicios Interactivos Rustlings](https://github.com/rust-lang/rustlings)**: Pequeños ejercicios guiados para arreglar errores de compilación comunes y familiarizarte con el lenguaje.
+* **[La Documentación de la Biblioteca Estándar (API std)](https://doc.rust-lang.org/stable/std/)**: La guía de referencia para todos los módulos nativos (ej. `std::io`, `std::collections`, `std::sync`, etc.).
+* **[El Libro de Cargo](https://doc.rust-lang.org/stable/cargo/)**: El manual oficial de la herramienta de compilación y gestión de dependencias de Rust.
+* **[The Rustonomicon](https://doc.rust-lang.org/stable/nomicon/)**: La guía oficial dedicada a los detalles más avanzados y oscuros de Rust (como el manejo de punteros crudos y código `unsafe`).
+
+---
+
 Ahora que tienes el mapa de Rust en tu cabeza, estás listo para ver cómo diseñamos identificadores que el compilador defiende de forma matemática.
 
 Siguiente: [Capítulo 1 — Identificadores que no pueden hacer daño](01-identificadores-seguros.md).
