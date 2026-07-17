@@ -67,8 +67,14 @@ impl Sha256 {
             self.buffer_len += take;
             data = &data[take..];
             if self.buffer_len == 64 {
-                let block = self.buffer;
-                self.compress(&block);
+                // `self.state` y `self.buffer` son campos distintos: el
+                // borrow checker permite pedir prestado uno mutable y
+                // otro inmutable A LA VEZ si no pasan por un método de
+                // `self` (que pediría prestado `self` entero). Por eso
+                // `compress` es función asociada, no `&mut self`: así
+                // no hace falta copiar el bloque a una variable local
+                // solo para esquivar el conflicto de préstamo.
+                Self::compress(&mut self.state, &self.buffer);
                 self.buffer_len = 0;
             }
             // Si todo cupo en el bloque parcial, terminamos AQUÍ.
@@ -81,12 +87,14 @@ impl Sha256 {
             }
         }
 
-        // 2. Bloques completos directamente desde el slice (sin copiar).
+        // 2. Bloques completos directamente desde el slice, sin copiar:
+        //    `chunks_exact(64)` da un `&[u8]` de longitud 64; `try_into`
+        //    lo reinterpreta como `&[u8; 64]` (solo comprueba la
+        //    longitud en runtime), no mueve ni copia bytes.
         let mut chunks = data.chunks_exact(64);
         for block in &mut chunks {
-            let mut b = [0u8; 64];
-            b.copy_from_slice(block);
-            self.compress(&b);
+            let block: &[u8; 64] = block.try_into().unwrap();
+            Self::compress(&mut self.state, block);
         }
 
         // 3. Guardar el resto.
@@ -106,8 +114,7 @@ impl Sha256 {
         // La longitud en bits, big-endian. La escribimos directo en el
         // buffer para no alterar total_len con update().
         self.buffer[56..64].copy_from_slice(&bit_len.to_be_bytes());
-        let block = self.buffer;
-        self.compress(&block);
+        Self::compress(&mut self.state, &self.buffer);
 
         let mut out = [0u8; 32];
         for (i, word) in self.state.iter().enumerate() {
@@ -117,7 +124,15 @@ impl Sha256 {
     }
 
     /// Función de compresión: 64 rondas sobre un bloque de 512 bits.
-    fn compress(&mut self, block: &[u8; 64]) {
+    ///
+    /// Función asociada (no `&mut self`) a propósito: recibe `state` y
+    /// `block` como préstamos independientes para que las llamadas desde
+    /// `update`/`finalize` puedan pasar `&mut self.state` y `&self.buffer`
+    /// SIN copiar antes el bloque a una variable local. Si fuera un
+    /// método `&mut self`, pedir prestado `self` entero para la llamada
+    /// entraría en conflicto con pedir prestado `&self.buffer` como
+    /// argumento — de ahí la copia que tenía el código original.
+    fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
         // Expansión del mensaje: 16 palabras -> 64.
         let mut w = [0u32; 64];
         for i in 0..16 {
@@ -137,7 +152,7 @@ impl Sha256 {
                 .wrapping_add(s1);
         }
 
-        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = self.state;
+        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = *state;
 
         for i in 0..64 {
             let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
@@ -161,14 +176,14 @@ impl Sha256 {
             a = temp1.wrapping_add(temp2);
         }
 
-        self.state[0] = self.state[0].wrapping_add(a);
-        self.state[1] = self.state[1].wrapping_add(b);
-        self.state[2] = self.state[2].wrapping_add(c);
-        self.state[3] = self.state[3].wrapping_add(d);
-        self.state[4] = self.state[4].wrapping_add(e);
-        self.state[5] = self.state[5].wrapping_add(f);
-        self.state[6] = self.state[6].wrapping_add(g);
-        self.state[7] = self.state[7].wrapping_add(h);
+        state[0] = state[0].wrapping_add(a);
+        state[1] = state[1].wrapping_add(b);
+        state[2] = state[2].wrapping_add(c);
+        state[3] = state[3].wrapping_add(d);
+        state[4] = state[4].wrapping_add(e);
+        state[5] = state[5].wrapping_add(f);
+        state[6] = state[6].wrapping_add(g);
+        state[7] = state[7].wrapping_add(h);
     }
 }
 

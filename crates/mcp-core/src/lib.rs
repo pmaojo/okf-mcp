@@ -63,7 +63,6 @@ pub struct UiResource {
     pub html: &'static str,
 }
 
-const UI_APPS_EXTENSION: &str = "io.modelcontextprotocol/ui";
 const UI_APPS_MIME_TYPE: &str = "text/html;profile=mcp-app";
 
 /// Fallos al invocar una herramienta.
@@ -107,11 +106,6 @@ pub struct McpServer<H: ToolHandler> {
     server_name: &'static str,
     server_version: &'static str,
     lifecycle: Lifecycle,
-    /// `true` si el cliente declaró soporte de la extensión MCP Apps
-    /// en `initialize`. Controla si `tools/list` anuncia `_meta.ui` —
-    /// la degradación elegante que pide el spec: un cliente que no la
-    /// entiende no debe ni verla.
-    ui_apps_supported: bool,
 }
 
 impl<H: ToolHandler> McpServer<H> {
@@ -121,7 +115,6 @@ impl<H: ToolHandler> McpServer<H> {
             server_name,
             server_version,
             lifecycle: Lifecycle::AwaitingInitialize,
-            ui_apps_supported: false,
         }
     }
 
@@ -204,21 +197,6 @@ impl<H: ToolHandler> McpServer<H> {
         };
         self.lifecycle = Lifecycle::Initializing;
 
-        // Negociación de la extensión MCP Apps (SEP-1724): el cliente
-        // la declara en `capabilities.extensions["io.modelcontextprotocol/ui"]
-        // .mimeTypes`. Si no la declara, o no incluye nuestro mimeType,
-        // `tools/list` sigue devolviendo tools sin `_meta.ui` — el
-        // cliente ve exactamente lo que veía antes de que existiera
-        // esta extensión.
-        self.ui_apps_supported = params
-            .get("capabilities")
-            .and_then(|c| c.get("extensions"))
-            .and_then(|e| e.get(UI_APPS_EXTENSION))
-            .and_then(|ext| ext.get("mimeTypes"))
-            .and_then(|mt| mt.as_array())
-            .map(|types| types.iter().any(|t| t.as_str() == Some(UI_APPS_MIME_TYPE)))
-            .unwrap_or(false);
-
         ok_response(
             id,
             obj([
@@ -250,12 +228,35 @@ impl<H: ToolHandler> McpServer<H> {
                     ("inputSchema", t.input_schema),
                 ];
                 if let Some(uri) = t.ui_resource_uri {
-                    if self.ui_apps_supported {
-                        fields.push((
-                            "_meta",
-                            obj([("ui", obj([("resourceUri", s(uri))]))]),
-                        ));
-                    }
+                    // `_meta` se manda SIEMPRE, sin negociar ninguna
+                    // capability en `initialize`: un cliente MCP Apps
+                    // real (Claude incluido) nunca declaró
+                    // `capabilities.extensions["io.modelcontextprotocol/ui"]`,
+                    // así que una gate ahí escondía la UI de todo el
+                    // mundo. Un cliente que no entiende `_meta` está
+                    // obligado por el spec a ignorarlo — no hace falta
+                    // ocultarlo nosotros a mano.
+                    //
+                    // Doble anuncio a propósito: `ui.resourceUri` es el
+                    // campo de la extensión MCP Apps (SEP-1724);
+                    // `openai/outputTemplate` + `openai/widgetAccessible`
+                    // son los que el host de Claude realmente lee hoy
+                    // (Apps SDK). Mandar ambos cubre los dos sin tener
+                    // que adivinar cuál interpretará el cliente.
+                    fields.push((
+                        "_meta",
+                        obj([
+                            (
+                                "ui",
+                                obj([
+                                    ("resourceUri", s(uri)),
+                                    ("visibility", arr(vec![s("model"), s("app")])),
+                                ]),
+                            ),
+                            ("openai/outputTemplate", s(uri)),
+                            ("openai/widgetAccessible", Value::Bool(true)),
+                        ]),
+                    ));
                 }
                 Value::Object(fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
             })
@@ -437,23 +438,30 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_solo_anuncia_meta_ui_si_el_cliente_declaro_la_extension() {
-        // Sin la capability declarada: el tool es indistinguible de
-        // uno sin UI — degradación elegante.
-        let mut srv = server_with_ui();
-        srv.handle_message(INIT_SIN_UI).unwrap();
-        let resp = srv
-            .handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#)
-            .unwrap();
-        assert!(!resp.contains("_meta"));
-
-        // Con la capability declarada: aparece `_meta.ui.resourceUri`.
-        let mut srv = server_with_ui();
-        srv.handle_message(INIT_CON_UI).unwrap();
-        let resp = srv
-            .handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#)
-            .unwrap();
-        assert!(resp.contains("\"_meta\":{\"ui\":{\"resourceUri\":\"ui://test/echo-view\"}}"));
+    fn tools_list_anuncia_meta_ui_siempre_declare_o_no_el_cliente_la_extension() {
+        // Un cliente MCP Apps real (Claude incluido) no declara
+        // `capabilities.extensions["io.modelcontextprotocol/ui"]` en
+        // `initialize` — así que `_meta.ui` NO puede depender de esa
+        // negociación, o nunca llegaría a un cliente real. Debe
+        // aparecer igual con o sin la capability: un cliente que no
+        // entiende `_meta` está obligado por el spec a ignorarlo.
+        for init in [INIT_SIN_UI, INIT_CON_UI] {
+            let mut srv = server_with_ui();
+            srv.handle_message(init).unwrap();
+            let resp = srv
+                .handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#)
+                .unwrap();
+            assert!(resp.contains("\"resourceUri\":\"ui://test/echo-view\""));
+            assert!(resp.contains("\"visibility\":[\"model\",\"app\"]"));
+            // Doble anuncio a propósito: `ui.resourceUri` es el campo
+            // de la extensión MCP Apps (SEP-1724); `openai/outputTemplate`
+            // + `openai/widgetAccessible` son los que el host de Claude
+            // realmente lee hoy (Apps SDK). Mandamos ambos porque no
+            // hay forma de saber de antemano cuál interpretará el
+            // cliente que conecte.
+            assert!(resp.contains("\"openai/outputTemplate\":\"ui://test/echo-view\""));
+            assert!(resp.contains("\"openai/widgetAccessible\":true"));
+        }
     }
 
     #[test]

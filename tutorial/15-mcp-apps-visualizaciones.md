@@ -4,13 +4,14 @@ Crates: [`crates/mcp-core`](../crates/mcp-core/src/lib.rs), [`crates/graph-core`
 
 > **Capítulo opcional.** Todo lo que sigue — los recursos `ui://`, el
 > HTML de `graph-view.html`/`history-view.html`, `resources/list` y
-> `resources/read` — es una extensión negociable del protocolo, no
-> parte del núcleo del servidor de memoria. Un cliente que no la
-> declara en `initialize` sigue usando `memory_search`,
-> `memory_resolve`, `memory_commit` y `memory_history` exactamente
-> igual que en el hito 1: JSON, sin HTML de por medio. Si no te
-> interesa renderizar vistas, puedes saltarte este capítulo entero sin
-> perder nada del resto del tutorial.
+> `resources/read` — es una extensión del protocolo, no parte del
+> núcleo del servidor de memoria. Un cliente que no la entiende sigue
+> usando `memory_search`, `memory_resolve`, `memory_commit` y
+> `memory_history` exactamente igual que en el hito 1: JSON, sin HTML
+> de por medio — porque ignora el `_meta` que no reconoce, no porque
+> el servidor se lo esconda (sección 2 explica por qué esa distinción
+> importa). Si no te interesa renderizar vistas, puedes saltarte este
+> capítulo entero sin perder nada del resto del tutorial.
 
 ## 1. El problema
 
@@ -31,50 +32,54 @@ regresión para clientes que no conocen la extensión.
 
 ## 2. El invariante
 
-> **Un cliente que no declaró soporte de la extensión MCP Apps ve
-> exactamente las mismas herramientas, con el mismo JSON, que veía
-> antes de que este capítulo existiera.**
+> **Un cliente que no entiende `_meta` sigue viendo exactamente las
+> mismas herramientas, con el mismo JSON, que veía antes de que este
+> capítulo existiera — porque el spec le OBLIGA a ignorar los campos
+> `_meta` que no reconoce, no porque el servidor se los esconda.**
 
-La degradación elegante no es un detalle de implementación: es LA
-garantía que hace que añadir una vista sea un cambio compatible en
-vez de una ruptura. Un servidor de memoria personal puede tener un
-único usuario hoy y verse desde tres clientes distintos mañana; solo
-uno de esos tres tiene que entender HTML en un iframe.
+La primera versión de este capítulo tenía un invariante distinto y
+más intuitivo — pero equivocado en la práctica (sección 5 cuenta la
+historia completa): que el SERVIDOR debía negociar en `initialize` y
+esconder `_meta.ui` a los clientes que no declararan soporte de la
+extensión. Suena razonable, y cualquiera lo escribiría igual la
+primera vez. El problema es empírico, no de diseño: **los clientes
+MCP Apps reales — Claude incluido — nunca declaran esa capability.**
+Un servidor que la exige nunca ve `_meta` llegar a nadie. La
+degradación elegante real no depende de que el servidor adivine qué
+sabe el cliente; depende de que el protocolo diga que `_meta`
+desconocido se ignora, y de que el servidor confíe en eso.
 
 ## 3. La implementación mínima
 
-La negociación ocurre una vez, en `initialize`. El cliente declara la
-extensión con su identificador reservado y el mimeType que soporta:
-
-```json
-{"capabilities": {"extensions": {"io.modelcontextprotocol/ui": {"mimeTypes": ["text/html;profile=mcp-app"]}}}}
-```
-
-`McpServer` lo lee con la misma API de `json_mini::Value` que ya usa
-todo el crate — no hace falta ningún parser nuevo:
-
-```rust
-self.ui_apps_supported = params
-    .get("capabilities")
-    .and_then(|c| c.get("extensions"))
-    .and_then(|e| e.get(UI_APPS_EXTENSION))
-    .and_then(|ext| ext.get("mimeTypes"))
-    .and_then(|mt| mt.as_array())
-    .map(|types| types.iter().any(|t| t.as_str() == Some(UI_APPS_MIME_TYPE)))
-    .unwrap_or(false);
-```
-
-Un `ToolSpec` ahora puede llevar `ui_resource_uri: Option<&'static
-str>`. `on_tools_list` solo añade `_meta.ui.resourceUri` cuando AMBAS
-condiciones se cumplen — el tool lo pide, y el cliente lo entiende:
+Un `ToolSpec` lleva `ui_resource_uri: Option<&'static str>`.
+`on_tools_list` añade `_meta` siempre que el tool lo declare — sin
+mirar nada de lo que dijo el cliente en `initialize`:
 
 ```rust
 if let Some(uri) = t.ui_resource_uri {
-    if self.ui_apps_supported {
-        fields.push(("_meta", obj([("ui", obj([("resourceUri", s(uri))]))])));
-    }
+    fields.push((
+        "_meta",
+        obj([
+            ("ui", obj([
+                ("resourceUri", s(uri)),
+                ("visibility", arr(vec![s("model"), s("app")])),
+            ])),
+            ("openai/outputTemplate", s(uri)),
+            ("openai/widgetAccessible", Value::Bool(true)),
+        ]),
+    ));
 }
 ```
+
+Fíjate en el doble anuncio: `ui.resourceUri` es el campo que define
+la extensión MCP Apps (SEP-1724, la spec "oficial"); `openai/outputTemplate`
++ `openai/widgetAccessible` son los que el host de Claude realmente
+lee hoy (heredados del Apps SDK de OpenAI, que Claude adoptó como
+formato de facto). No hay forma de saber de antemano cuál de los dos
+interpretará el cliente que conecte — así que se mandan ambos. Esto
+no es elegante ni definitivo: es lo que hace falta para que funcione
+con el ecosistema real en vez de con la lectura literal del documento
+de la extensión.
 
 Y dos métodos JSON-RPC nuevos, genéricos sobre cualquier
 `ToolHandler` (no solo `MemoryTools`):
@@ -112,21 +117,56 @@ estático.
 
 ## 4. Una versión deliberadamente rota
 
+Esta vez la versión rota es la que este capítulo tenía originalmente
+— y que cualquiera escribiría primero, porque es la lectura literal
+de la spec:
+
 ```rust
-// ❌ NO HACER: anunciar `_meta.ui` sin comprobar la capability del cliente
-fields.push(("_meta", obj([("ui", obj([("resourceUri", s(uri))]))])));
+// ❌ NO HACER: esconder `_meta.ui` tras una negociación que ningún
+// cliente real completa nunca.
+self.ui_apps_supported = params
+    .get("capabilities")
+    .and_then(|c| c.get("extensions"))
+    .and_then(|e| e.get("io.modelcontextprotocol/ui"))
+    .and_then(|ext| ext.get("mimeTypes"))
+    .and_then(|mt| mt.as_array())
+    .map(|types| types.iter().any(|t| t.as_str() == Some(UI_APPS_MIME_TYPE)))
+    .unwrap_or(false);
+
+// ... más tarde, en on_tools_list:
+if let Some(uri) = t.ui_resource_uri {
+    if self.ui_apps_supported {
+        fields.push(("_meta", obj([("ui", obj([("resourceUri", s(uri))]))])));
+    }
+}
 ```
 
 ## 5. Por qué falla
 
-Un cliente que no implementa MCP Apps no sabe qué hacer con
-`_meta.ui.resourceUri` — en el mejor de los casos lo ignora
-silenciosamente (el spec no obliga a los clientes a validar campos
-`_meta` desconocidos), en el peor un cliente estricto podría
-rechazarlo como un tool con forma inesperada. La comprobación de
-`self.ui_apps_supported` no es una optimización: es la diferencia
-entre "extensión opcional" y "cambio incompatible disfrazado de
-opcional".
+Compilaba, pasaba los tests (`EchoWithUi` inicializado con y sin la
+capability declarada a mano, en un test que también ha cambiado — ver
+sección 7) y era, sobre el papel, exactamente lo que pide SEP-1724.
+Falló de todos modos, y falló en silencio: conectado desde Claude de
+verdad, `memory_resolve` y `memory_history` NUNCA llevaban `_meta`,
+así que la vista de grafo y la línea de tiempo jamás aparecían — sin
+ningún error, sin ningún log, sin nada que apuntara a `mcp-core`. Solo
+"la UI no aparece".
+
+La causa se encontró comparando con otro servidor MCP (en Python, sin
+relación con este proyecto) que sí renderiza vistas en Claude en
+producción: su capa de metadata **nunca comprueba ninguna capability
+del cliente** — manda `_meta` siempre, en cada tool que tiene vista, y
+además de `ui.resourceUri` manda `openai/outputTemplate` y
+`openai/widgetAccessible`, que son el vocabulario real del Apps SDK de
+OpenAI que Claude adoptó. Es decir: el cliente real ni declara la
+extensión en `initialize` ni busca solo el campo que documenta
+SEP-1724. La lección no es "la spec estaba mal escrita" — es que una
+negociación de capability es una promesa entre dos partes, y aquí
+solo una de las dos (el servidor) la estaba cumpliendo. `_meta`
+desconocido es seguro de ignorar por spec; apostar la visibilidad
+entera de la función a que el cliente además confirme que lo
+entiende, cuando en la práctica no lo confirma, convierte una
+extensión opcional en una función que nunca se activa.
 
 ## 6. Memoria y asignación
 
@@ -145,10 +185,14 @@ caliente.
 (`EchoWithUi`) que expone un recurso `ui://test/echo-view`:
 `resources_list_y_read_devuelven_el_recurso_ui`,
 `resources_read_de_uri_desconocida_es_invalid_params`, y sobre todo
-`tools_list_solo_anuncia_meta_ui_si_el_cliente_declaro_la_extension`
-— el mismo servidor, inicializado dos veces con dos capabilities
-distintas, produce dos `tools/list` distintos. Es la prueba directa
-del invariante del capítulo.
+`tools_list_anuncia_meta_ui_siempre_declare_o_no_el_cliente_la_extension`
+— el mismo servidor, inicializado con y sin la capability declarada,
+produce el MISMO `tools/list` con `_meta` en los dos casos. Es la
+prueba directa del invariante nuevo (sección 2): antes este test
+comprobaba lo contrario (dos `tools/list` distintos según lo que
+declarara el cliente) y pasaba igual de verde — la señal de que un
+test puede confirmar una implementación internamente consistente y
+aun así no decir nada sobre si un cliente real la activa.
 
 `graph-core` prueba que `Visited::parent` reconstruye un árbol sin
 ciclos: desde cualquier nodo visitado, subir por `parent` termina
@@ -203,12 +247,15 @@ trabajo de una frase en `memory-tools`, no una decisión arquitectónica.
 
 ## 10. Ejercicios
 
-1. **Guiado.** El test
-   `tools_list_solo_anuncia_meta_ui_si_el_cliente_declaro_la_extension`
-   inicializa el mismo tipo de servidor dos veces. ¿Por qué no se
-   puede reutilizar la MISMA instancia de `McpServer` para probar
-   ambos casos? (pista: `ui_apps_supported` es un campo del servidor,
-   fijado una vez en `initialize`).
+1. **Guiado.** La versión rota de la sección 4 guardaba
+   `ui_apps_supported` como campo de `McpServer`, fijado una vez en
+   `initialize` y leído después en `on_tools_list`. La versión buena
+   no necesita ese campo en absoluto. ¿Qué categoría de bug
+   desaparece al borrar un campo de estado mutable que solo existía
+   para recordar algo que ya no hace falta decidir? (pista: piensa en
+   qué pasaría si `initialize` se llamara dos veces, o si se
+   reordenara respecto a `tools/list` en un transporte que no
+   garantiza el orden).
 2. **Medio.** Añade una vista `ui://okf-memory/search-view` para
    `memory_search` (hoy en texto plano a propósito). ¿Qué justifica
    el cambio de opinión — qué gana un humano viendo resultados de
