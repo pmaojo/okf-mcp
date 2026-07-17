@@ -15,6 +15,7 @@ didáctico** de Rust y de principios SOLID: ver [`tutorial/`](tutorial/).
 - ✅ **Hito 2:** transporte HTTP sin estado (`mcp-http`) + contrato ejecutable `MemoryRepository` + adaptador de Vercel (`vercel-entry`) + adaptador de base de datos PostgreSQL (`supabase-store`).
 - ✅ **Hito 3:** OAuth 2.1 (Resource Server, validación criptográfica de JWTs mediante firmas y JWKS).
 - ✅ **Hito 4:** Transactional Outbox (`outbox-worker` con procesamiento concurrente `SKIP LOCKED` sincronizando a Git y base de datos vectorial `pgvector`).
+- ✅ **Hito 5:** MCP Apps (visualizaciones interactivas de grafo e historial mediante recursos `ui://`, opcional).
 
 ## Arquitectura
 

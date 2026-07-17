@@ -2513,6 +2513,7 @@ dependencies = [
  "memory-model",
  "memory-store",
  "memory-tools",
+ "outbox-worker",
  "reqwest",
  "serde",
  "serde_json",
