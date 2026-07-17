@@ -17,7 +17,7 @@
 
 use graph_core::NeighborSource;
 use json_mini::{arr, n, obj, s, Value};
-use mcp_core::{ToolError, ToolHandler, ToolSpec};
+use mcp_core::{ToolError, ToolHandler, ToolSpec, UiResource};
 use memory_model::{Budget, ConceptId, ContentId, Principal};
 use store_core::{CommitRequest, MemoryRepository, SearchQuery, StoreError};
 use std::convert::Infallible;
@@ -145,6 +145,10 @@ where
                     ("depth", n(v.depth as f64)),
                     ("exists", Value::Bool(v.exists)),
                     ("uri", s(&format!("okf://{}", v.id))),
+                    (
+                        "parent",
+                        v.parent.as_ref().map(|p| s(p.as_str())).unwrap_or(Value::Null),
+                    ),
                 ])
             })
             .collect();
@@ -278,6 +282,10 @@ where
                     ],
                     [],
                 ),
+                // Una lista de candidatos no gana nada con una vista a
+                // medida: es tan legible en JSON como en HTML. Se deja
+                // en texto plano a propósito.
+                ui_resource_uri: None,
             },
             ToolSpec {
                 name: "memory_resolve",
@@ -290,6 +298,7 @@ where
                     ],
                     ["concept_id"],
                 ),
+                ui_resource_uri: Some("ui://okf-memory/graph-view"),
             },
             ToolSpec {
                 name: "memory_commit",
@@ -303,6 +312,9 @@ where
                     ],
                     ["concept_id", "markdown", "reason"],
                 ),
+                // El resultado es un hash + un booleano: no hay nada
+                // que dibujar.
+                ui_resource_uri: None,
             },
             ToolSpec {
                 name: "memory_history",
@@ -315,6 +327,24 @@ where
                     ],
                     ["concept_id"],
                 ),
+                ui_resource_uri: Some("ui://okf-memory/history-view"),
+            },
+        ]
+    }
+
+    fn ui_resources(&self) -> Vec<UiResource> {
+        vec![
+            UiResource {
+                uri: "ui://okf-memory/graph-view",
+                name: "Vista de grafo",
+                description: "Vecindario de un concepto como grafo interactivo (nodos por profundidad, aristas reales padre→hijo).",
+                html: include_str!("../assets/graph-view.html"),
+            },
+            UiResource {
+                uri: "ui://okf-memory/history-view",
+                name: "Línea de tiempo",
+                description: "Historial de revisiones de un concepto como línea de tiempo vertical.",
+                html: include_str!("../assets/history-view.html"),
             },
         ]
     }

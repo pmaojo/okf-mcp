@@ -41,6 +41,11 @@ pub struct Visited {
     pub depth: u8,
     /// `false` si el enlace apunta a un concepto que no existe.
     pub exists: bool,
+    /// El nodo que lo descubrió durante el BFS. `None` solo para el
+    /// origen. Con esto el resultado deja de ser un conjunto plano de
+    /// nodos y pasa a ser un árbol reconstruible — la arista real que
+    /// necesita, por ejemplo, una visualización de grafo.
+    pub parent: Option<ConceptId>,
 }
 
 /// Resultado del recorrido, con las razones de truncado explícitas.
@@ -72,7 +77,7 @@ pub fn bounded_bfs<S: NeighborSource>(
 ) -> Result<Traversal, S::Error> {
     let mut visited_set: BTreeSet<ConceptId> = BTreeSet::new();
     let mut order: Vec<Visited> = Vec::new();
-    let mut queue: VecDeque<(ConceptId, u8)> = VecDeque::new();
+    let mut queue: VecDeque<(ConceptId, u8, Option<ConceptId>)> = VecDeque::new();
     let mut result = Traversal {
         visited: Vec::new(),
         truncated_by_nodes: false,
@@ -82,9 +87,9 @@ pub fn bounded_bfs<S: NeighborSource>(
     };
 
     visited_set.insert(start.clone());
-    queue.push_back((start.clone(), 0));
+    queue.push_back((start.clone(), 0, None));
 
-    while let Some((id, depth)) = queue.pop_front() {
+    while let Some((id, depth, parent)) = queue.pop_front() {
         if order.len() >= budget.max_graph_nodes {
             result.truncated_by_nodes = true;
             break;
@@ -100,7 +105,7 @@ pub fn bounded_bfs<S: NeighborSource>(
                 .checked_add(bytes)
                 .unwrap_or(usize::MAX);
         }
-        order.push(Visited { id: id.clone(), depth, exists });
+        order.push(Visited { id: id.clone(), depth, exists, parent });
 
         let over_bytes = result.total_bytes > budget.max_response_bytes;
         if over_bytes {
@@ -120,7 +125,7 @@ pub fn bounded_bfs<S: NeighborSource>(
 
         for neighbor in source.neighbors(&id)? {
             if visited_set.insert(neighbor.clone()) {
-                queue.push_back((neighbor, depth + 1));
+                queue.push_back((neighbor, depth + 1, Some(id.clone())));
             }
         }
     }
@@ -233,5 +238,33 @@ mod tests {
         let t = bounded_bfs(&g, &id("a"), &Budget::default()).unwrap();
         assert_eq!(t.visited.len(), 2);
         assert!(!t.visited[1].exists);
+    }
+
+    #[test]
+    fn el_origen_no_tiene_padre_y_los_demas_reconstruyen_un_arbol_sin_ciclos() {
+        let g = graph(&[("a", &["b", "c"]), ("b", &["d"]), ("c", &["d"])]);
+        let t = bounded_bfs(&g, &id("a"), &Budget::default()).unwrap();
+
+        let by_id: BTreeMap<&str, &Visited> =
+            t.visited.iter().map(|v| (v.id.as_str(), v)).collect();
+        assert_eq!(by_id["a"].parent, None);
+
+        // Desde cualquier nodo visitado, subir por `parent` debe
+        // terminar SIEMPRE en la raíz (`None`) en, como mucho,
+        // `visited.len()` pasos — si hubiera un ciclo en la cadena de
+        // padres, este bucle no terminaría nunca sin el corte.
+        for v in &t.visited {
+            let mut current = v.id.clone();
+            let mut steps = 0;
+            loop {
+                let node = by_id[current.as_str()];
+                match &node.parent {
+                    None => break,
+                    Some(p) => current = p.clone(),
+                }
+                steps += 1;
+                assert!(steps <= t.visited.len(), "ciclo detectado en la cadena de padres");
+            }
+        }
     }
 }

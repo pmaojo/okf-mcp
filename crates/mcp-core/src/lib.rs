@@ -39,7 +39,32 @@ pub struct ToolSpec {
     pub description: &'static str,
     /// JSON Schema del parámetro `arguments`.
     pub input_schema: Value,
+    /// URI `ui://` (ver [`UiResource`]) que renderiza el resultado de
+    /// esta herramienta, si el cliente soporta la extensión MCP Apps
+    /// (`io.modelcontextprotocol/ui`). `None` es la opción correcta
+    /// para herramientas cuyo resultado no gana nada con una vista a
+    /// medida — no todo tool necesita una.
+    pub ui_resource_uri: Option<&'static str>,
 }
+
+/// Un recurso `ui://`: HTML autocontenido (spec MCP Apps / ext-apps,
+/// SEP-1724) que un cliente compatible renderiza en un iframe para
+/// mostrar el resultado de una herramienta como algo más legible que
+/// JSON crudo.
+#[derive(Debug, Clone)]
+pub struct UiResource {
+    pub uri: &'static str,
+    pub name: &'static str,
+    pub description: &'static str,
+    /// HTML completo (`<!DOCTYPE html>...`), con CSS/JS inline. Debe
+    /// ser autocontenido: el cliente lo sirve en un iframe aislado sin
+    /// acceso a ningún build step ni CDN externo salvo que el propio
+    /// HTML lo declare.
+    pub html: &'static str,
+}
+
+const UI_APPS_EXTENSION: &str = "io.modelcontextprotocol/ui";
+const UI_APPS_MIME_TYPE: &str = "text/html;profile=mcp-app";
 
 /// Fallos al invocar una herramienta.
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +83,14 @@ pub enum ToolError {
 pub trait ToolHandler {
     fn tools(&self) -> Vec<ToolSpec>;
     fn call(&mut self, name: &str, arguments: &Value) -> Result<Value, ToolError>;
+
+    /// Recursos `ui://` que este handler expone, para `resources/list`
+    /// y `resources/read`. Cuerpo por defecto vacío: un handler que no
+    /// sabe nada de MCP Apps (como `EchoTools` en los tests de este
+    /// crate) no tiene que cambiar una sola línea — Abierto/Cerrado.
+    fn ui_resources(&self) -> Vec<UiResource> {
+        Vec::new()
+    }
 }
 
 /// Estado del ciclo de vida MCP.
@@ -74,6 +107,11 @@ pub struct McpServer<H: ToolHandler> {
     server_name: &'static str,
     server_version: &'static str,
     lifecycle: Lifecycle,
+    /// `true` si el cliente declaró soporte de la extensión MCP Apps
+    /// en `initialize`. Controla si `tools/list` anuncia `_meta.ui` —
+    /// la degradación elegante que pide el spec: un cliente que no la
+    /// entiende no debe ni verla.
+    ui_apps_supported: bool,
 }
 
 impl<H: ToolHandler> McpServer<H> {
@@ -83,6 +121,7 @@ impl<H: ToolHandler> McpServer<H> {
             server_name,
             server_version,
             lifecycle: Lifecycle::AwaitingInitialize,
+            ui_apps_supported: false,
         }
     }
 
@@ -148,6 +187,8 @@ impl<H: ToolHandler> McpServer<H> {
             "ping" => ok_response(id, obj([])),
             "tools/list" => self.on_tools_list(id),
             "tools/call" => self.on_tools_call(id, params),
+            "resources/list" => self.on_resources_list(id),
+            "resources/read" => self.on_resources_read(id, params),
             _ => error_response(id, code::METHOD_NOT_FOUND, &format!("método desconocido: {method}")),
         }
     }
@@ -162,11 +203,30 @@ impl<H: ToolHandler> McpServer<H> {
             _ => PROTOCOL_VERSION,
         };
         self.lifecycle = Lifecycle::Initializing;
+
+        // Negociación de la extensión MCP Apps (SEP-1724): el cliente
+        // la declara en `capabilities.extensions["io.modelcontextprotocol/ui"]
+        // .mimeTypes`. Si no la declara, o no incluye nuestro mimeType,
+        // `tools/list` sigue devolviendo tools sin `_meta.ui` — el
+        // cliente ve exactamente lo que veía antes de que existiera
+        // esta extensión.
+        self.ui_apps_supported = params
+            .get("capabilities")
+            .and_then(|c| c.get("extensions"))
+            .and_then(|e| e.get(UI_APPS_EXTENSION))
+            .and_then(|ext| ext.get("mimeTypes"))
+            .and_then(|mt| mt.as_array())
+            .map(|types| types.iter().any(|t| t.as_str() == Some(UI_APPS_MIME_TYPE)))
+            .unwrap_or(false);
+
         ok_response(
             id,
             obj([
                 ("protocolVersion", s(version)),
-                ("capabilities", obj([("tools", obj([]))])),
+                (
+                    "capabilities",
+                    obj([("tools", obj([])), ("resources", obj([]))]),
+                ),
                 (
                     "serverInfo",
                     obj([
@@ -184,14 +244,60 @@ impl<H: ToolHandler> McpServer<H> {
             .tools()
             .into_iter()
             .map(|t| {
-                obj([
+                let mut fields = vec![
                     ("name", s(t.name)),
                     ("description", s(t.description)),
                     ("inputSchema", t.input_schema),
-                ])
+                ];
+                if let Some(uri) = t.ui_resource_uri {
+                    if self.ui_apps_supported {
+                        fields.push((
+                            "_meta",
+                            obj([("ui", obj([("resourceUri", s(uri))]))]),
+                        ));
+                    }
+                }
+                Value::Object(fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
             })
             .collect();
         ok_response(id, obj([("tools", arr(tools))]))
+    }
+
+    fn on_resources_list(&mut self, id: Value) -> Value {
+        let resources: Vec<Value> = self
+            .handler
+            .ui_resources()
+            .into_iter()
+            .map(|r| {
+                obj([
+                    ("uri", s(r.uri)),
+                    ("name", s(r.name)),
+                    ("description", s(r.description)),
+                    ("mimeType", s(UI_APPS_MIME_TYPE)),
+                ])
+            })
+            .collect();
+        ok_response(id, obj([("resources", arr(resources))]))
+    }
+
+    fn on_resources_read(&mut self, id: Value, params: &Value) -> Value {
+        let Some(uri) = params.get("uri").and_then(|v| v.as_str()) else {
+            return error_response(id, code::INVALID_PARAMS, "falta params.uri");
+        };
+        match self.handler.ui_resources().into_iter().find(|r| r.uri == uri) {
+            Some(r) => ok_response(
+                id,
+                obj([(
+                    "contents",
+                    arr(vec![obj([
+                        ("uri", s(r.uri)),
+                        ("mimeType", s(UI_APPS_MIME_TYPE)),
+                        ("text", s(r.html)),
+                    ])]),
+                )]),
+            ),
+            None => error_response(id, code::INVALID_PARAMS, &format!("recurso desconocido: {uri}")),
+        }
     }
 
     fn on_tools_call(&mut self, id: Value, params: &Value) -> Value {
@@ -255,6 +361,7 @@ mod tests {
                 name: "echo",
                 description: "devuelve lo recibido",
                 input_schema: obj([("type", s("object"))]),
+                ui_resource_uri: None,
             }]
         }
         fn call(&mut self, name: &str, arguments: &Value) -> Result<Value, ToolError> {
@@ -268,6 +375,85 @@ mod tests {
 
     fn server() -> McpServer<EchoTools> {
         McpServer::new("test", "0.0.0", EchoTools)
+    }
+
+    /// Handler de prueba con una herramienta vinculada a un recurso
+    /// `ui://`, para probar `resources/list`, `resources/read` y la
+    /// degradación elegante de `_meta.ui` en `tools/list`.
+    struct EchoWithUi;
+
+    impl ToolHandler for EchoWithUi {
+        fn tools(&self) -> Vec<ToolSpec> {
+            vec![ToolSpec {
+                name: "echo",
+                description: "devuelve lo recibido",
+                input_schema: obj([("type", s("object"))]),
+                ui_resource_uri: Some("ui://test/echo-view"),
+            }]
+        }
+        fn call(&mut self, _name: &str, arguments: &Value) -> Result<Value, ToolError> {
+            Ok(arguments.clone())
+        }
+        fn ui_resources(&self) -> Vec<UiResource> {
+            vec![UiResource {
+                uri: "ui://test/echo-view",
+                name: "Echo view",
+                description: "vista de prueba",
+                html: "<!DOCTYPE html><html><body>echo</body></html>",
+            }]
+        }
+    }
+
+    fn server_with_ui() -> McpServer<EchoWithUi> {
+        McpServer::new("test", "0.0.0", EchoWithUi)
+    }
+
+    const INIT_SIN_UI: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#;
+    const INIT_CON_UI: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"extensions":{"io.modelcontextprotocol/ui":{"mimeTypes":["text/html;profile=mcp-app"]}}},"clientInfo":{"name":"t","version":"0"}}}"#;
+
+    #[test]
+    fn resources_list_y_read_devuelven_el_recurso_ui() {
+        let mut srv = server_with_ui();
+        srv.handle_message(INIT_SIN_UI).unwrap();
+
+        let resp = srv
+            .handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"resources/list"}"#)
+            .unwrap();
+        assert!(resp.contains("\"ui://test/echo-view\""));
+        assert!(resp.contains("\"mimeType\":\"text/html;profile=mcp-app\""));
+
+        let resp = srv
+            .handle_message(r#"{"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"ui://test/echo-view"}}"#)
+            .unwrap();
+        assert!(resp.contains("<!DOCTYPE html>"));
+    }
+
+    #[test]
+    fn resources_read_de_uri_desconocida_es_invalid_params() {
+        let resp = server_with_ui()
+            .handle_message(r#"{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"ui://no-existe"}}"#)
+            .unwrap();
+        assert!(resp.contains("-32602"));
+    }
+
+    #[test]
+    fn tools_list_solo_anuncia_meta_ui_si_el_cliente_declaro_la_extension() {
+        // Sin la capability declarada: el tool es indistinguible de
+        // uno sin UI — degradación elegante.
+        let mut srv = server_with_ui();
+        srv.handle_message(INIT_SIN_UI).unwrap();
+        let resp = srv
+            .handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#)
+            .unwrap();
+        assert!(!resp.contains("_meta"));
+
+        // Con la capability declarada: aparece `_meta.ui.resourceUri`.
+        let mut srv = server_with_ui();
+        srv.handle_message(INIT_CON_UI).unwrap();
+        let resp = srv
+            .handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#)
+            .unwrap();
+        assert!(resp.contains("\"_meta\":{\"ui\":{\"resourceUri\":\"ui://test/echo-view\"}}"));
     }
 
     #[test]
