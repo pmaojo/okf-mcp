@@ -45,7 +45,12 @@ async fn get_db_pool(db_url: &str) -> sqlx::PgPool {
     let pool = sqlx::PgPool::connect(db_url)
         .await
         .expect("Failed to connect to Supabase PostgreSQL database");
-    sqlx::query(include_str!("../../supabase-store/schema.sql"))
+    // `schema.sql` trae varias sentencias separadas por `;`. `sqlx::query`
+    // usa el protocolo extendido (prepared statement), que Postgres
+    // rechaza si el texto trae más de un comando ("cannot insert
+    // multiple commands into a prepared statement"). `raw_sql` usa el
+    // protocolo simple, que sí soporta scripts multi-sentencia.
+    sqlx::raw_sql(include_str!("../../supabase-store/schema.sql"))
         .execute(&pool)
         .await
         .expect("Failed to apply database schema");
@@ -514,25 +519,23 @@ async fn mcp_handler(method: Method, headers: HeaderMap, body: Bytes) -> Respons
             // firma todo JWT con `aud: "authenticated"` (es el rol de
             // Postgres, no identifica al cliente) — lo que identifica al
             // cliente es el claim `client_id`, que es lo que
-            // `validate_jwt` compara contra JWT_AUDIENCE (nombre de la env
-            // var sin cambiar para no tocar la config ya desplegada). Con
-            // JWKS_URL activo ya no estamos en modo abierto de desarrollo,
-            // así que exigimos también JWT_AUDIENCE: aceptar cualquier
-            // cliente dejaría pasar tokens emitidos para otra app bajo el
-            // mismo Authorization Server (p. ej. otro cliente OAuth de
-            // Supabase que no es este servidor MCP).
-            let audience = match std::env::var("JWT_AUDIENCE") {
-                Ok(v) => v,
-                Err(_) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        [("content-type", "text/plain")],
-                        "Server misconfigured: JWKS_URL is set but JWT_AUDIENCE is missing".to_string(),
-                    )
-                        .into_response();
-                }
-            };
-            match auth::validate_jwt(auth_header, &jwks_url, Some(&audience)).await {
+            // `validate_jwt` compara contra JWT_AUDIENCE si está presente.
+            //
+            // Con el registro dinámico de clientes (DCR) activado en el
+            // OAuth Server de Supabase, Claude puede auto-registrarse con
+            // un `client_id` nuevo en cualquier momento — fijar
+            // JWT_AUDIENCE a un único cliente pre-registrado rompería la
+            // conexión cada vez que eso pasa. Por eso JWT_AUDIENCE es
+            // opcional: si está configurada, restringe a ese client_id
+            // (útil en despliegues sin DCR, con un cliente fijo); si no,
+            // se acepta cualquier token válido firmado por este Supabase
+            // Auth — la seguridad real la da la sesión de usuario (login)
+            // más la aprobación explícita en la pantalla de consentimiento
+            // de `/oauth/consent`, no el client_id.
+            let audience = std::env::var("JWT_AUDIENCE")
+                .ok()
+                .filter(|v| !v.is_empty());
+            match auth::validate_jwt(auth_header, &jwks_url, audience.as_deref()).await {
                 Ok(principal) => principal,
                 Err(err) => {
                     // Cabecera exigida por la especificación de autorización

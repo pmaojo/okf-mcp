@@ -61,20 +61,17 @@ parsear un socket TCP a mano (capítulo 10, §3). El adaptador de
 Vercel no reimplementa el enrutado, los códigos de estado ni el
 presupuesto — los HEREDA.
 
-El router es deliberadamente vacío de rutas:
+El router incluye soporte para CORS (Cross-Origin Resource Sharing), indispensable porque clientes como Claude.ai ejecutan peticiones `fetch` directas desde el navegador del usuario, lo que genera peticiones previas de control (*preflight OPTIONS*):
 
 ```rust
-let router = Router::new().fallback(mcp_handler);
+let router = Router::new()
+    .fallback(mcp_handler)
+    .layer(cors_layer());
 let app = ServiceBuilder::new().layer(VercelLayer::new()).service(router);
 run(app).await
 ```
 
-`fallback` en axum captura CUALQUIER petición que no matchee una
-ruta registrada — y como no registramos ninguna, captura TODO:
-cualquier método, cualquier path que Vercel le entregue a esta
-función. La decisión de "esto no es `/mcp`, esto es GET, esto pesa
-demasiado" sigue viviendo en `route()`, no en el router de axum. Dos
-motores de enrutado (Vercel + axum) delante de un único árbitro.
+`fallback` en axum captura CUALQUIER petición que no matchee una ruta registrada — y como no registramos ninguna en este hito, captura todas las peticiones normales. Sin embargo, el `.layer(cors_layer())` (un middleware de `tower-http`) intercepta las peticiones de preflight `OPTIONS` antes de que lleguen al handler, respondiendo automáticamente con las cabeceras CORS adecuadas. La validación del origen en `cors_layer()` reutiliza la misma lista de `ALLOWED_ORIGINS` que ya conocemos de `mcp-http`, garantizando coherencia en todo el sistema. La decisión final sobre rutas normales sigue viviendo en `route()`.
 
 **El detalle que no es un descuido**, comentado en el propio código:
 
