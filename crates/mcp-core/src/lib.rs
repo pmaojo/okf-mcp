@@ -17,6 +17,7 @@
 //! usará `serde_json` en el adaptador `json-wire`.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 use json_mini::{arr, obj, s, Value};
 
@@ -25,17 +26,25 @@ pub const PROTOCOL_VERSION: &str = "2025-06-18";
 
 /// Códigos de error JSON-RPC 2.0.
 pub mod code {
+    /// El mensaje no era JSON válido.
     pub const PARSE_ERROR: f64 = -32700.0;
+    /// JSON válido pero no es una petición JSON-RPC bien formada.
     pub const INVALID_REQUEST: f64 = -32600.0;
+    /// El método no existe en este servidor.
     pub const METHOD_NOT_FOUND: f64 = -32601.0;
+    /// Parámetros mal formados para un método que sí existe.
     pub const INVALID_PARAMS: f64 = -32602.0;
+    /// Fallo interno del servidor (nunca de la herramienta: eso va
+    /// como resultado con `isError: true`).
     pub const INTERNAL_ERROR: f64 = -32603.0;
 }
 
 /// Descripción de una herramienta para `tools/list`.
 #[derive(Debug, Clone)]
 pub struct ToolSpec {
+    /// Nombre con el que el cliente invoca la herramienta.
     pub name: &'static str,
+    /// Descripción orientada al MODELO: es quien decide usarla.
     pub description: &'static str,
     /// JSON Schema del parámetro `arguments`.
     pub input_schema: Value,
@@ -53,8 +62,11 @@ pub struct ToolSpec {
 /// JSON crudo.
 #[derive(Debug, Clone)]
 pub struct UiResource {
+    /// URI `ui://` con la que se anuncia y se lee el recurso.
     pub uri: &'static str,
+    /// Nombre legible para `resources/list`.
     pub name: &'static str,
+    /// Qué muestra esta vista y para qué herramienta.
     pub description: &'static str,
     /// HTML completo (`<!DOCTYPE html>...`), con CSS/JS inline. Debe
     /// ser autocontenido: el cliente lo sirve en un iframe aislado sin
@@ -80,7 +92,12 @@ pub enum ToolError {
 
 /// El contrato entre el protocolo y las herramientas.
 pub trait ToolHandler {
+    /// Catálogo de herramientas, para `tools/list`.
     fn tools(&self) -> Vec<ToolSpec>;
+
+    /// Ejecuta la herramienta `name` con `arguments`. La distinción
+    /// entre variantes de [`ToolError`] importa: solo las dos
+    /// primeras son errores de protocolo.
     fn call(&mut self, name: &str, arguments: &Value) -> Result<Value, ToolError>;
 
     /// Recursos `ui://` que este handler expone, para `resources/list`
@@ -101,6 +118,37 @@ enum Lifecycle {
 }
 
 /// Servidor MCP independiente del transporte.
+///
+/// # Ejemplo
+///
+/// Todo el protocolo es una función sobre strings — no hace falta
+/// ningún socket para verlo funcionar:
+///
+/// ```
+/// use json_mini::Value;
+/// use mcp_core::{McpServer, ToolError, ToolHandler, ToolSpec};
+///
+/// struct Eco;
+/// impl ToolHandler for Eco {
+///     fn tools(&self) -> Vec<ToolSpec> { Vec::new() }
+///     fn call(&mut self, _: &str, args: &Value) -> Result<Value, ToolError> {
+///         Ok(args.clone())
+///     }
+/// }
+///
+/// let mut srv = McpServer::new("demo", "0.0.0", Eco);
+///
+/// // Una petición produce respuesta con el MISMO id…
+/// let resp = srv
+///     .handle_message(r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#)
+///     .unwrap();
+/// assert!(resp.contains(r#""id":1"#));
+///
+/// // …y una notificación no produce nada, jamás.
+/// assert!(srv
+///     .handle_message(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+///     .is_none());
+/// ```
 pub struct McpServer<H: ToolHandler> {
     handler: H,
     server_name: &'static str,
@@ -109,6 +157,7 @@ pub struct McpServer<H: ToolHandler> {
 }
 
 impl<H: ToolHandler> McpServer<H> {
+    /// Servidor recién nacido, a la espera de `initialize`.
     pub fn new(server_name: &'static str, server_version: &'static str, handler: H) -> Self {
         McpServer {
             handler,

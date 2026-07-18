@@ -15,6 +15,7 @@
 //! bug de memoria esperando tráfico.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 use memory_model::{Budget, ConceptId};
 use std::collections::{BTreeSet, VecDeque};
@@ -22,6 +23,7 @@ use std::collections::{BTreeSet, VecDeque};
 /// Fuente de adyacencia. `Err` representa un fallo de E/S del
 /// backend (en memoria nunca falla; sobre Postgres sí puede).
 pub trait NeighborSource {
+    /// Fallo de E/S del backend al leer adyacencia o tamaños.
     type Error;
 
     /// Vecinos salientes de `id`. Un id desconocido devuelve lista
@@ -37,7 +39,9 @@ pub trait NeighborSource {
 /// Un nodo visitado y a qué distancia del origen se encontró.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Visited {
+    /// El concepto visitado.
     pub id: ConceptId,
+    /// Distancia en saltos desde el origen (el origen es 0).
     pub depth: u8,
     /// `false` si el enlace apunta a un concepto que no existe.
     pub exists: bool,
@@ -54,8 +58,11 @@ pub struct Visited {
 pub struct Traversal {
     /// En orden BFS (el origen primero).
     pub visited: Vec<Visited>,
+    /// Se alcanzó `budget.max_graph_nodes` con nodos pendientes.
     pub truncated_by_nodes: bool,
+    /// Se alcanzó `budget.max_graph_depth` con vecinos sin explorar.
     pub truncated_by_depth: bool,
+    /// Los bytes acumulados superaron `budget.max_response_bytes`.
     pub truncated_by_bytes: bool,
     /// Bytes de documentos existentes acumulados.
     pub total_bytes: usize,
@@ -70,6 +77,42 @@ pub struct Traversal {
 ///   `budget.max_response_bytes` (el nodo que cruza el umbral se
 ///   incluye; sus vecinos ya no);
 /// - termina en grafos con ciclos (conjunto `visited`).
+///
+/// # Ejemplo
+///
+/// La fuente puede ser cualquier cosa que sepa dar vecinos — aquí,
+/// un `BTreeMap` de tres entradas (SOLID-I en acción):
+///
+/// ```
+/// use graph_core::{bounded_bfs, NeighborSource};
+/// use memory_model::{Budget, ConceptId};
+/// use std::collections::BTreeMap;
+/// use std::convert::Infallible;
+///
+/// struct MapGraph(BTreeMap<ConceptId, Vec<ConceptId>>);
+///
+/// impl NeighborSource for MapGraph {
+///     type Error = Infallible;
+///     fn neighbors(&self, id: &ConceptId) -> Result<Vec<ConceptId>, Infallible> {
+///         Ok(self.0.get(id).cloned().unwrap_or_default())
+///     }
+///     fn document_size(&self, id: &ConceptId) -> Result<Option<usize>, Infallible> {
+///         Ok(self.0.contains_key(id).then_some(100))
+///     }
+/// }
+///
+/// let id = |s: &str| ConceptId::parse(s).unwrap();
+/// let g = MapGraph(BTreeMap::from([
+///     (id("a"), vec![id("b"), id("c")]),
+///     (id("b"), vec![id("a")]), // el ciclo no cuelga el recorrido
+///     (id("c"), vec![]),
+/// ]));
+///
+/// let t = bounded_bfs(&g, &id("a"), &Budget::default()).unwrap();
+/// let orden: Vec<&str> = t.visited.iter().map(|v| v.id.as_str()).collect();
+/// assert_eq!(orden, ["a", "b", "c"]);
+/// assert!(!t.truncated_by_nodes);
+/// ```
 pub fn bounded_bfs<S: NeighborSource>(
     source: &S,
     start: &ConceptId,

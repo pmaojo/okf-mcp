@@ -14,6 +14,7 @@
 //! - `memory_history` — revisiones compactas, paginadas.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 use graph_core::NeighborSource;
 use json_mini::{arr, n, obj, s, Value};
@@ -22,6 +23,7 @@ use memory_model::{Budget, ConceptId, ContentId, Principal};
 use store_core::{CommitRequest, MemoryRepository, SearchQuery, StoreError};
 use std::convert::Infallible;
 
+/// El [`ToolHandler`] de memoria, genérico sobre el repositorio.
 pub struct MemoryTools<R> {
     repo: R,
     actor: Principal,
@@ -32,6 +34,8 @@ impl<R> MemoryTools<R>
 where
     R: MemoryRepository + NeighborSource<Error = Infallible>,
 {
+    /// Envuelve un repositorio con el actor y el presupuesto que
+    /// gobernarán TODAS las llamadas.
     pub fn new(repo: R, actor: Principal, budget: Budget) -> Self {
         MemoryTools { repo, actor, budget }
     }

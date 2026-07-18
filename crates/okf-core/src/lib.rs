@@ -28,6 +28,7 @@
 //! ese; este subconjunto existe para aprender y para los tests.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 use memory_model::{Budget, ConceptId};
 use std::collections::BTreeMap;
@@ -36,7 +37,9 @@ use std::fmt;
 /// Valor de frontmatter soportado por el subconjunto.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FmValue {
+    /// Escalar de una línea: `title: Alice García`.
     Scalar(String),
+    /// Lista en bloque: `tags:` seguido de líneas `  - item`.
     List(Vec<String>),
 }
 
@@ -58,6 +61,8 @@ pub struct OkfDocument {
     pub links: Vec<ConceptId>,
 }
 
+/// Por qué un documento no es OKF válido. Siempre con línea u
+/// offset: rechazar sin decir dónde no enseña el formato.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OkfError {
     /// El documento no empieza por `---\n`.
@@ -65,19 +70,47 @@ pub enum OkfError {
     /// No se encontró el `---` de cierre.
     UnterminatedFrontmatter,
     /// El frontmatter supera `budget.max_frontmatter_bytes`.
-    FrontmatterTooLarge { len: usize, max: usize },
+    FrontmatterTooLarge {
+        /// Bytes de frontmatter encontrados (o cota inferior).
+        len: usize,
+        /// El máximo permitido por el presupuesto.
+        max: usize,
+    },
     /// El documento supera `budget.max_document_bytes`.
-    DocumentTooLarge { len: usize, max: usize },
-    /// Sintaxis no soportada por el subconjunto. `line` es 1-based.
-    Unsupported { line: usize, reason: String },
+    DocumentTooLarge {
+        /// Bytes del documento recibido.
+        len: usize,
+        /// El máximo permitido por el presupuesto.
+        max: usize,
+    },
+    /// Sintaxis no soportada por el subconjunto.
+    Unsupported {
+        /// Línea del problema, 1-based sobre el documento completo.
+        line: usize,
+        /// Qué sintaxis se rechazó y, si procede, la alternativa.
+        reason: String,
+    },
     /// Clave repetida en el frontmatter.
-    DuplicateKey { line: usize, key: String },
+    DuplicateKey {
+        /// Línea de la segunda aparición, 1-based.
+        line: usize,
+        /// La clave duplicada.
+        key: String,
+    },
     /// Falta el campo obligatorio `type`.
     MissingType,
-    /// Un enlace `[[...]]` no es un ConceptId válido. `offset` en bytes.
-    InvalidLink { offset: usize, target: String },
+    /// Un enlace `[[...]]` no es un ConceptId válido.
+    InvalidLink {
+        /// Offset en bytes del enlace sobre el documento completo.
+        offset: usize,
+        /// El destino inválido, tal cual aparece entre corchetes.
+        target: String,
+    },
     /// Más enlaces que `budget.max_links_per_document`.
-    TooManyLinks { max: usize },
+    TooManyLinks {
+        /// El máximo permitido por el presupuesto.
+        max: usize,
+    },
 }
 
 impl fmt::Display for OkfError {
@@ -115,6 +148,39 @@ impl fmt::Display for OkfError {
 impl std::error::Error for OkfError {}
 
 /// Analiza un documento OKF completo bajo un presupuesto.
+///
+/// # Ejemplo
+///
+/// ```
+/// use memory_model::Budget;
+///
+/// let raw = "---\ntype: person\ntitle: Alice García\ntags:\n  - rust\n---\nTrabaja con [[people/bob]].\n";
+/// let doc = okf_core::parse_document(raw, &Budget::default())?;
+///
+/// assert_eq!(doc.doc_type, "person");
+/// assert_eq!(doc.title.as_deref(), Some("Alice García"));
+/// assert_eq!(doc.tags, vec!["rust"]);
+/// assert_eq!(doc.links[0].as_str(), "people/bob");
+/// // Los bytes originales siguen siendo la verdad: el cuerpo se
+/// // recupera por offset, nunca reformateado.
+/// assert_eq!(&raw[doc.body_offset..], "Trabaja con [[people/bob]].\n");
+/// # Ok::<(), okf_core::OkfError>(())
+/// ```
+///
+/// # Errores
+///
+/// Lo que el subconjunto no entiende se rechaza con línea u offset,
+/// nunca se acepta en silencio:
+///
+/// ```
+/// use memory_model::Budget;
+/// use okf_core::{parse_document, OkfError};
+///
+/// assert_eq!(
+///     parse_document("sin frontmatter", &Budget::default()).unwrap_err(),
+///     OkfError::MissingFrontmatter,
+/// );
+/// ```
 pub fn parse_document(raw: &str, budget: &Budget) -> Result<OkfDocument, OkfError> {
     if raw.len() > budget.max_document_bytes {
         return Err(OkfError::DocumentTooLarge { len: raw.len(), max: budget.max_document_bytes });

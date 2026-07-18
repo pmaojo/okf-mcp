@@ -1,10 +1,25 @@
 //! Tipos de dominio del motor de memoria.
 //!
 //! Este crate no sabe nada de JSON, HTTP, YAML ni bases de datos.
-//! Solo define QUÉ es un concepto, un hash de contenido, una revisión
-//! y un presupuesto de recursos. Todo lo demás son adaptadores.
+//! Solo define QUÉ es un concepto ([`ConceptId`]), un hash de
+//! contenido ([`ContentId`]), una revisión ([`Revision`]) y un
+//! presupuesto de recursos ([`Budget`]). Todo lo demás son
+//! adaptadores.
+//!
+//! # Ejemplo
+//!
+//! ```
+//! use memory_model::{Budget, ConceptId};
+//!
+//! let id = ConceptId::parse("people/alice")?;
+//! let budget = Budget::default();
+//! assert!(id.as_str().len() <= memory_model::MAX_CONCEPT_ID_LEN);
+//! assert!(budget.max_graph_depth >= 1);
+//! # Ok::<(), memory_model::ConceptIdError>(())
+//! ```
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 use std::fmt;
 
@@ -22,18 +37,56 @@ pub const MAX_CONCEPT_ID_LEN: usize = 200;
 /// - sin segmentos vacíos (`a//b`), sin `.` ni `..` como segmento
 /// - no empieza ni termina en `/`
 /// - longitud entre 1 y [`MAX_CONCEPT_ID_LEN`]
+///
+/// # Ejemplos
+///
+/// ```
+/// use memory_model::ConceptId;
+///
+/// let id = ConceptId::parse("people/alice").unwrap();
+/// assert_eq!(id.as_str(), "people/alice");
+///
+/// // La lista blanca rechaza cualquier intento de traversal:
+/// assert!(ConceptId::parse("../etc/passwd").is_err());
+/// assert!(ConceptId::parse("a/../b").is_err());
+/// ```
+///
+/// Y el invariante no se puede esquivar: el campo interno es
+/// privado, así que fabricar un `ConceptId` sin pasar por
+/// [`ConceptId::parse`] ni siquiera compila. rustdoc verifica esta
+/// afirmación en cada `cargo test`:
+///
+/// ```compile_fail
+/// let id = memory_model::ConceptId("../etc".to_string());
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ConceptId(String);
 
 /// Por qué un texto no es un `ConceptId` válido.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConceptIdError {
+    /// La cadena está vacía.
     Empty,
-    TooLong { len: usize, max: usize },
+    /// Supera [`MAX_CONCEPT_ID_LEN`].
+    TooLong {
+        /// Longitud recibida, en bytes.
+        len: usize,
+        /// El máximo permitido ([`MAX_CONCEPT_ID_LEN`]).
+        max: usize,
+    },
     /// Byte no permitido y su posición.
-    InvalidByte { byte: u8, offset: usize },
+    InvalidByte {
+        /// El byte rechazado.
+        byte: u8,
+        /// Posición del byte en la cadena de entrada.
+        offset: usize,
+    },
     /// Segmento vacío, `.` o `..`.
-    InvalidSegment { segment: String },
+    InvalidSegment {
+        /// El segmento rechazado, tal cual llegó.
+        segment: String,
+    },
+    /// Empieza o termina con `/`.
     LeadingOrTrailingSlash,
 }
 
@@ -62,6 +115,13 @@ impl std::error::Error for ConceptIdError {}
 impl ConceptId {
     /// Valida y construye. La validación es por lista blanca:
     /// rechazamos todo lo que no esté explícitamente permitido.
+    ///
+    /// # Errores
+    ///
+    /// Devuelve la variante de [`ConceptIdError`] que describe la
+    /// PRIMERA regla violada, con el byte y la posición exactos
+    /// cuando aplica. Un validador que dice "inválido" sin decir
+    /// dónde no enseña nada.
     pub fn parse(s: &str) -> Result<Self, ConceptIdError> {
         if s.is_empty() {
             return Err(ConceptIdError::Empty);
@@ -90,6 +150,7 @@ impl ConceptId {
         Ok(ConceptId(s.to_string()))
     }
 
+    /// La ruta lógica validada, como `&str` prestado.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -104,6 +165,20 @@ impl fmt::Display for ConceptId {
 /// Identidad de contenido: SHA-256 de los bytes UTF-8 exactos del
 /// documento. No es un id de objeto Git (Git mezcla tipo y longitud
 /// en el hash); es NUESTRO tipo, con nuestras reglas.
+///
+/// # Ejemplo
+///
+/// La ida y vuelta hexadecimal es exacta o no es:
+///
+/// ```
+/// use memory_model::ContentId;
+///
+/// let id = ContentId([0xab; 32]);
+/// let hex = id.to_hex();
+/// assert_eq!(hex.len(), 64);
+/// assert_eq!(ContentId::from_hex(&hex), Some(id));
+/// assert_eq!(ContentId::from_hex("demasiado-corto"), None);
+/// ```
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ContentId(pub [u8; 32]);
 
@@ -168,6 +243,9 @@ pub struct Principal {
 }
 
 impl Principal {
+    /// El principal fijo del hito 1: `subject = "local"`,
+    /// `client_id = "dev"`. En producción lo sustituye el `sub` de
+    /// un JWT validado.
     pub fn local_dev() -> Self {
         Principal { subject: "local".to_string(), client_id: "dev".to_string() }
     }
@@ -178,12 +256,14 @@ impl Principal {
 pub struct Revision {
     /// Número de secuencia global, monótono creciente (1, 2, 3, …).
     pub seq: u64,
+    /// Concepto al que pertenece la revisión.
     pub concept_id: ConceptId,
     /// Hash sobre el que se basó la edición (`None` si el documento
     /// se creó en esta revisión).
     pub base: Option<ContentId>,
     /// Hash resultante.
     pub result: ContentId,
+    /// Quién confirmó la revisión.
     pub actor: Principal,
     /// Motivo declarado por el agente ("añadí el nuevo proyecto…").
     pub reason: String,
@@ -193,15 +273,35 @@ pub struct Revision {
 ///
 /// Cada operación que consume memoria o produce salida debe
 /// comprobar el presupuesto ANTES de asignar, no después de fallar.
+///
+/// # Ejemplo
+///
+/// El [`Default`] es el punto de partida; cada frontera lo ajusta:
+///
+/// ```
+/// use memory_model::Budget;
+///
+/// let budget = Budget { max_graph_depth: 2, ..Budget::default() };
+/// assert_eq!(budget.max_graph_depth, 2);
+/// assert_eq!(budget.max_graph_nodes, 128); // el resto, intacto
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Budget {
+    /// Tamaño máximo de una petición entrante, en bytes.
     pub max_request_bytes: usize,
+    /// Tamaño máximo de una respuesta serializada, en bytes.
     pub max_response_bytes: usize,
+    /// Tamaño máximo de un documento Markdown completo, en bytes.
     pub max_document_bytes: usize,
+    /// Tamaño máximo del frontmatter YAML, en bytes.
     pub max_frontmatter_bytes: usize,
+    /// Nodos máximos que un recorrido de grafo puede visitar.
     pub max_graph_nodes: usize,
+    /// Profundidad máxima de un recorrido de grafo.
     pub max_graph_depth: u8,
+    /// Enlaces `[[...]]` máximos por documento.
     pub max_links_per_document: usize,
+    /// Resultados máximos de una búsqueda.
     pub max_search_results: usize,
 }
 

@@ -6,6 +6,7 @@
 //!   para cualquier consumidor, validado por los tests en `contract`.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 pub mod contract;
 
@@ -20,13 +21,21 @@ use std::sync::Arc;
 /// compartir es seguro por construcción).
 #[derive(Debug, Clone)]
 pub struct DocumentView {
+    /// Ruta lógica del documento.
     pub concept_id: ConceptId,
+    /// Hash del contenido actual: la base para el próximo commit.
     pub content_id: ContentId,
+    /// Cuántas veces avanzó la cabeza (1 = recién creado).
     pub version: u64,
+    /// Los bytes exactos del Markdown, compartidos sin copiar.
     pub raw: Arc<str>,
+    /// Campo `type` del frontmatter.
     pub doc_type: String,
+    /// Campo `title` del frontmatter, si existe.
     pub title: Option<String>,
+    /// Campo `tags` del frontmatter.
     pub tags: Vec<String>,
+    /// Enlaces `[[...]]` salientes, ya validados.
     pub links: Vec<ConceptId>,
 }
 
@@ -34,18 +43,26 @@ pub struct DocumentView {
 /// (`None` si cree estar creando el documento).
 #[derive(Debug, Clone)]
 pub struct CommitRequest {
+    /// Ruta lógica del documento a escribir.
     pub concept_id: ConceptId,
+    /// Hash que el cliente leyó (`None` = "estoy creando").
     pub expected: Option<ContentId>,
+    /// El documento completo, frontmatter incluido.
     pub markdown: String,
+    /// Motivo declarado por el agente, para la historia.
     pub reason: String,
 }
 
 /// Resultado de un commit aceptado.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitOutcome {
+    /// La revisión creada; `None` si no hubo nada que escribir.
     pub revision: Option<Revision>,
+    /// Hash de la cabeza tras la operación.
     pub content_id: ContentId,
+    /// Versión de la cabeza tras la operación.
     pub version: u64,
+    /// `true` si el documento no existía y se creó.
     pub created: bool,
     /// `true` si el contenido ya era idéntico (idempotencia).
     pub no_change: bool,
@@ -58,20 +75,31 @@ pub struct SearchQuery {
     /// Subcadena, sin distinción de mayúsculas, sobre id, título,
     /// tags y cuerpo.
     pub text: Option<String>,
+    /// Igualdad exacta sobre el campo `type` del frontmatter.
     pub doc_type: Option<String>,
+    /// Pertenencia exacta en la lista de tags.
     pub tag: Option<String>,
+    /// Tope de resultados; siempre acotado además por
+    /// `budget.max_search_results`.
     pub limit: Option<usize>,
 }
 
+/// Un candidato compacto: lo justo para decidir si merece un `get`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchHit {
+    /// Ruta lógica del documento encontrado.
     pub concept_id: ConceptId,
+    /// Hash de su contenido actual.
     pub content_id: ContentId,
+    /// Campo `type` del frontmatter.
     pub doc_type: String,
+    /// Campo `title` del frontmatter, si existe.
     pub title: Option<String>,
+    /// Campo `tags` del frontmatter.
     pub tags: Vec<String>,
 }
 
+/// Todo lo que puede salir mal al leer o escribir.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreError {
     /// El documento no pasa la validación OKF.
@@ -109,11 +137,22 @@ impl From<OkfError> for StoreError {
 }
 
 /// El contrato que cualquier backend de memoria debe cumplir.
+///
+/// Las garantías de comportamiento no viven solo en esta página:
+/// están escritas como tests en el módulo [`contract`], y toda
+/// implementación debe pasarlos. Eso es Liskov hecho ejecutable.
 pub trait MemoryRepository {
+    /// Cabeza actual de `id`, o `None` si el concepto no existe.
     fn get(&self, id: &ConceptId) -> Result<Option<DocumentView>, StoreError>;
 
+    /// Candidatos que cumplen TODOS los criterios de `query`,
+    /// nunca más de `budget.max_search_results`.
     fn search(&self, query: &SearchQuery, budget: &Budget) -> Result<Vec<SearchHit>, StoreError>;
 
+    /// Escritura con compare-and-swap: valida el documento, compara
+    /// `request.expected` con la cabeza real y solo entonces escribe.
+    /// Un rechazo llega como [`StoreError::Conflict`] con los hashes
+    /// para releer y reintentar.
     fn commit(
         &mut self,
         request: CommitRequest,
