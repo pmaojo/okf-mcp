@@ -256,8 +256,7 @@ mod tests {
 
         let (stream, _) = listener.accept().unwrap();
         let mut srv = server();
-        let mut budget = Budget::default();
-        budget.max_request_bytes = 1024;
+        let budget = Budget { max_request_bytes: 1024, ..Budget::default() };
         handle_connection(stream, &budget, &[], &mut srv).unwrap();
 
         let resp = client.join().unwrap();

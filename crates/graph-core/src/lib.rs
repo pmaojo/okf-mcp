@@ -143,10 +143,7 @@ pub fn bounded_bfs<S: NeighborSource>(
         if let Some(bytes) = size {
             // Aritmética comprobada: un overflow aquí sería un bug
             // silencioso de presupuesto.
-            result.total_bytes = result
-                .total_bytes
-                .checked_add(bytes)
-                .unwrap_or(usize::MAX);
+            result.total_bytes = result.total_bytes.saturating_add(bytes);
         }
         order.push(Visited { id: id.clone(), depth, exists, parent });
 
@@ -246,8 +243,7 @@ mod tests {
         let hijos: Vec<String> = (0..20).map(|i| format!("hijo-{i}")).collect();
         let refs: Vec<&str> = hijos.iter().map(|s| s.as_str()).collect();
         let g = graph(&[("raiz", refs.as_slice())]);
-        let mut budget = Budget::default();
-        budget.max_graph_nodes = 5;
+        let budget = Budget { max_graph_nodes: 5, ..Budget::default() };
         let t = bounded_bfs(&g, &id("raiz"), &budget).unwrap();
         assert_eq!(t.visited.len(), 5);
         assert!(t.truncated_by_nodes);
@@ -256,8 +252,7 @@ mod tests {
     #[test]
     fn respeta_max_depth() {
         let g = graph(&[("a", &["b"]), ("b", &["c"]), ("c", &["d"]), ("d", &["e"])]);
-        let mut budget = Budget::default();
-        budget.max_graph_depth = 2;
+        let budget = Budget { max_graph_depth: 2, ..Budget::default() };
         let t = bounded_bfs(&g, &id("a"), &budget).unwrap();
         let ids: Vec<&str> = t.visited.iter().map(|v| v.id.as_str()).collect();
         assert_eq!(ids, vec!["a", "b", "c"]);
@@ -267,8 +262,7 @@ mod tests {
     #[test]
     fn respeta_presupuesto_de_bytes() {
         let g = graph(&[("a", &["b"]), ("b", &["c"]), ("c", &["d"])]);
-        let mut budget = Budget::default();
-        budget.max_response_bytes = 150; // a (100) + b (100) ya lo supera
+        let budget = Budget { max_response_bytes: 150, ..Budget::default() };
         let t = bounded_bfs(&g, &id("a"), &budget).unwrap();
         assert_eq!(t.visited.len(), 2);
         assert!(t.truncated_by_bytes);

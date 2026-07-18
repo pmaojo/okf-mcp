@@ -766,8 +766,7 @@ mod tests {
 
     #[test]
     fn respeta_presupuesto_de_enlaces() {
-        let mut budget = Budget::default();
-        budget.max_links_per_document = 2;
+        let budget = Budget { max_links_per_document: 2, ..Budget::default() };
         let raw = "---\ntype: nota\n---\n[[a]] [[b]] [[c]]\n";
         assert_eq!(
             parse_document(raw, &budget),
@@ -777,8 +776,7 @@ mod tests {
 
     #[test]
     fn respeta_presupuesto_de_tamano() {
-        let mut budget = Budget::default();
-        budget.max_document_bytes = 10;
+        let budget = Budget { max_document_bytes: 10, ..Budget::default() };
         assert!(matches!(
             parse_document("---\ntype: a\n---\ncuerpo", &budget),
             Err(OkfError::DocumentTooLarge { .. })

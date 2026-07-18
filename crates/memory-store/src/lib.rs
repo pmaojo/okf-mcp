@@ -513,7 +513,7 @@ impl StoreMaintenance for InMemoryStore {
             if stats.orphans.len() >= cap {
                 break;
             }
-            let sin_salientes = self.links.get(id).map_or(true, |l| l.is_empty());
+            let sin_salientes = self.links.get(id).is_none_or(|l| l.is_empty());
             if !head.deleted && sin_salientes && !incoming.contains_key(id) {
                 stats.orphans.push(id.clone());
             }
