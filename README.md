@@ -36,7 +36,7 @@ La referencia de API generada con `cargo doc` se publica en
 ┌────────────────────────────────────────────────────────────────────┐
 │ mcp-core     JSON-RPC 2.0 + ciclo de vida MCP + despacho           │
 │ json-mini    parser/serializador JSON educativo                    │
-│ memory-tools 4 herramientas MCP genéricas sobre MemoryRepository   │
+│ memory-tools 13 herramientas MCP genéricas sobre MemoryRepository  │
 │ store-core   puerto MemoryRepository + contrato Liskov             │
 │ memory-model ConceptId, ContentId, Budget, Revision, Principal     │
 │ okf-core     frontmatter YAML (subconjunto) + enlaces [[...]]      │
@@ -139,14 +139,23 @@ curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
 navegador se acepta; sin configurar, cualquier origin pasa — aceptable
 en desarrollo, nunca en producción.
 
-## Las cuatro herramientas
+## Las 13 herramientas
 
-| Herramienta      | Qué hace                                                        |
-| ---------------- | --------------------------------------------------------------- |
-| `memory_search`  | candidatos compactos (id, hash, tipo, título, tags, URI)         |
-| `memory_resolve` | Markdown exacto + vecindario acotado del grafo de `[[enlaces]]`  |
-| `memory_commit`  | escritura con compare-and-swap (`expected_hash`)                 |
-| `memory_history` | revisiones de más reciente a más antigua, paginadas              |
+| Herramienta | Qué hace |
+| --- | --- |
+| `memory_search` | candidatos compactos de búsqueda híbrida (textual + semántica) |
+| `memory_resolve` | Markdown exacto + vecindario acotado del grafo de `[[enlaces]]` |
+| `memory_commit` | escritura con compare-and-swap (`expected_hash`) y `dry_run` |
+| `memory_history` | revisiones de más reciente a más antigua, paginadas |
+| `memory_delete` | borrado lógico con expected_hash |
+| `memory_list` | listar metadatos de conceptos bajo un prefijo sin leer contenido |
+| `memory_backlinks` | obtener enlaces entrantes hacia un concepto |
+| `memory_embed` | forzar generación e indexación de embeddings pendientes |
+| `memory_patch` | actualizar campos de frontmatter selectivamente sin alterar el cuerpo |
+| `memory_bulk_commit` | commits en lote, con opción de atómico (rollback completo) |
+| `memory_validate` | reportar enlaces rotos, referencias a borrados y embeddings obsoletos |
+| `memory_status` | resumen operativo rápido de la salud del sistema |
+| `memory_stats` | estadísticas del grafo (hubs, huérfanos, recuentos de tipos/tags) |
 
 ## Desplegar en Vercel
 
