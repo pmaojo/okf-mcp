@@ -143,7 +143,7 @@ en desarrollo, nunca en producción.
 
 | Herramienta      | Qué hace                                                        |
 | ---------------- | --------------------------------------------------------------- |
-| `memory_search`  | candidatos compactos (id, hash, tipo, título, tags, URI)         |
+| `memory_search`  | candidatos compactos; filtros literales (`type`, `status`, `path_prefix`, `tags` + `tags_mode` any/all) en AND con la `query` semántica |
 | `memory_resolve` | Markdown exacto + vecindario acotado del grafo de `[[enlaces]]`  |
 | `memory_commit`  | escritura con compare-and-swap (`expected_hash`)                 |
 | `memory_history` | revisiones de más reciente a más antigua, paginadas              |

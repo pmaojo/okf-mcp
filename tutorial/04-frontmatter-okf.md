@@ -5,7 +5,7 @@ Crate: [`crates/okf-core`](../crates/okf-core/src/lib.rs) ·
 
 Ya puedes convertir texto JSON en estructura. Pero los documentos de
 memoria no son JSON: son Markdown con un encabezado YAML — el
-frontmatter — donde viven `type`, `title` y `tags`, y un cuerpo
+frontmatter — donde viven `type`, `title`, `status` y `tags`, y un cuerpo
 salpicado de enlaces `[[...]]` que forman el grafo. El servidor
 necesita LEER esos metadatos y extraer esos enlaces.
 

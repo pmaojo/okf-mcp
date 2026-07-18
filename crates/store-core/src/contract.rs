@@ -22,7 +22,7 @@
 //! tests de cada implementación — véase
 //! `crates/memory-store/tests/contract.rs`.)
 
-use crate::{CommitRequest, MemoryRepository, SearchQuery, StoreError};
+use crate::{CommitRequest, MemoryRepository, SearchQuery, StoreError, TagsMode};
 use memory_model::{Budget, ConceptId, ContentId, Principal};
 
 fn id(s: &str) -> ConceptId {
@@ -124,25 +124,83 @@ pub fn inexistente_es_none_y_notfound<R: MemoryRepository>(repo: R) {
 }
 
 /// Los criterios de búsqueda se combinan con AND y `limit` corta.
+/// Los filtros estructurados (`doc_type`, `status`, `path_prefix`,
+/// `tags`) son LITERALES: si nada los cumple, el resultado es vacío
+/// — nunca se degrada a candidatos que no los cumplan.
 pub fn busqueda_respeta_filtros_y_limite<R: MemoryRepository>(mut repo: R) {
     commit(&mut repo, "people/ana", None,
-        "---\ntype: person\ntitle: Ana\ntags:\n  - rust\n---\nIngeniera\n").unwrap();
+        "---\ntype: person\ntitle: Ana\nstatus: active\ntags:\n  - rust\n---\nIngeniera\n").unwrap();
     commit(&mut repo, "people/bo", None,
-        "---\ntype: person\ntitle: Bo\n---\nDiseño\n").unwrap();
+        "---\ntype: person\ntitle: Bo\nstatus: archived\n---\nDiseño\n").unwrap();
     commit(&mut repo, "notas/rust", None, &doc("Apuntes Rust", "lenguaje")).unwrap();
+    commit(&mut repo, "skills/prog/mcp", None,
+        "---\ntype: skill\ntitle: MCP\ntags:\n  - programming\n  - mcp\n---\nServidores MCP\n").unwrap();
+    commit(&mut repo, "skills/prog/testing", None,
+        "---\ntype: skill\ntitle: Testing\ntags:\n  - programming\n  - testing\n---\nPruebas\n").unwrap();
 
     let budget = Budget::default();
-    let q = |text: Option<&str>, ty: Option<&str>, tag: Option<&str>, limit: Option<usize>| SearchQuery {
+    let q = |text: Option<&str>, ty: Option<&str>, tags: &[&str], mode: TagsMode| SearchQuery {
         text: text.map(String::from),
         doc_type: ty.map(String::from),
-        tag: tag.map(String::from),
-        limit,
+        tags: tags.iter().map(|t| t.to_string()).collect(),
+        tags_mode: mode,
+        ..SearchQuery::default()
     };
-    assert_eq!(repo.search(&q(Some("rust"), None, None, None), &budget).unwrap().len(), 2);
-    assert_eq!(repo.search(&q(Some("rust"), Some("person"), None, None), &budget).unwrap().len(), 1);
-    assert_eq!(repo.search(&q(None, None, Some("rust"), None), &budget).unwrap().len(), 1);
-    assert_eq!(repo.search(&q(None, None, None, Some(1)), &budget).unwrap().len(), 1, "limit corta");
-    assert!(repo.search(&q(Some("nada-de-esto"), None, None, None), &budget).unwrap().is_empty());
+
+    // text + type en AND.
+    assert_eq!(repo.search(&q(Some("rust"), None, &[], TagsMode::Any), &budget).unwrap().len(), 2);
+    assert_eq!(repo.search(&q(Some("rust"), Some("person"), &[], TagsMode::Any), &budget).unwrap().len(), 1);
+    assert!(repo.search(&q(Some("nada-de-esto"), None, &[], TagsMode::Any), &budget).unwrap().is_empty());
+
+    // tags es pertenencia LITERAL, con modo any/all explícito.
+    assert_eq!(repo.search(&q(None, None, &["rust"], TagsMode::Any), &budget).unwrap().len(), 1);
+    assert_eq!(repo.search(&q(None, None, &["programming"], TagsMode::Any), &budget).unwrap().len(), 2);
+    assert_eq!(repo.search(&q(None, None, &["mcp", "testing"], TagsMode::Any), &budget).unwrap().len(), 2);
+    assert_eq!(repo.search(&q(None, None, &["programming", "mcp"], TagsMode::All), &budget).unwrap().len(), 1);
+    assert!(
+        repo.search(&q(None, None, &["mcp", "testing"], TagsMode::All), &budget).unwrap().is_empty(),
+        "all exige TODOS los tags en el mismo documento"
+    );
+    assert!(
+        repo.search(&q(None, None, &["no-existe"], TagsMode::Any), &budget).unwrap().is_empty(),
+        "un tag sin coincidencias devuelve vacío, no candidatos sin el tag"
+    );
+
+    // tags + type + text en AND, todos a la vez.
+    assert_eq!(
+        repo.search(&q(Some("pruebas"), Some("skill"), &["programming"], TagsMode::Any), &budget)
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // path_prefix lista una "carpeta" lógica completa.
+    let by_prefix = |prefix: &str| SearchQuery {
+        path_prefix: Some(prefix.to_string()),
+        ..SearchQuery::default()
+    };
+    assert_eq!(repo.search(&by_prefix("skills/"), &budget).unwrap().len(), 2);
+    assert_eq!(repo.search(&by_prefix("skills/prog/"), &budget).unwrap().len(), 2);
+    assert_eq!(repo.search(&by_prefix("people/"), &budget).unwrap().len(), 2);
+    assert!(repo.search(&by_prefix("vacio/"), &budget).unwrap().is_empty());
+
+    // status filtra el ciclo de vida, separado de type.
+    let by_status = |status: &str| SearchQuery {
+        status: Some(status.to_string()),
+        ..SearchQuery::default()
+    };
+    let activos = repo.search(&by_status("active"), &budget).unwrap();
+    assert_eq!(activos.len(), 1);
+    assert_eq!(activos[0].status.as_deref(), Some("active"));
+    assert_eq!(repo.search(&by_status("archived"), &budget).unwrap().len(), 1);
+    assert!(
+        repo.search(&by_status("deleted"), &budget).unwrap().is_empty(),
+        "sin status no hay coincidencia: los documentos sin el campo no cuentan"
+    );
+
+    // limit corta.
+    let limited = SearchQuery { limit: Some(1), ..SearchQuery::default() };
+    assert_eq!(repo.search(&limited, &budget).unwrap().len(), 1, "limit corta");
 }
 
 /// La historia sale de más reciente a más antigua y `before_seq`

@@ -8,6 +8,7 @@ use hash_core::sha256;
 use memory_model::{Budget, ConceptId, ContentId, Principal, Revision};
 use store_core::{
     CommitOutcome, CommitRequest, DocumentView, MemoryRepository, SearchHit, SearchQuery, StoreError,
+    TagsMode,
 };
 use sqlx::postgres::{PgArguments, PgRow};
 use sqlx::query::{Query, QueryScalar};
@@ -67,24 +68,37 @@ impl SupabaseStore {
         SupabaseStore { pool, gemini_api_key }
     }
 
+    /// Los filtros estructurados (`doc_type`, `status`, `path_prefix`,
+    /// `tags`) viven en el WHERE de AMBAS variantes de búsqueda: son
+    /// literales y se aplican siempre; si nada los cumple, la
+    /// respuesta es vacía — nunca se degrada a candidatos sin filtro.
+    /// Para `tags`, `&&` es solapamiento (modo any) y `@>` es
+    /// contención (modo all); con lista vacía el guard de
+    /// `cardinality` desactiva el filtro.
     async fn search_keyword(&self, query: &SearchQuery, limit: i64) -> Result<Vec<PgRow>, StoreError> {
         pg_query(
-            "SELECT h.concept_id, h.content_id, h.doc_type, h.title, h.tags
+            "SELECT h.concept_id, h.content_id, h.doc_type, h.title, h.status, h.tags
              FROM heads h
              JOIN blobs b ON h.content_id = b.content_id
              WHERE ($1::text IS NULL OR h.doc_type = $1)
-               AND ($2::text IS NULL OR $2 = ANY(h.tags))
-               AND ($3::text IS NULL OR (
-                   h.concept_id ILIKE $4 OR
-                   h.title ILIKE $4 OR
-                   b.raw ILIKE $4 OR
-                   EXISTS (SELECT 1 FROM unnest(h.tags) t WHERE t ILIKE $4)
+               AND ($2::text IS NULL OR h.status = $2)
+               AND ($3::text IS NULL OR starts_with(h.concept_id, $3))
+               AND (cardinality($4::text[]) = 0 OR
+                    (CASE WHEN $5 THEN h.tags @> $4::text[] ELSE h.tags && $4::text[] END))
+               AND ($6::text IS NULL OR (
+                   h.concept_id ILIKE $7 OR
+                   h.title ILIKE $7 OR
+                   b.raw ILIKE $7 OR
+                   EXISTS (SELECT 1 FROM unnest(h.tags) t WHERE t ILIKE $7)
                ))
              ORDER BY h.concept_id
-             LIMIT $5",
+             LIMIT $8",
         )
         .bind(query.doc_type.as_deref())
-        .bind(query.tag.as_deref())
+        .bind(query.status.as_deref())
+        .bind(query.path_prefix.as_deref())
+        .bind(&query.tags)
+        .bind(query.tags_mode == TagsMode::All)
         .bind(query.text.as_deref())
         .bind(query.text.as_ref().map(|t| format!("%{}%", t)).as_deref())
         .bind(limit)
@@ -110,17 +124,23 @@ impl SupabaseStore {
     ) -> Result<Vec<PgRow>, StoreError> {
         let vector = Vector::from(embedding.to_vec());
         pg_query(
-            "SELECT h.concept_id, h.content_id, h.doc_type, h.title, h.tags
+            "SELECT h.concept_id, h.content_id, h.doc_type, h.title, h.status, h.tags
              FROM heads h
              JOIN blobs b ON h.content_id = b.content_id
              JOIN embeddings e ON e.concept_id = h.concept_id
              WHERE ($1::text IS NULL OR h.doc_type = $1)
-               AND ($2::text IS NULL OR $2 = ANY(h.tags))
-             ORDER BY e.embedding <=> $3
-             LIMIT $4",
+               AND ($2::text IS NULL OR h.status = $2)
+               AND ($3::text IS NULL OR starts_with(h.concept_id, $3))
+               AND (cardinality($4::text[]) = 0 OR
+                    (CASE WHEN $5 THEN h.tags @> $4::text[] ELSE h.tags && $4::text[] END))
+             ORDER BY e.embedding <=> $6
+             LIMIT $7",
         )
         .bind(query.doc_type.as_deref())
-        .bind(query.tag.as_deref())
+        .bind(query.status.as_deref())
+        .bind(query.path_prefix.as_deref())
+        .bind(&query.tags)
+        .bind(query.tags_mode == TagsMode::All)
         .bind(vector)
         .bind(limit)
         .fetch_all(&self.pool)
@@ -138,6 +158,7 @@ fn row_to_search_hit(row: PgRow) -> SearchHit {
     let concept_id = ConceptId::parse(&concept_id_str).expect("concept_id de db válido");
     let doc_type: String = row.get("doc_type");
     let title: Option<String> = row.get("title");
+    let status: Option<String> = row.get("status");
     let tags: Vec<String> = row.get("tags");
 
     SearchHit {
@@ -145,6 +166,7 @@ fn row_to_search_hit(row: PgRow) -> SearchHit {
         content_id,
         doc_type,
         title,
+        status,
         tags,
     }
 }
@@ -153,7 +175,7 @@ impl MemoryRepository for SupabaseStore {
     fn get(&self, id: &ConceptId) -> Result<Option<DocumentView>, StoreError> {
         let res = block_on(async {
             pg_query(
-                "SELECT h.content_id, h.version, b.raw, h.doc_type, h.title, h.tags
+                "SELECT h.content_id, h.version, b.raw, h.doc_type, h.title, h.status, h.tags
                  FROM heads h
                  JOIN blobs b ON h.content_id = b.content_id
                  WHERE h.concept_id = $1",
@@ -178,6 +200,7 @@ impl MemoryRepository for SupabaseStore {
                 let version: i64 = row.get("version");
                 let doc_type: String = row.get("doc_type");
                 let title: Option<String> = row.get("title");
+                let status: Option<String> = row.get("status");
                 let tags: Vec<String> = row.get("tags");
 
                 Ok(Some(DocumentView {
@@ -187,6 +210,7 @@ impl MemoryRepository for SupabaseStore {
                     raw: Arc::from(raw),
                     doc_type,
                     title,
+                    status,
                     tags,
                     links: doc.links,
                 }))
@@ -292,27 +316,29 @@ impl MemoryRepository for SupabaseStore {
                     // Actualizar o crear la cabeza del documento
                     if created {
                         pg_query(
-                            "INSERT INTO heads (concept_id, content_id, version, doc_type, title, tags)
-                             VALUES ($1, $2, $3, $4, $5, $6)",
+                            "INSERT INTO heads (concept_id, content_id, version, doc_type, title, status, tags)
+                             VALUES ($1, $2, $3, $4, $5, $6, $7)",
                         )
                         .bind(request.concept_id.as_str())
                         .bind(&incoming_hex)
                         .bind(new_version)
                         .bind(&doc.doc_type)
                         .bind(&doc.title)
+                        .bind(&doc.status)
                         .bind(&doc.tags)
                         .execute(&mut *tx)
                         .await
                         .map_err(|e| StoreError::Backend(e.to_string()))?;
                     } else {
                         pg_query(
-                            "UPDATE heads SET content_id = $1, version = $2, doc_type = $3, title = $4, tags = $5
-                             WHERE concept_id = $6",
+                            "UPDATE heads SET content_id = $1, version = $2, doc_type = $3, title = $4, status = $5, tags = $6
+                             WHERE concept_id = $7",
                         )
                         .bind(&incoming_hex)
                         .bind(new_version)
                         .bind(&doc.doc_type)
                         .bind(&doc.title)
+                        .bind(&doc.status)
                         .bind(&doc.tags)
                         .bind(request.concept_id.as_str())
                         .execute(&mut *tx)

@@ -51,6 +51,10 @@ pub struct OkfDocument {
     pub doc_type: String,
     /// Campo `title` si existe.
     pub title: Option<String>,
+    /// Campo `status` si existe (ciclo de vida: `active`, `archived`…).
+    /// Es un campo separado de `type` a propósito: `type` clasifica
+    /// QUÉ es el concepto; `status` dice EN QUÉ ESTADO está.
+    pub status: Option<String>,
     /// Campo `tags` si existe.
     pub tags: Vec<String>,
     /// Resto de campos del frontmatter, en orden determinista.
@@ -191,6 +195,7 @@ pub fn parse_document(raw: &str, budget: &Budget) -> Result<OkfDocument, OkfErro
 
     let mut doc_type = None;
     let mut title = None;
+    let mut status = None;
     let mut tags = Vec::new();
     let mut extra = BTreeMap::new();
 
@@ -204,6 +209,13 @@ pub fn parse_document(raw: &str, budget: &Budget) -> Result<OkfDocument, OkfErro
                 });
             }
             ("title", FmValue::Scalar(s)) => title = Some(s.clone()),
+            ("status", FmValue::Scalar(s)) => status = Some(s.clone()),
+            ("status", FmValue::List(_)) => {
+                return Err(OkfError::Unsupported {
+                    line: 0,
+                    reason: "'status' debe ser un escalar".to_string(),
+                });
+            }
             ("tags", FmValue::List(items)) => tags = items.clone(),
             ("tags", FmValue::Scalar(_)) => {
                 return Err(OkfError::Unsupported {
@@ -220,7 +232,7 @@ pub fn parse_document(raw: &str, budget: &Budget) -> Result<OkfDocument, OkfErro
     let doc_type = doc_type.ok_or(OkfError::MissingType)?;
     let links = scan_links(&raw[body_offset..], body_offset, budget)?;
 
-    Ok(OkfDocument { doc_type, title, tags, extra, body_offset, links })
+    Ok(OkfDocument { doc_type, title, status, tags, extra, body_offset, links })
 }
 
 /// Separa el frontmatter del cuerpo. Devuelve el texto YAML (sin los
@@ -431,13 +443,14 @@ pub fn scan_links(
 mod tests {
     use super::*;
 
-    const DOC: &str = "---\ntype: person\ntitle: Alice García\ntags:\n  - engineering\n  - rust\nrole: staff # comentario\n---\n\nAlice trabaja con [[projects/okf-mcp]] junto a [[people/bob]].\n\n```\n[[esto/no-cuenta]]\n```\n\nY otra vez [[people/bob]].\n";
+    const DOC: &str = "---\ntype: person\ntitle: Alice García\nstatus: active\ntags:\n  - engineering\n  - rust\nrole: staff # comentario\n---\n\nAlice trabaja con [[projects/okf-mcp]] junto a [[people/bob]].\n\n```\n[[esto/no-cuenta]]\n```\n\nY otra vez [[people/bob]].\n";
 
     #[test]
     fn parsea_documento_completo() {
         let doc = parse_document(DOC, &Budget::default()).unwrap();
         assert_eq!(doc.doc_type, "person");
         assert_eq!(doc.title.as_deref(), Some("Alice García"));
+        assert_eq!(doc.status.as_deref(), Some("active"));
         assert_eq!(doc.tags, vec!["engineering", "rust"]);
         assert_eq!(
             doc.extra.get("role"),
@@ -475,6 +488,7 @@ mod tests {
             "---\ntype: a\ntexto: |\n  bloque\n---\n",       // bloque literal
             "---\ntype: a\ntype: b\n---\n",                  // clave duplicada
             "---\ntype: a\n- suelto\n---\n",                 // lista sin clave
+            "---\ntype: a\nstatus:\n  - activo\n---\n",      // status debe ser escalar
         ] {
             assert!(parse_document(raw, &Budget::default()).is_err(), "aceptó: {raw:?}");
         }
