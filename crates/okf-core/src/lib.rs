@@ -43,6 +43,26 @@ pub enum FmValue {
     List(Vec<String>),
 }
 
+/// Longitud máxima de una relación de enlace (`[[rel:destino]]`).
+pub const MAX_LINK_REL_LEN: usize = 32;
+
+/// Enlace saliente de un documento: destino validado y relación
+/// tipada opcional.
+///
+/// La sintaxis `[[people/alice]]` produce `rel = None` (enlace
+/// genérico); `[[depends_on:people/alice]]` produce
+/// `rel = Some("depends_on")`. El separador `:` es inequívoco:
+/// [`ConceptId`] lo prohíbe por lista blanca, así que ningún enlace
+/// antiguo cambia de significado.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Link {
+    /// El concepto destino, ya validado.
+    pub target: ConceptId,
+    /// Relación tipada (`depends_on`, `supersedes`, `related`, …) o
+    /// `None` para el enlace genérico de siempre.
+    pub rel: Option<String>,
+}
+
 /// Documento OKF analizado. `raw` no se copia: los campos derivados
 /// referencian posiciones del texto original.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,8 +77,9 @@ pub struct OkfDocument {
     pub extra: BTreeMap<String, FmValue>,
     /// Offset en bytes donde empieza el cuerpo Markdown (tras `---`).
     pub body_offset: usize,
-    /// Enlaces salientes `[[concepto]]`, ya validados como ConceptId.
-    pub links: Vec<ConceptId>,
+    /// Enlaces salientes `[[concepto]]` o `[[rel:concepto]]`, ya
+    /// validados (ver [`Link`]).
+    pub links: Vec<Link>,
 }
 
 /// Por qué un documento no es OKF válido. Siempre con línea u
@@ -160,7 +181,8 @@ impl std::error::Error for OkfError {}
 /// assert_eq!(doc.doc_type, "person");
 /// assert_eq!(doc.title.as_deref(), Some("Alice García"));
 /// assert_eq!(doc.tags, vec!["rust"]);
-/// assert_eq!(doc.links[0].as_str(), "people/bob");
+/// assert_eq!(doc.links[0].target.as_str(), "people/bob");
+/// assert_eq!(doc.links[0].rel, None);
 /// // Los bytes originales siguen siendo la verdad: el cuerpo se
 /// // recupera por offset, nunca reformateado.
 /// assert_eq!(&raw[doc.body_offset..], "Trabaja con [[people/bob]].\n");
@@ -371,17 +393,22 @@ fn parse_scalar(s: &str, line_no: usize) -> Result<String, OkfError> {
     Ok(value.to_string())
 }
 
-/// Escanea enlaces `[[concepto]]` en una sola pasada, sin regex.
+/// Escanea enlaces `[[concepto]]` y `[[rel:concepto]]` en una sola
+/// pasada, sin regex.
 ///
 /// `base_offset` permite informar offsets absolutos sobre el
 /// documento completo aunque solo escaneemos el cuerpo.
+///
+/// Cada destino aparece UNA vez en el resultado: la primera
+/// aparición gana, incluida su relación. `[[uses:a]] … [[a]]` da un
+/// único enlace a `a` con `rel = Some("uses")`.
 pub fn scan_links(
     body: &str,
     base_offset: usize,
     budget: &Budget,
-) -> Result<Vec<ConceptId>, OkfError> {
+) -> Result<Vec<Link>, OkfError> {
     let bytes = body.as_bytes();
-    let mut links = Vec::new();
+    let mut links: Vec<Link> = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     let mut i = 0usize;
     let mut in_code_fence = false;
@@ -397,22 +424,22 @@ pub fn scan_links(
             let start = i + 2;
             match body[start..].find("]]") {
                 Some(len) => {
-                    let target = &body[start..start + len];
-                    match ConceptId::parse(target) {
-                        Ok(id) => {
-                            if seen.insert(id.clone()) {
+                    let raw_target = &body[start..start + len];
+                    match parse_link(raw_target) {
+                        Some(link) => {
+                            if seen.insert(link.target.clone()) {
                                 if links.len() >= budget.max_links_per_document {
                                     return Err(OkfError::TooManyLinks {
                                         max: budget.max_links_per_document,
                                     });
                                 }
-                                links.push(id);
+                                links.push(link);
                             }
                         }
-                        Err(_) => {
+                        None => {
                             return Err(OkfError::InvalidLink {
                                 offset: base_offset + start,
-                                target: target.to_string(),
+                                target: raw_target.to_string(),
                             });
                         }
                     }
@@ -425,6 +452,254 @@ pub fn scan_links(
         i += 1;
     }
     Ok(links)
+}
+
+/// Analiza el interior de un `[[...]]`. Con `:` es `rel:destino`;
+/// sin él, un destino a secas. La relación usa el mismo alfabeto que
+/// un segmento de [`ConceptId`] (minúsculas ASCII, dígitos, `-`,
+/// `_`) y como mucho [`MAX_LINK_REL_LEN`] bytes.
+fn parse_link(raw: &str) -> Option<Link> {
+    match raw.split_once(':') {
+        None => ConceptId::parse(raw).ok().map(|target| Link { target, rel: None }),
+        Some((rel, target)) => {
+            let rel_ok = !rel.is_empty()
+                && rel.len() <= MAX_LINK_REL_LEN
+                && rel
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
+            if !rel_ok {
+                return None;
+            }
+            ConceptId::parse(target)
+                .ok()
+                .map(|target| Link { target, rel: Some(rel.to_string()) })
+        }
+    }
+}
+
+// ---------------------------------------------------------------
+// Patch de frontmatter: cirugía línea a línea
+// ---------------------------------------------------------------
+
+/// Cambios a aplicar sobre el frontmatter de un documento, sin tocar
+/// el cuerpo. Ver [`patch_frontmatter`].
+#[derive(Debug, Clone, Default)]
+pub struct FrontmatterPatch {
+    /// Campos a escribir (crear o reemplazar), en este orden.
+    pub set: Vec<(String, FmValue)>,
+    /// Campos a eliminar. `type` no se puede eliminar (es
+    /// obligatorio); pedirlo es un error.
+    pub remove: Vec<String>,
+    /// Tags a añadir (ignorando los ya presentes).
+    pub add_tags: Vec<String>,
+    /// Tags a quitar (ignorando los ausentes).
+    pub remove_tags: Vec<String>,
+}
+
+/// Aplica un [`FrontmatterPatch`] a un documento OKF y devuelve el
+/// documento nuevo COMPLETO, listo para un commit normal.
+///
+/// La regla de oro del crate ("los bytes originales son la verdad")
+/// se respeta al máximo posible: el cuerpo se copia byte a byte, y
+/// del frontmatter solo se reescriben las líneas de los campos
+/// tocados — comentarios, líneas en blanco y campos ajenos al patch
+/// quedan intactos. Los campos nuevos se añaden justo antes del
+/// `---` de cierre.
+///
+/// # Ejemplo
+///
+/// ```
+/// use memory_model::Budget;
+/// use okf_core::{patch_frontmatter, FmValue, FrontmatterPatch};
+///
+/// let raw = "---\ntype: note\ntitle: Borrador\n# revisar en marzo\ntags:\n  - draft\n---\ncuerpo intacto\n";
+/// let patch = FrontmatterPatch {
+///     set: vec![("status".to_string(), FmValue::Scalar("active".to_string()))],
+///     add_tags: vec!["ready".to_string()],
+///     remove_tags: vec!["draft".to_string()],
+///     ..FrontmatterPatch::default()
+/// };
+/// let out = patch_frontmatter(raw, &patch, &Budget::default())?;
+/// assert_eq!(out, "---\ntype: note\ntitle: Borrador\n# revisar en marzo\ntags:\n  - ready\nstatus: active\n---\ncuerpo intacto\n");
+/// # Ok::<(), okf_core::OkfError>(())
+/// ```
+///
+/// # Errores
+///
+/// El documento de entrada debe ser OKF válido; el resultado se
+/// re-valida antes de devolverse, así que un patch que produjera un
+/// documento inválido (p. ej. eliminar `type`) se rechaza entero.
+pub fn patch_frontmatter(
+    raw: &str,
+    patch: &FrontmatterPatch,
+    budget: &Budget,
+) -> Result<String, OkfError> {
+    let doc = parse_document(raw, budget)?;
+
+    let error = |reason: String| OkfError::Unsupported { line: 0, reason };
+
+    // Reglas del patch antes de tocar nada.
+    if patch.remove.iter().any(|k| k == "type") {
+        return Err(error("'type' es obligatorio: no se puede eliminar".to_string()));
+    }
+    for (key, _) in &patch.set {
+        if patch.remove.contains(key) {
+            return Err(error(format!("la clave {key:?} está en 'set' y en 'remove' a la vez")));
+        }
+    }
+
+    // Tags finales: set explícito > tags actuales; luego añadir/quitar.
+    let base_tags = patch
+        .set
+        .iter()
+        .find(|(k, _)| k == "tags")
+        .map(|(_, v)| match v {
+            FmValue::List(items) => Ok(items.clone()),
+            FmValue::Scalar(_) => Err(error("'tags' debe ser una lista".to_string())),
+        })
+        .transpose()?
+        .unwrap_or_else(|| doc.tags.clone());
+    let mut final_tags: Vec<String> = base_tags
+        .into_iter()
+        .filter(|t| !patch.remove_tags.contains(t))
+        .collect();
+    for tag in &patch.add_tags {
+        if !final_tags.contains(tag) {
+            final_tags.push(tag.clone());
+        }
+    }
+    let touch_tags = patch.set.iter().any(|(k, _)| k == "tags")
+        || !patch.add_tags.is_empty()
+        || !patch.remove_tags.is_empty();
+
+    // Qué se reescribe en su sitio y qué se elimina del texto.
+    let mut replacements: Vec<(String, FmValue)> = Vec::new();
+    for (key, value) in &patch.set {
+        if key == "tags" {
+            continue; // las tags van con su propia lógica, abajo
+        }
+        replacements.push((key.clone(), value.clone()));
+    }
+    if touch_tags {
+        replacements.push(("tags".to_string(), FmValue::List(final_tags.clone())));
+    }
+
+    let (fm_text, body_offset) = split_frontmatter(raw, budget)?;
+
+    // Cirugía línea a línea, con la misma máquina de estados que
+    // parse_frontmatter: cada línea pertenece a una clave (o a
+    // ninguna, si es blanca o comentario) y se decide en su sitio.
+    let mut out = String::with_capacity(raw.len() + 64);
+    out.push_str("---\n");
+    let mut emitted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut open_list: Option<String> = None;
+
+    for raw_line in fm_text.lines() {
+        let line = raw_line.trim_end();
+        let owner: Option<String> = if line.is_empty() || line.trim_start().starts_with('#') {
+            None
+        } else if line.trim_start().starts_with("- ") {
+            open_list.clone()
+        } else {
+            let key = line[..line.find(':').unwrap_or(line.len())].trim().to_string();
+            let rest_empty = line.find(':').map(|c| line[c + 1..].trim().is_empty());
+            open_list = if rest_empty == Some(true) { Some(key.clone()) } else { None };
+            Some(key)
+        };
+
+        match owner {
+            None => {
+                out.push_str(raw_line);
+                out.push('\n');
+            }
+            Some(key) => {
+                if patch.remove.contains(&key) || (key == "tags" && touch_tags && final_tags.is_empty()) {
+                    continue; // eliminada: todas sus líneas se omiten
+                }
+                match replacements.iter().find(|(k, _)| *k == key) {
+                    None => {
+                        out.push_str(raw_line);
+                        out.push('\n');
+                    }
+                    Some((_, value)) => {
+                        // La primera línea de la clave emite el valor
+                        // nuevo; las siguientes (items de lista) se
+                        // omiten.
+                        if emitted.insert(key.clone()) {
+                            serialize_field(&mut out, &key, value)?;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Campos del patch que no existían: se añaden antes del cierre.
+    for (key, value) in &replacements {
+        if key == "tags" && final_tags.is_empty() {
+            continue;
+        }
+        if !emitted.contains(key) {
+            serialize_field(&mut out, key, value)?;
+        }
+    }
+
+    out.push_str("---\n");
+    out.push_str(&raw[body_offset..]); // el cuerpo, byte a byte
+
+    // El resultado debe ser OKF válido o el patch entero se rechaza.
+    parse_document(&out, budget)?;
+    Ok(out)
+}
+
+/// Serializa `clave: valor` (o una lista en bloque) en el subconjunto
+/// YAML del crate, de forma que [`parse_frontmatter`] lo lea de
+/// vuelta EXACTAMENTE igual.
+fn serialize_field(out: &mut String, key: &str, value: &FmValue) -> Result<(), OkfError> {
+    let key_ok = !key.is_empty()
+        && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+    if !key_ok {
+        return Err(OkfError::Unsupported { line: 0, reason: format!("clave inválida {key:?}") });
+    }
+    match value {
+        FmValue::Scalar(v) => {
+            out.push_str(key);
+            out.push_str(": ");
+            out.push_str(&serialize_scalar(v)?);
+            out.push('\n');
+        }
+        FmValue::List(items) => {
+            out.push_str(key);
+            out.push_str(":\n");
+            for item in items {
+                out.push_str("  - ");
+                out.push_str(&serialize_scalar(item)?);
+                out.push('\n');
+            }
+        }
+    }
+    Ok(())
+}
+
+/// El inverso de `parse_scalar`: texto plano cuando es seguro,
+/// comillas cuando el texto plano se malinterpretaría, error cuando
+/// el subconjunto no puede representarlo.
+fn serialize_scalar(v: &str) -> Result<String, OkfError> {
+    if v.contains('\n') || v.contains('"') || v.contains('\\') {
+        return Err(OkfError::Unsupported {
+            line: 0,
+            reason: format!("el subconjunto YAML no puede representar el valor {v:?}"),
+        });
+    }
+    let necesita_comillas = v.is_empty()
+        || v.starts_with(['|', '>', '&', '*', '{', '[', '"', ' ', '\t', '#'])
+        || v.ends_with([' ', '\t'])
+        || v.contains(" #");
+    if necesita_comillas {
+        Ok(format!("\"{v}\""))
+    } else {
+        Ok(v.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -444,7 +719,7 @@ mod tests {
             Some(&FmValue::Scalar("staff".to_string()))
         );
         // Enlaces: deduplicados, sin los del bloque de código.
-        let links: Vec<&str> = doc.links.iter().map(|l| l.as_str()).collect();
+        let links: Vec<&str> = doc.links.iter().map(|l| l.target.as_str()).collect();
         assert_eq!(links, vec!["projects/okf-mcp", "people/bob"]);
         // El cuerpo empieza justo tras el segundo '---\n'.
         assert!(DOC[doc.body_offset..].starts_with("\nAlice"));
@@ -515,5 +790,119 @@ mod tests {
         let raw = "---\ntype: nota\ntitle: uso de --- en medio\n---\ncuerpo\n";
         let doc = parse_document(raw, &Budget::default()).unwrap();
         assert_eq!(doc.title.as_deref(), Some("uso de --- en medio"));
+    }
+
+    #[test]
+    fn enlaces_tipados_y_genericos_conviven() {
+        let raw = "---\ntype: nota\n---\nver [[depends_on:libs/sqlx]] y [[people/bob]]\n";
+        let doc = parse_document(raw, &Budget::default()).unwrap();
+        assert_eq!(doc.links.len(), 2);
+        assert_eq!(doc.links[0].target.as_str(), "libs/sqlx");
+        assert_eq!(doc.links[0].rel.as_deref(), Some("depends_on"));
+        assert_eq!(doc.links[1].target.as_str(), "people/bob");
+        assert_eq!(doc.links[1].rel, None);
+    }
+
+    #[test]
+    fn la_primera_aparicion_de_un_destino_gana() {
+        let raw = "---\ntype: nota\n---\n[[uses:a]] y luego [[a]] otra vez\n";
+        let doc = parse_document(raw, &Budget::default()).unwrap();
+        assert_eq!(doc.links.len(), 1);
+        assert_eq!(doc.links[0].rel.as_deref(), Some("uses"));
+    }
+
+    #[test]
+    fn relaciones_invalidas_se_rechazan() {
+        for raw in [
+            "---\ntype: nota\n---\n[[:a]]\n",              // rel vacía
+            "---\ntype: nota\n---\n[[Mayus:a]]\n",         // mayúsculas
+            "---\ntype: nota\n---\n[[re/l:a]]\n",          // '/' en la rel
+            "---\ntype: nota\n---\n[[uses:../etc]]\n",     // destino inválido
+        ] {
+            assert!(
+                matches!(parse_document(raw, &Budget::default()), Err(OkfError::InvalidLink { .. })),
+                "aceptó: {raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn patch_reemplaza_solo_las_lineas_tocadas() {
+        let raw = "---\ntype: note\n# comentario que sobrevive\ntitle: Vieja\nstatus: draft\n---\ncuerpo\n";
+        let patch = FrontmatterPatch {
+            set: vec![("title".to_string(), FmValue::Scalar("Nueva".to_string()))],
+            ..FrontmatterPatch::default()
+        };
+        let out = patch_frontmatter(raw, &patch, &Budget::default()).unwrap();
+        assert_eq!(
+            out,
+            "---\ntype: note\n# comentario que sobrevive\ntitle: Nueva\nstatus: draft\n---\ncuerpo\n"
+        );
+    }
+
+    #[test]
+    fn patch_de_tags_añade_y_quita() {
+        let raw = "---\ntype: note\ntags:\n  - draft\n  - rust\n---\ncuerpo\n";
+        let patch = FrontmatterPatch {
+            add_tags: vec!["ready".to_string(), "rust".to_string()], // rust ya está
+            remove_tags: vec!["draft".to_string()],
+            ..FrontmatterPatch::default()
+        };
+        let out = patch_frontmatter(raw, &patch, &Budget::default()).unwrap();
+        assert_eq!(out, "---\ntype: note\ntags:\n  - rust\n  - ready\n---\ncuerpo\n");
+    }
+
+    #[test]
+    fn patch_crea_campos_nuevos_y_elimina_existentes() {
+        let raw = "---\ntype: note\nstatus: draft\n---\ncuerpo\n";
+        let patch = FrontmatterPatch {
+            set: vec![("owner".to_string(), FmValue::Scalar("pelayo".to_string()))],
+            remove: vec!["status".to_string()],
+            add_tags: vec!["nuevo".to_string()],
+            ..FrontmatterPatch::default()
+        };
+        let out = patch_frontmatter(raw, &patch, &Budget::default()).unwrap();
+        assert_eq!(out, "---\ntype: note\nowner: pelayo\ntags:\n  - nuevo\n---\ncuerpo\n");
+    }
+
+    #[test]
+    fn patch_no_puede_eliminar_type_ni_dejar_documento_invalido() {
+        let raw = "---\ntype: note\n---\ncuerpo\n";
+        let patch = FrontmatterPatch {
+            remove: vec!["type".to_string()],
+            ..FrontmatterPatch::default()
+        };
+        assert!(patch_frontmatter(raw, &patch, &Budget::default()).is_err());
+
+        // Un valor irrepresentable en el subconjunto también se rechaza.
+        let patch = FrontmatterPatch {
+            set: vec![("title".to_string(), FmValue::Scalar("con \"comillas\"".to_string()))],
+            ..FrontmatterPatch::default()
+        };
+        assert!(patch_frontmatter(raw, &patch, &Budget::default()).is_err());
+    }
+
+    #[test]
+    fn patch_de_valores_que_necesitan_comillas() {
+        let raw = "---\ntype: note\n---\ncuerpo\n";
+        let patch = FrontmatterPatch {
+            set: vec![("title".to_string(), FmValue::Scalar("nota # con almohadilla".to_string()))],
+            ..FrontmatterPatch::default()
+        };
+        let out = patch_frontmatter(raw, &patch, &Budget::default()).unwrap();
+        assert_eq!(out, "---\ntype: note\ntitle: \"nota # con almohadilla\"\n---\ncuerpo\n");
+        let doc = parse_document(&out, &Budget::default()).unwrap();
+        assert_eq!(doc.title.as_deref(), Some("nota # con almohadilla"));
+    }
+
+    #[test]
+    fn quitar_todas_las_tags_elimina_el_bloque() {
+        let raw = "---\ntype: note\ntags:\n  - solo\n---\ncuerpo\n";
+        let patch = FrontmatterPatch {
+            remove_tags: vec!["solo".to_string()],
+            ..FrontmatterPatch::default()
+        };
+        let out = patch_frontmatter(raw, &patch, &Budget::default()).unwrap();
+        assert_eq!(out, "---\ntype: note\n---\ncuerpo\n");
     }
 }

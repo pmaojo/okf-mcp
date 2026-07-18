@@ -12,7 +12,7 @@ pub mod contract;
 
 use conflict_core::Conflict;
 use memory_model::{Budget, ConceptId, ContentId, Principal, Revision};
-use okf_core::OkfError;
+use okf_core::{Link, OkfError};
 use std::fmt;
 use std::sync::Arc;
 
@@ -35,8 +35,9 @@ pub struct DocumentView {
     pub title: Option<String>,
     /// Campo `tags` del frontmatter.
     pub tags: Vec<String>,
-    /// Enlaces `[[...]]` salientes, ya validados.
-    pub links: Vec<ConceptId>,
+    /// Enlaces `[[...]]` salientes (con relación tipada opcional),
+    /// ya validados.
+    pub links: Vec<Link>,
 }
 
 /// Petición de escritura. `expected` = hash que el cliente leyó
@@ -72,16 +73,35 @@ pub struct CommitOutcome {
 /// combinan con AND.
 #[derive(Debug, Clone, Default)]
 pub struct SearchQuery {
-    /// Subcadena, sin distinción de mayúsculas, sobre id, título,
-    /// tags y cuerpo.
+    /// Texto libre. El CONTRATO solo exige que las coincidencias de
+    /// subcadena (sin distinción de mayúsculas, sobre id, título,
+    /// tags y cuerpo) aparezcan en el resultado; un backend con
+    /// índice semántico puede además devolver documentos
+    /// semánticamente próximos, detrás de las coincidencias exactas.
     pub text: Option<String>,
     /// Igualdad exacta sobre el campo `type` del frontmatter.
     pub doc_type: Option<String>,
     /// Pertenencia exacta en la lista de tags.
     pub tag: Option<String>,
+    /// Prefijo de ruta lógica, por segmentos completos: `people`
+    /// acepta `people/alice` pero no `peoples/x` — ver
+    /// [`matches_prefix`].
+    pub path_prefix: Option<String>,
     /// Tope de resultados; siempre acotado además por
     /// `budget.max_search_results`.
     pub limit: Option<usize>,
+}
+
+/// ¿`id` cae bajo `prefix`, contando por segmentos completos?
+///
+/// ```
+/// use store_core::matches_prefix;
+/// assert!(matches_prefix("people/alice", "people"));
+/// assert!(matches_prefix("people", "people"));
+/// assert!(!matches_prefix("peoples/alice", "people"));
+/// ```
+pub fn matches_prefix(id: &str, prefix: &str) -> bool {
+    id == prefix || (id.starts_with(prefix) && id.as_bytes().get(prefix.len()) == Some(&b'/'))
 }
 
 /// Un candidato compacto: lo justo para decidir si merece un `get`.
@@ -97,6 +117,135 @@ pub struct SearchHit {
     pub title: Option<String>,
     /// Campo `tags` del frontmatter.
     pub tags: Vec<String>,
+}
+
+/// Resultado de un borrado lógico aceptado.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteOutcome {
+    /// Hash del contenido que quedó enterrado (el que declaró el
+    /// cliente como `expected`).
+    pub content_id: ContentId,
+    /// Versión de la cabeza en el momento del borrado.
+    pub version: u64,
+    /// La revisión que deja constancia del borrado en la historia.
+    pub revision: Revision,
+}
+
+/// Un enlace entrante: quién apunta a un concepto y con qué relación.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Backlink {
+    /// El documento origen del enlace, en forma compacta.
+    pub source: SearchHit,
+    /// Relación tipada del enlace (`[[rel:destino]]`), si la hay.
+    pub rel: Option<String>,
+}
+
+/// Resultado de un item dentro de [`MemoryRepository::commit_bulk`].
+#[derive(Debug, Clone)]
+pub enum BulkItem {
+    /// El commit se aplicó (o era `no_change`).
+    Done(CommitOutcome),
+    /// El commit falló por su propia causa (CAS, validación…).
+    Failed(StoreError),
+    /// No se aplicó: en modo atómico, otro item del lote falló.
+    Skipped,
+}
+
+/// Resultado de un lote de commits.
+#[derive(Debug, Clone)]
+pub struct BulkOutcome {
+    /// `true` si el lote (o parte de él, en modo no atómico) quedó
+    /// persistido; `false` si en modo atómico se revirtió todo.
+    pub applied: bool,
+    /// Un resultado por petición, en el mismo orden de entrada.
+    pub items: Vec<BulkItem>,
+}
+
+/// Salud de los enlaces salientes de UN documento.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LinkHealth {
+    /// Enlaces cuyo destino existe y está vivo.
+    pub ok: Vec<Link>,
+    /// Enlaces cuyo destino no existe (ni existió).
+    pub broken: Vec<Link>,
+    /// Enlaces cuyo destino existe pero está borrado lógicamente.
+    pub deleted: Vec<Link>,
+}
+
+/// Informe de validación del grafo (o de un subárbol).
+///
+/// Las listas están acotadas por `budget.max_search_results`; los
+/// contadores `*_total` dicen cuántos problemas hay EN REALIDAD,
+/// para que un informe truncado nunca parezca un informe limpio.
+#[derive(Debug, Clone, Default)]
+pub struct ValidationReport {
+    /// Pares (origen, destino) con destino inexistente.
+    pub broken_links: Vec<(ConceptId, ConceptId)>,
+    /// Total real de enlaces rotos (puede superar a la lista).
+    pub broken_links_total: usize,
+    /// Pares (origen, destino) con destino borrado lógicamente.
+    pub deleted_referenced: Vec<(ConceptId, ConceptId)>,
+    /// Total real de referencias a borrados.
+    pub deleted_referenced_total: usize,
+    /// Documentos vivos que el índice semántico del backend aún no
+    /// cubre. Backend-específico: un almacén sin índice semántico
+    /// (p. ej. en memoria) devuelve siempre vacío, honestamente.
+    pub missing_embeddings: Vec<ConceptId>,
+    /// Total real de documentos sin embedding al día.
+    pub missing_embeddings_total: usize,
+}
+
+/// Métricas del grafo de conocimiento.
+#[derive(Debug, Clone, Default)]
+pub struct GraphStats {
+    /// Documentos vivos (excluye borrados lógicos).
+    pub documents: usize,
+    /// Documentos borrados lógicamente que conservan historia.
+    pub deleted_documents: usize,
+    /// Recuento por campo `type`, de mayor a menor.
+    pub by_type: Vec<(String, usize)>,
+    /// Recuento por tag, de mayor a menor.
+    pub by_tag: Vec<(String, usize)>,
+    /// Conceptos con más enlaces entrantes (hubs), de mayor a menor.
+    pub top_linked: Vec<(ConceptId, usize)>,
+    /// Documentos vivos sin enlaces entrantes ni salientes.
+    pub orphans: Vec<ConceptId>,
+}
+
+/// Estado de salud operativo del almacén, para observabilidad.
+///
+/// Los campos de embeddings y outbox son backend-específicos: un
+/// almacén sin índice semántico ni outbox (en memoria) devuelve
+/// ceros, y eso también es información veraz.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StoreStatus {
+    /// Documentos vivos.
+    pub documents: usize,
+    /// Borrados lógicos que conservan historia.
+    pub deleted_documents: usize,
+    /// Documentos vivos cuyo embedding falta o no corresponde al
+    /// contenido actual.
+    pub missing_embeddings: usize,
+    /// Enlaces cuyo destino no existe.
+    pub broken_links: usize,
+    /// Enlaces cuyo destino está borrado lógicamente.
+    pub deleted_referenced: usize,
+    /// Eventos del outbox aún pendientes de procesar.
+    pub outbox_pending: usize,
+    /// Eventos del outbox agotados tras varios reintentos.
+    pub outbox_failed: usize,
+}
+
+/// Resultado de forzar la indexación semántica ([`StoreMaintenance::embed_pending`]).
+#[derive(Debug, Clone, Default)]
+pub struct EmbedOutcome {
+    /// Conceptos indexados en esta llamada.
+    pub embedded: Vec<ConceptId>,
+    /// Conceptos que fallaron, con el motivo.
+    pub failed: Vec<(ConceptId, String)>,
+    /// Cuántos siguen pendientes tras esta llamada (el lote está
+    /// acotado; repite la llamada para continuar).
+    pub remaining: usize,
 }
 
 /// Todo lo que puede salir mal al leer o escribir.
@@ -162,10 +311,101 @@ pub trait MemoryRepository {
 
     /// Historia de un concepto, de más reciente a más antigua.
     /// `before_seq` pagina: solo revisiones con `seq < before_seq`.
+    /// Un concepto borrado lógicamente CONSERVA su historia.
     fn history(
         &self,
         id: &ConceptId,
         limit: usize,
         before_seq: Option<u64>,
     ) -> Result<Vec<Revision>, StoreError>;
+
+    /// Borrado lógico con compare-and-swap: `expected` es
+    /// OBLIGATORIO — borrar exige haber leído lo que se borra.
+    ///
+    /// Tras un borrado aceptado:
+    /// - `get` devuelve `None` y `search` deja de listarlo;
+    /// - sus enlaces salientes desaparecen del grafo;
+    /// - su historia sigue disponible, con una revisión que registra
+    ///   el borrado;
+    /// - un `commit` posterior con `expected = None` lo RECREA,
+    ///   continuando la numeración de versiones (la historia es una).
+    ///
+    /// Un concepto inexistente (o ya borrado) es
+    /// [`StoreError::NotFound`]; una base obsoleta es
+    /// [`StoreError::Conflict`] con los hashes para releer.
+    fn delete(
+        &mut self,
+        id: &ConceptId,
+        expected: ContentId,
+        actor: &Principal,
+        reason: String,
+    ) -> Result<DeleteOutcome, StoreError>;
+
+    /// Vecindario ENTRANTE: qué documentos vivos enlazan a `id`, con
+    /// su relación tipada si la declararon. `id` no tiene que
+    /// existir — preguntar "¿quién apunta aquí?" antes de crear (o
+    /// después de borrar) es legítimo. Orden: por `concept_id` del
+    /// origen.
+    fn backlinks(&self, id: &ConceptId) -> Result<Vec<Backlink>, StoreError>;
+
+    /// Lote de commits en orden. Con `atomic = false` cada item se
+    /// aplica (o falla) por su cuenta y los posteriores ven los
+    /// efectos de los anteriores. Con `atomic = true` o se aplican
+    /// TODOS o ninguno: al primer fallo se revierte el lote entero,
+    /// el item culpable queda [`BulkItem::Failed`] y el resto
+    /// [`BulkItem::Skipped`].
+    ///
+    /// `Err` global solo por fallos del backend; los fallos por item
+    /// van dentro de [`BulkOutcome::items`].
+    fn commit_bulk(
+        &mut self,
+        requests: Vec<CommitRequest>,
+        atomic: bool,
+        actor: &Principal,
+        budget: &Budget,
+    ) -> Result<BulkOutcome, StoreError>;
+}
+
+/// Mantenimiento y observabilidad del almacén: validación del grafo,
+/// métricas, estado de salud e indexación semántica bajo demanda.
+///
+/// Trait SEPARADO de [`MemoryRepository`] a conciencia (SOLID-I): el
+/// ciclo de vida de los documentos y el diagnóstico del sistema son
+/// clientes distintos. Un consumidor que solo lee y escribe no
+/// debería arrastrar la superficie de mantenimiento, ni al revés.
+pub trait StoreMaintenance {
+    /// Clasifica los enlaces salientes de `id` según la salud de su
+    /// destino: vivo, inexistente o borrado lógicamente.
+    /// [`StoreError::NotFound`] si `id` no existe o está borrado.
+    fn link_health(&self, id: &ConceptId) -> Result<LinkHealth, StoreError>;
+
+    /// Valida el grafo completo (o el subárbol bajo `path_prefix`,
+    /// por segmentos — ver [`matches_prefix`]). Las listas del
+    /// informe se acotan con `budget.max_search_results`; los
+    /// totales reales van aparte para que el truncado sea visible.
+    fn validate(
+        &self,
+        path_prefix: Option<&str>,
+        budget: &Budget,
+    ) -> Result<ValidationReport, StoreError>;
+
+    /// Métricas del grafo: recuentos por tipo y tag, hubs y
+    /// huérfanos. Las listas se acotan con
+    /// `budget.max_search_results`.
+    fn stats(&self, budget: &Budget) -> Result<GraphStats, StoreError>;
+
+    /// Estado operativo en tiempo real: documentos, embeddings
+    /// pendientes, enlaces rotos, outbox. Pensado para responder
+    /// "¿está sano el sistema?" en una sola llamada barata.
+    fn status(&self) -> Result<StoreStatus, StoreError>;
+
+    /// Indexa AHORA los documentos (bajo `path_prefix`, o todos)
+    /// cuyo embedding falta o quedó obsoleto, hasta `max` por
+    /// llamada. Un backend sin índice semántico devuelve el
+    /// resultado vacío: no hay nada que esa búsqueda no cubra ya.
+    fn embed_pending(
+        &mut self,
+        path_prefix: Option<&str>,
+        max: usize,
+    ) -> Result<EmbedOutcome, StoreError>;
 }

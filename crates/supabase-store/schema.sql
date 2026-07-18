@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS heads (
     version BIGINT NOT NULL,
     doc_type VARCHAR(100) NOT NULL,
     title VARCHAR(255),
-    tags TEXT[] NOT NULL
+    tags TEXT[] NOT NULL,
+    deleted_at TIMESTAMP WITH TIME ZONE -- borrado lógico: NULL = vivo
 );
 
 CREATE TABLE IF NOT EXISTS revisions (
@@ -28,6 +29,7 @@ CREATE TABLE IF NOT EXISTS revisions (
 CREATE TABLE IF NOT EXISTS links (
     source_id VARCHAR(255) NOT NULL REFERENCES heads(concept_id) ON DELETE CASCADE,
     target_id VARCHAR(255) NOT NULL,
+    rel VARCHAR(64), -- relación tipada de '[[rel:destino]]'; NULL = enlace genérico
     PRIMARY KEY (source_id, target_id)
 );
 
@@ -54,5 +56,14 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE IF NOT EXISTS embeddings (
     concept_id VARCHAR(255) PRIMARY KEY REFERENCES heads(concept_id) ON DELETE CASCADE,
-    embedding vector(768) -- gemini-embedding-001 truncado a 768 dims (ver gemini-embeddings::DIMENSIONS)
+    embedding vector(768), -- gemini-embedding-001 truncado a 768 dims (ver gemini-embeddings::DIMENSIONS)
+    content_id VARCHAR(64) -- de qué contenido es este vector; NULL = generado antes de rastrearlo
 );
+
+-- Migración en el arranque: este archivo se aplica con CREATE TABLE
+-- IF NOT EXISTS en cada cold start, así que las tablas pueden venir
+-- de una versión anterior sin las columnas nuevas. ADD COLUMN IF NOT
+-- EXISTS es idempotente y no toca los datos existentes.
+ALTER TABLE heads ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE links ADD COLUMN IF NOT EXISTS rel VARCHAR(64);
+ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS content_id VARCHAR(64);

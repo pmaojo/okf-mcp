@@ -11,7 +11,6 @@
 
 #![forbid(unsafe_code)]
 
-mod embeddings;
 mod github_sync;
 
 use serde_json::Value;
@@ -68,7 +67,7 @@ pub async fn process_batch(
         let seq: i64 = row.get("seq");
         let event_type: String = row.get("event_type");
         let concept_id: String = row.get("concept_id");
-        let _content_id: String = row.get("content_id");
+        let content_id: String = row.get("content_id");
         let payload: Value = row.get("payload");
 
         println!("Procesando evento seq={} tipo={} concepto={}", seq, event_type, concept_id);
@@ -91,13 +90,35 @@ pub async fn process_batch(
             // B. Generación de embeddings e indexación vectorial
             if success {
                 if let Some(key) = gemini_key {
-                    match embeddings::generate_and_save_embedding(pool, client, key, &concept_id, markdown).await {
+                    match supabase_store::index_embedding(pool, client, key, &concept_id, &content_id, markdown).await {
                         Ok(_) => {}
                         Err(e) => {
                             success = false;
                             error_msg = format!("Embedding generation failed: {e}");
                         }
                     }
+                }
+            }
+        } else if event_type == "delete" {
+            let reason = payload["reason"].as_str().unwrap_or("okf-mcp delete");
+
+            // A. Borrado de GitHub
+            if let (Some(token), Some(repo)) = (github_token, github_repo) {
+                if let Err(e) = github_sync::delete_from_github(client, token, repo, &concept_id, reason).await {
+                    success = false;
+                    error_msg = format!("GitHub delete failed: {e}");
+                }
+            }
+
+            // B. Borrar embedding en la DB
+            if success {
+                let res = pg_query("DELETE FROM embeddings WHERE concept_id = $1")
+                    .bind(&concept_id)
+                    .execute(pool)
+                    .await;
+                if let Err(e) = res {
+                    success = false;
+                    error_msg = format!("Embedding deletion failed: {e}");
                 }
             }
         }

@@ -1076,10 +1076,13 @@ dependencies = [
 name = "memory-tools"
 version = "0.1.0"
 dependencies = [
+ "conflict-core",
  "graph-core",
+ "hash-core",
  "json-mini",
  "mcp-core",
  "memory-model",
+ "okf-core",
  "store-core",
 ]
 
@@ -1245,6 +1248,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "supabase-store",
  "tokio",
 ]
 

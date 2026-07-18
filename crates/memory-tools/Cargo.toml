@@ -12,3 +12,6 @@ store-core = { path = "../store-core" }
 graph-core = { path = "../graph-core" }
 json-mini = { path = "../json-mini" }
 mcp-core = { path = "../mcp-core" }
+okf-core = { path = "../okf-core" }
+hash-core = { path = "../hash-core" }
+conflict-core = { path = "../conflict-core" }
