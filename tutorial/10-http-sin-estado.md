@@ -20,6 +20,15 @@ Pero HTTP trae exigencias que stdio no tenía:
   atenderla una instancia de función distinta, así que "recordar"
   algo entre peticiones en memoria de proceso es una ilusión.
 
+
+El conflicto concreto aparece en el borde: un cliente hostil declara un
+cuerpo enorme, una página maliciosa envía `Origin` desde el navegador de la
+víctima, o una función serverless intenta recordar estado en una instancia
+que mañana no existirá. Quien lo sufre es el usuario legítimo: latencia,
+bloqueo o escrituras perdidas. La arquitectura hexagonal importa porque el
+núcleo MCP debe seguir puro mientras el adaptador HTTP absorbe esas amenazas
+de transporte.
+
 ## 2. El invariante
 
 > **`route()` decide QUÉ responder sin abrir un socket, sin `tokio`, sin conocer `InMemoryStore`. `server.rs` decide CÓMO leer bytes de un `TcpStream` sin conocer JSON-RPC.**
@@ -127,7 +136,8 @@ muere en la comparación, sin que se reserve ni un byte del cuerpo.
 
 ## 3.5. Conceptos de Rust en este capítulo
 
-Este capítulo implementa un parser HTTP y nos enseña a manejar la asignación de memoria dinámica de forma segura:
+Este capítulo implementa un parser HTTP y nos enseña a manejar la asignación
+de memoria dinámica de forma segura:
 
 * **Asignaciones de vectores controladas (`vec![value; size]`):** La macro `vec![0u8; content_length]` crea un vector en el heap lleno de ceros con la longitud exacta indicada. En Rust, esto reserva memoria inmediatamente. Si realizáramos esta operación confiando a ciegas en el encabezado `Content-Length` del cliente sin comprobar antes contra nuestro `budget.max_request_bytes`, un cliente malicioso podría agotar toda la memoria RAM del servidor de forma instantánea enviando un número enorme.
 * **`read` frente a `read_exact` en Sockets:** Cuando leemos de un socket de red mediante el trait `Read`, el método `read()` estándar lee "lo que esté disponible en ese momento", lo que puede ser menos de lo solicitado (una lectura parcial). Si queremos rellenar un búfer de tamaño fijo completo, debemos usar `read_exact()`, el cual garantiza que se leerá la cantidad exacta de bytes solicitada o devolverá un error si el socket se cierra antes de tiempo.
@@ -143,6 +153,12 @@ if body.len() > budget.max_request_bytes {
     return error_413();
 }
 ```
+
+
+La versión rota suele escribirse por comodidad: ya tenemos `TcpStream`, ya
+tenemos un servidor MCP mutable, así que parece natural leer todo, parsear
+todo y dejar que el handler decida. Es razonable en una demo local; es
+peligroso en Internet.
 
 ## 5. Por qué falla
 
@@ -218,6 +234,13 @@ antes de comparar contra el presupuesto, el test se quedaría
 colgado para siempre (el cliente jamás manda esos bytes) y el
 proceso de `cargo test` tendría que matarse a mano. Que el test
 TERMINE es, en sí mismo, la prueba.
+
+
+El primer test TDD debería construir una petición con `Content-Length` o
+cuerpo superior al presupuesto y exigir `413` sin invocar el handler. El
+fallo inicial típico es ver un `400` de JSON, un timeout o una asignación
+excesiva: señal de que el adaptador dejó pasar bytes caros antes de aplicar
+el puerto HTTP acotado.
 
 ## 8. Frontera de producción
 

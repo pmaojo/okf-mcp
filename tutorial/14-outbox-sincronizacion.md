@@ -4,7 +4,8 @@ Crate: [`crates/outbox-worker`](../crates/outbox-worker)
 
 ## 1. El problema
 
-Cuando guardamos un documento en nuestra memoria MCP relacional, queremos realizar tres acciones derivadas:
+Cuando guardamos un documento en nuestra memoria MCP relacional, queremos
+realizar tres acciones derivadas:
 1. Confirmar el cambio en PostgreSQL (fuente de verdad).
 2. Sincronizar el contenido con un repositorio Git (como archivos markdown).
 3. Generar un vector de embeddings para realizar búsquedas semánticas.
@@ -12,6 +13,14 @@ Cuando guardamos un documento en nuestra memoria MCP relacional, queremos realiz
 Si intentamos hacer las tres operaciones dentro de la petición HTTP del usuario:
 * **Escritura Doble:** ¿Qué pasa si la base de datos se actualiza pero el push a Git falla? ¿O si Git se actualiza pero la llamada al modelo de embeddings da un timeout? El sistema quedará desincronizado.
 * **Latencia Excesiva:** Llamar a la API de GitHub y a la API de Gemini suma segundos de espera para el usuario, anulando los beneficios de un endpoint HTTP rápido.
+
+
+El conflicto aparece después del commit feliz: PostgreSQL ya confirmó, pero
+GitHub devuelve 500 o el proveedor de embeddings agota tiempo. Si todo vivía
+en la petición, el usuario queda atrapado entre latencia y desincronización.
+La frontera hexagonal separa la fuente de verdad del adaptador de
+integración: el núcleo escribe una intención duradera; los sistemas externos
+se alcanzan después.
 
 ## 2. El invariante
 
@@ -23,7 +32,10 @@ Y una segunda promesa de aislamiento:
 
 ## 3. La implementación mínima
 
-Para conseguir esto, aplicamos el patrón **Transactional Outbox**. En lugar de escribir en los sistemas externos durante el commit, registramos un "evento" en la tabla `outbox` dentro de la misma transacción SQL en la que actualizamos `heads` y `revisions`:
+Para conseguir esto, aplicamos el patrón **Transactional Outbox**. En lugar
+de escribir en los sistemas externos durante el commit, registramos un
+"evento" en la tabla `outbox` dentro de la misma transacción SQL en la que
+actualizamos `heads` y `revisions`:
 
 ```sql
 CREATE TABLE outbox (
@@ -39,7 +51,11 @@ CREATE TABLE outbox (
 );
 ```
 
-Un servicio independiente, [`outbox-worker`](../crates/outbox-worker/src/main.rs), procesa los eventos en segundo plano. Para escalar de forma segura con múltiples réplicas concurrentes del worker, consumimos los eventos usando `FOR UPDATE SKIP LOCKED`:
+Un servicio independiente,
+[`outbox-worker`](../crates/outbox-worker/src/main.rs), procesa los eventos
+en segundo plano. Para escalar de forma segura con múltiples réplicas
+concurrentes del worker, consumimos los eventos usando `FOR UPDATE SKIP
+LOCKED`:
 
 ```sql
 SELECT seq, event_type, concept_id, content_id, payload
@@ -50,10 +66,16 @@ LIMIT 10
 FOR UPDATE SKIP LOCKED
 ```
 
-Esto bloquea únicamente las filas seleccionadas y hace que otros workers ignoren de manera transparente las filas que ya se están procesando en otro proceso.
+Esto bloquea únicamente las filas seleccionadas y hace que otros workers
+ignoren de manera transparente las filas que ya se están procesando en otro
+proceso.
 
 ### A. Sincronización con GitHub
-Dado que las funciones serverless de Vercel no disponen de binario `git` ni filesystem local persistente, interactuamos con el repositorio directamente usando la **API de Contenidos de GitHub** (vía HTTPS REST). Realizamos una petición `PUT` con el contenido base64 del archivo y el `sha` de la versión anterior (si ya existía):
+Dado que las funciones serverless de Vercel no disponen de binario `git` ni
+filesystem local persistente, interactuamos con el repositorio directamente
+usando la **API de Contenidos de GitHub** (vía HTTPS REST). Realizamos una
+petición `PUT` con el contenido base64 del archivo y el `sha` de la versión
+anterior (si ya existía):
 
 ```rust
 let content_b64 = BASE64_STANDARD.encode(markdown.as_bytes());
@@ -65,7 +87,8 @@ let put_req = GithubPutRequest {
 ```
 
 ### B. Indexación en `pgvector`
-Para habilitar búsquedas vectoriales, cargamos la extensión `vector` en PostgreSQL y guardamos los vectores obtenidos de la API de Gemini:
+Para habilitar búsquedas vectoriales, cargamos la extensión `vector` en
+PostgreSQL y guardamos los vectores obtenidos de la API de Gemini:
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -75,7 +98,10 @@ CREATE TABLE embeddings (
 );
 ```
 
-Como el driver de base de datos no siempre implementa tipos de vectores nativos, formateamos el vector flotante de Gemini como una cadena de texto estructurada `"[0.1, 0.2, ...]"`. PostgreSQL y `pgvector` interpretan este formato de forma nativa e independiente del controlador:
+Como el driver de base de datos no siempre implementa tipos de vectores
+nativos, formateamos el vector flotante de Gemini como una cadena de texto
+estructurada `"[0.1, 0.2, ...]"`. PostgreSQL y `pgvector` interpretan este
+formato de forma nativa e independiente del controlador:
 
 ```rust
 let vector_str = format!("[{}]", values.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
@@ -100,19 +126,45 @@ self.github_api.push_file(concept_id, markdown)?; // Si esto falla, ¿hacemos ro
 self.gemini_api.generate_embedding(markdown)?;
 ```
 
+
+La versión rota es tentadora porque parece transaccional en código:
+`commit`, luego `push`, luego `embed`, todo en una función lineal. Una
+persona razonable la escribe porque quiere que el usuario vea todo terminado
+antes de responder.
+
 ## 5. Por qué falla
 
-Esta versión rota sufre de fallas de escritura dual. Si el servidor de GitHub tiene una caída del servicio o nuestras credenciales expiran, la llamada de GitHub fallará. Si hacemos rollback de la base de datos, el usuario no podrá guardar su documento aunque nuestra base de datos esté perfectamente sana. Si NO hacemos rollback, la base de datos tendrá el cambio pero el archivo en Git se perderá para siempre. Decoplar las escrituras mediante una cola transaccional local (`outbox`) elimina este problema.
+Esta versión rota sufre de fallas de escritura dual. Si el servidor de
+GitHub tiene una caída del servicio o nuestras credenciales expiran, la
+llamada de GitHub fallará. Si hacemos rollback de la base de datos, el
+usuario no podrá guardar su documento aunque nuestra base de datos esté
+perfectamente sana. Si NO hacemos rollback, la base de datos tendrá el
+cambio pero el archivo en Git se perderá para siempre. Decoplar las
+escrituras mediante una cola transaccional local (`outbox`) elimina este
+problema.
 
 ## 6. Memoria y asignación
 
-El worker procesa cada evento en su propia transacción atómica. Si una API externa falla, el worker captura el error, incrementa la columna `attempts` y marca la fila en el outbox para posterior reintento, liberando la fila para que no bloquee al resto de la cola. Al alcanzar los 5 intentos fallidos, el estado cambia a `failed` para intervención humana o alarma, manteniendo la cola fluida.
+El worker procesa cada evento en su propia transacción atómica. Si una API
+externa falla, el worker captura el error, incrementa la columna `attempts`
+y marca la fila en el outbox para posterior reintento, liberando la fila
+para que no bloquee al resto de la cola. Al alcanzar los 5 intentos
+fallidos, el estado cambia a `failed` para intervención humana o alarma,
+manteniendo la cola fluida.
 
 ## 7. Tests
 
 El worker ofrece dos modos de ejecución:
 1. **Daemon:** Ciclo continuo con sleep de 5 segundos (por defecto para despliegue de contenedores).
-2. **One-shot:** Se activa y procesa hasta vaciar la cola, y luego finaliza (activado con la variable `ONCE=1`). Esto es ideal para ejecutarse mediante triggers serverless (Vercel Cron) o suites de tests.
+2. **One-shot:** Se activa y procesa hasta vaciar la cola, y luego finaliza
+(activado con la variable `ONCE=1`). Esto es ideal para ejecutarse mediante
+triggers serverless (Vercel Cron) o suites de tests.
+
+
+En TDD, el primer test sustituye GitHub o embeddings por un adaptador que
+falla y comprueba que el documento persiste y queda un evento pendiente. El
+rojo que buscamos observar no es un error HTTP bonito, sino una pérdida de
+sincronización: commit confirmado sin outbox o outbox procesado dos veces.
 
 ## 8. Frontera de producción
 
@@ -131,8 +183,25 @@ Para desplegar el worker:
 
 ## 10. Ejercicios
 
-1. **Guiado.** ¿Por qué es necesario usar `SKIP LOCKED` en lugar de un simple `FOR UPDATE` al procesar la cola con múltiples workers? Simula la llegada de tres workers concurrentes.
-2. **Medio.** Modifica el worker para implementar un exponencial backoff (tiempo de espera progresivo) antes de reintentar eventos que hayan fallado temporalmente.
-3. **Abierto.** Diseña una consulta SQL que permita realizar búsquedas semánticas combinadas (Hybrid Search): buscar conceptos que coincidan con un término de búsqueda relacional y ordenarlos por distancia de coseno (`<=>`) de sus vectores de embeddings en una sola consulta SQL.
+1. **Guiado.** ¿Por qué es necesario usar `SKIP LOCKED` en lugar de un
+simple `FOR UPDATE` al procesar la cola con múltiples workers? Simula la
+llegada de tres workers concurrentes.
+2. **Medio.** Modifica el worker para implementar un exponencial backoff
+(tiempo de espera progresivo) antes de reintentar eventos que hayan fallado
+temporalmente.
+3. **Abierto.** Diseña una consulta SQL que permita realizar búsquedas
+semánticas combinadas (Hybrid Search): buscar conceptos que coincidan con un
+término de búsqueda relacional y ordenarlos por distancia de coseno (`<=>`)
+de sus vectores de embeddings en una sola consulta SQL.
 
-   El camino de lectura ya está resuelto en [`SupabaseStore::search`](../crates/supabase-store/src/lib.rs) — cuando hay `GEMINI_API_KEY` configurada, embebe el texto de la consulta (mismo cliente que el worker, [`gemini-embeddings`](../crates/gemini-embeddings/src/lib.rs), para garantizar el mismo modelo en ambos lados) y ordena por `<=>` contra `embeddings`; si no hay clave, o si Gemini falla, cae de vuelta a la búsqueda `ILIKE` de siempre. Eso NO es todavía el hybrid search que pide este ejercicio: son dos consultas alternativas, no una sola consulta que combine ambas señales de relevancia en un mismo `ORDER BY` — sigue siendo un ejercicio abierto diseñar esa combinación.
+   El camino de lectura ya está resuelto en
+[`SupabaseStore::search`](../crates/supabase-store/src/lib.rs) — cuando hay
+`GEMINI_API_KEY` configurada, embebe el texto de la consulta (mismo cliente
+que el worker,
+[`gemini-embeddings`](../crates/gemini-embeddings/src/lib.rs), para
+garantizar el mismo modelo en ambos lados) y ordena por `<=>` contra
+`embeddings`; si no hay clave, o si Gemini falla, cae de vuelta a la
+búsqueda `ILIKE` de siempre. Eso NO es todavía el hybrid search que pide
+este ejercicio: son dos consultas alternativas, no una sola consulta que
+combine ambas señales de relevancia en un mismo `ORDER BY` — sigue siendo un
+ejercicio abierto diseñar esa combinación.
