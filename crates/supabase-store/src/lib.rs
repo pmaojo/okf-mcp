@@ -9,10 +9,35 @@ use memory_model::{Budget, ConceptId, ContentId, Principal, Revision};
 use store_core::{
     CommitOutcome, CommitRequest, DocumentView, MemoryRepository, SearchHit, SearchQuery, StoreError,
 };
-use sqlx::postgres::PgRow;
-use sqlx::{PgPool, Row};
+use sqlx::postgres::{PgArguments, PgRow};
+use sqlx::query::{Query, QueryScalar};
+use sqlx::{FromRow, PgPool, Postgres, Row};
 use std::convert::Infallible;
 use std::sync::Arc;
+
+/// Todas las consultas de este adaptador se construyen con
+/// `persistent(false)`: en producción `POSTGRES_URL` apunta al pooler
+/// de Supabase en modo transacción, que puede entregar la misma
+/// conexión física a otra sesión lógica entre transacciones. Un
+/// prepared statement CON nombre (`sqlx_s_N`) sobrevive en el backend
+/// y colisiona con el homónimo de otra sesión ("prepared statement
+/// \"sqlx_s_N\" already exists"). `persistent(false)` hace que sqlx
+/// use el statement SIN nombre del protocolo extendido, que se
+/// re-prepara en cada uso y no puede colisionar. Verificado sobre el
+/// código de sqlx 0.8: `statement_cache_capacity(0)` (el pool de
+/// `vercel-entry`) solo evita CACHEAR el statement, no que reciba
+/// nombre — por eso la protección vive aquí, consulta a consulta.
+fn pg_query(sql: &str) -> Query<'_, Postgres, PgArguments> {
+    sqlx::query(sql).persistent(false)
+}
+
+/// Igual que [`pg_query`], para consultas de una sola columna.
+fn pg_query_scalar<'q, O>(sql: &'q str) -> QueryScalar<'q, Postgres, O, PgArguments>
+where
+    (O,): for<'r> FromRow<'r, PgRow>,
+{
+    sqlx::query_scalar(sql).persistent(false)
+}
 
 /// Ejecuta un Future de forma síncrona, tolerando si ya nos encontramos
 /// dentro de un runtime de Tokio (como en Axum/Vercel) o fuera de él (tests).
@@ -43,7 +68,7 @@ impl SupabaseStore {
     }
 
     async fn search_keyword(&self, query: &SearchQuery, limit: i64) -> Result<Vec<PgRow>, StoreError> {
-        sqlx::query(
+        pg_query(
             "SELECT h.concept_id, h.content_id, h.doc_type, h.title, h.tags
              FROM heads h
              JOIN blobs b ON h.content_id = b.content_id
@@ -84,7 +109,7 @@ impl SupabaseStore {
         limit: i64,
     ) -> Result<Vec<PgRow>, StoreError> {
         let vector = Vector::from(embedding.to_vec());
-        sqlx::query(
+        pg_query(
             "SELECT h.concept_id, h.content_id, h.doc_type, h.title, h.tags
              FROM heads h
              JOIN blobs b ON h.content_id = b.content_id
@@ -127,7 +152,7 @@ fn row_to_search_hit(row: PgRow) -> SearchHit {
 impl MemoryRepository for SupabaseStore {
     fn get(&self, id: &ConceptId) -> Result<Option<DocumentView>, StoreError> {
         let res = block_on(async {
-            sqlx::query(
+            pg_query(
                 "SELECT h.content_id, h.version, b.raw, h.doc_type, h.title, h.tags
                  FROM heads h
                  JOIN blobs b ON h.content_id = b.content_id
@@ -215,7 +240,7 @@ impl MemoryRepository for SupabaseStore {
             let mut tx = self.pool.begin().await.map_err(|e| StoreError::Backend(e.to_string()))?;
 
             // Bloquear la fila de la cabeza actual para evitar escrituras concurrentes
-            let current_head = sqlx::query(
+            let current_head = pg_query(
                 "SELECT content_id, version FROM heads WHERE concept_id = $1 FOR UPDATE",
             )
             .bind(request.concept_id.as_str())
@@ -255,7 +280,7 @@ impl MemoryRepository for SupabaseStore {
                     let new_version = current_head.as_ref().map(|h| h.get::<i64, _>("version") + 1).unwrap_or(1);
 
                     // Insertar blob si no existe
-                    sqlx::query(
+                    pg_query(
                         "INSERT INTO blobs (content_id, raw) VALUES ($1, $2) ON CONFLICT (content_id) DO NOTHING",
                     )
                     .bind(&incoming_hex)
@@ -266,7 +291,7 @@ impl MemoryRepository for SupabaseStore {
 
                     // Actualizar o crear la cabeza del documento
                     if created {
-                        sqlx::query(
+                        pg_query(
                             "INSERT INTO heads (concept_id, content_id, version, doc_type, title, tags)
                              VALUES ($1, $2, $3, $4, $5, $6)",
                         )
@@ -280,7 +305,7 @@ impl MemoryRepository for SupabaseStore {
                         .await
                         .map_err(|e| StoreError::Backend(e.to_string()))?;
                     } else {
-                        sqlx::query(
+                        pg_query(
                             "UPDATE heads SET content_id = $1, version = $2, doc_type = $3, title = $4, tags = $5
                              WHERE concept_id = $6",
                         )
@@ -296,7 +321,7 @@ impl MemoryRepository for SupabaseStore {
                     }
 
                     // Insertar la revisión correspondiente
-                    let seq = sqlx::query_scalar::<_, i64>(
+                    let seq = pg_query_scalar::<i64>(
                         "INSERT INTO revisions (concept_id, base, result, actor_subject, actor_client_id, reason)
                          VALUES ($1, $2, $3, $4, $5, $6)
                          RETURNING seq",
@@ -312,7 +337,7 @@ impl MemoryRepository for SupabaseStore {
                     .map_err(|e| StoreError::Backend(e.to_string()))?;
 
                     // Actualizar los enlaces salientes (derived metadata)
-                    sqlx::query(
+                    pg_query(
                         "DELETE FROM links WHERE source_id = $1",
                     )
                     .bind(request.concept_id.as_str())
@@ -321,7 +346,7 @@ impl MemoryRepository for SupabaseStore {
                     .map_err(|e| StoreError::Backend(e.to_string()))?;
 
                     for link in &doc.links {
-                        sqlx::query(
+                        pg_query(
                             "INSERT INTO links (source_id, target_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
                         )
                         .bind(request.concept_id.as_str())
@@ -343,7 +368,7 @@ impl MemoryRepository for SupabaseStore {
                         }
                     });
 
-                    sqlx::query(
+                    pg_query(
                         "INSERT INTO outbox (event_type, concept_id, content_id, payload)
                          VALUES ('commit', $1, $2, $3)"
                     )
@@ -390,7 +415,7 @@ impl MemoryRepository for SupabaseStore {
 
         let res = block_on(async {
             // Verificar si el concepto existe en heads o revisiones
-            let exists = sqlx::query_scalar::<_, bool>(
+            let exists = pg_query_scalar::<bool>(
                 "SELECT EXISTS(SELECT 1 FROM heads WHERE concept_id = $1)
                  OR EXISTS(SELECT 1 FROM revisions WHERE concept_id = $1)",
             )
@@ -403,7 +428,7 @@ impl MemoryRepository for SupabaseStore {
                 return Err(StoreError::NotFound(id.clone()));
             }
 
-            let rows = sqlx::query(
+            let rows = pg_query(
                 "SELECT seq, base, result, actor_subject, actor_client_id, reason
                  FROM revisions
                  WHERE concept_id = $1 AND seq < $2
@@ -452,7 +477,7 @@ impl NeighborSource for SupabaseStore {
 
     fn neighbors(&self, id: &ConceptId) -> Result<Vec<ConceptId>, Self::Error> {
         let res = block_on(async {
-            sqlx::query_scalar::<_, String>(
+            pg_query_scalar::<String>(
                 "SELECT target_id FROM links WHERE source_id = $1 ORDER BY target_id",
             )
             .bind(id.as_str())
@@ -477,7 +502,7 @@ impl NeighborSource for SupabaseStore {
 
     fn document_size(&self, id: &ConceptId) -> Result<Option<usize>, Self::Error> {
         let res = block_on(async {
-            sqlx::query_scalar::<_, String>(
+            pg_query_scalar::<String>(
                 "SELECT b.raw
                  FROM heads h
                  JOIN blobs b ON h.content_id = b.content_id

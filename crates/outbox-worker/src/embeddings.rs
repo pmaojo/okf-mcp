@@ -5,6 +5,7 @@
 //! a GitHub, ver [`crate::github_sync`] — comparten `process_batch`
 //! solo porque el mismo evento de outbox dispara ambos.
 
+use crate::pg_query;
 use gemini_embeddings::embed;
 use pgvector::Vector;
 use sqlx::PgPool;
@@ -19,7 +20,7 @@ pub async fn generate_and_save_embedding(
     let values = embed(client, gemini_key, markdown).await?;
 
     // Guardar o actualizar en pgvector
-    sqlx::query(
+    pg_query(
         "INSERT INTO embeddings (concept_id, embedding)
          VALUES ($1, $2)
          ON CONFLICT (concept_id) DO UPDATE SET embedding = EXCLUDED.embedding"
