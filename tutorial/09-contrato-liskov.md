@@ -153,6 +153,8 @@ Es tests todo el capítulo. La lista, y qué invariante narra cada uno:
 
 ## 8. Frontera de producción
 
+> 🧰 **La rueda de serie:** el siguiente nivel de un contrato ejecutable es [`proptest`](https://docs.rs/proptest): propiedades con entradas generadas, no elegidas. El mapa completo y el criterio para elegir: [La rueda de serie](la-rueda-de-serie.md).
+
 Este ES el mecanismo de frontera. Cuando el hito 2 traiga
 `supabase-adapter` (con `tokio`, un cliente HTTP y SQL), su
 obligación de entrada no es "revisar el código a mano": es hacer

@@ -50,14 +50,46 @@ repositorio. Cada capítulo sigue la misma plantilla:
 |---|----------|------|--------------------|
 | 15 | [MCP Apps: grafo e historial](15-mcp-apps-visualizaciones.md) (opcional — extensión negociable, no forma parte del núcleo) | métodos de trait con cuerpo por defecto, `&'static str` embebido | **O**, I, D |
 
+## Transversal — La documentación ejecutable
+
+| # | Capítulo | Rust | SOLID protagonista |
+|---|----------|------|--------------------|
+| 16 | [`cargo doc`: la documentación que compila](16-cargo-doc.md) | doctests, enlaces intra-doc, `missing_docs`, `compile_fail` | **L** como página del trait, S por crate |
+
+## La rueda de serie
+
+Reinventamos ruedas para entenderlas, no para desplegarlas. Cada
+capítulo señala en su "Frontera de producción" el crate idóneo
+(🧰), y el mapa completo — con el criterio para elegir dependencias
+— vive en [La rueda de serie](la-rueda-de-serie.md).
+
+## La referencia navegable
+
+La API completa del workspace, generada con `cargo doc` y publicada
+en cada push a `main`:
+
+> **<https://pmaojo.github.io/okf-mcp/>**
+
+Es la otra mitad de este tutorial: cada capítulo cuenta el PORQUÉ
+con el código al lado; la referencia muestra el QUÉ, con búsqueda
+(tecla `s`) y enlaces entre tipos. Los ejemplos que ves ahí no son
+decoración — compilan y se ejecutan en cada `cargo test` (capítulo
+16). Para generarla en local, tripas privadas incluidas:
+
+```bash
+cargo doc --no-deps --document-private-items --open
+```
+
 ## Cómo seguirlo
 
 ```bash
 cargo test                      # todo el hito 1 debe estar en verde
 ./scripts/check-std-only.sh     # cero dependencias, cero unsafe
+./scripts/check-docs.sh         # docs sin warnings, doctests en verde
+cargo doc --no-deps --open      # la referencia, en tu navegador
 cargo run -p mcp-stdio          # el servidor, listo para un cliente MCP
 ```
 
-Lee cada capítulo con el crate abierto al lado. Los ejercicios van
-de guiados a abiertos; los abiertos no tienen solución única y esa
-es la gracia.
+Lee cada capítulo con el crate abierto al lado — y con su página de
+la referencia en otra pestaña. Los ejercicios van de guiados a
+abiertos; los abiertos no tienen solución única y esa es la gracia.

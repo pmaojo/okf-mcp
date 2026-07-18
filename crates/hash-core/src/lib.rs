@@ -10,8 +10,23 @@
 //! > crate; eso vive en `auth-adapter` con criptografía auditada.
 //!
 //! Referencia: FIPS 180-4.
+//!
+//! # Ejemplo
+//!
+//! ```
+//! let digest = hash_core::sha256(b"abc");
+//! let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+//! assert_eq!(
+//!     hex,
+//!     "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+//! );
+//! ```
+//!
+//! Ese hex es un vector oficial de NIST: la documentación no afirma
+//! que el hash "funciona", lo DEMUESTRA en cada `cargo test`.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 /// Constantes K: parte fraccionaria de las raíces cúbicas de los
 /// primeros 64 números primos.
@@ -34,6 +49,20 @@ const H0: [u32; 8] = [
 
 /// Hasher incremental. Permite alimentar datos por trozos sin
 /// concatenarlos en memoria (importante para documentos grandes).
+///
+/// # Ejemplo
+///
+/// El digest no depende de cómo se trocee la entrada — la misma
+/// garantía que verifica el test `independiente_del_troceo`:
+///
+/// ```
+/// use hash_core::{sha256, Sha256};
+///
+/// let mut h = Sha256::new();
+/// h.update(b"hola ");
+/// h.update(b"mundo");
+/// assert_eq!(h.finalize(), sha256(b"hola mundo"));
+/// ```
 pub struct Sha256 {
     state: [u32; 8],
     /// Bloque parcial pendiente (< 64 bytes).
@@ -50,6 +79,7 @@ impl Default for Sha256 {
 }
 
 impl Sha256 {
+    /// Estado inicial `H0`, buffer vacío, cero bytes procesados.
     pub fn new() -> Self {
         Sha256 { state: H0, buffer: [0u8; 64], buffer_len: 0, total_len: 0 }
     }
@@ -187,7 +217,11 @@ impl Sha256 {
     }
 }
 
-/// Conveniencia: hash de un slice completo.
+/// Conveniencia: hash de un slice completo en una llamada.
+///
+/// Equivale a [`Sha256::new`] + [`Sha256::update`] +
+/// [`Sha256::finalize`]. Para entradas troceadas (streaming, E/S por
+/// bloques) usa [`Sha256`] directamente.
 pub fn sha256(data: &[u8]) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update(data);

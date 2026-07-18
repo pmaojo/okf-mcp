@@ -21,6 +21,7 @@
 //!   `conflict-core`; aquí solo se orquesta y se almacena.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 use conflict_core::{decide, CommitDecision};
 use graph_core::NeighborSource;
@@ -34,11 +35,53 @@ use std::sync::Arc;
 /// Cabeza de un documento: a qué blob apunta y cuántas veces avanzó.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Head {
+    /// Blob al que apunta la cabeza ahora mismo.
     pub content_id: ContentId,
+    /// Cuántas veces avanzó (1 = recién creado).
     pub version: u64,
 }
 
 /// Implementación en memoria del hito 1.
+///
+/// # Ejemplo
+///
+/// El ciclo completo crear → leer → editar, con el CAS protegiendo
+/// la escritura concurrente:
+///
+/// ```
+/// use memory_model::{Budget, ConceptId, Principal};
+/// use memory_store::InMemoryStore;
+/// use store_core::{CommitRequest, MemoryRepository, StoreError};
+///
+/// let mut store = InMemoryStore::new();
+/// let id = ConceptId::parse("notas/rust").unwrap();
+/// let req = |expected, markdown: &str| CommitRequest {
+///     concept_id: id.clone(),
+///     expected,
+///     markdown: markdown.to_string(),
+///     reason: "ejemplo rustdoc".to_string(),
+/// };
+/// let actor = Principal::local_dev();
+/// let budget = Budget::default();
+///
+/// // Crear (expected = None):
+/// let v1 = store
+///     .commit(req(None, "---\ntype: note\n---\nhola\n"), &actor, &budget)
+///     .unwrap();
+/// assert!(v1.created);
+///
+/// // Editar declarando la base leída: el CAS lo acepta.
+/// let v2 = store
+///     .commit(req(Some(v1.content_id), "---\ntype: note\n---\nadiós\n"), &actor, &budget)
+///     .unwrap();
+/// assert_eq!(v2.version, 2);
+///
+/// // Reescribir sobre la base VIEJA: conflicto, nunca pérdida.
+/// let err = store
+///     .commit(req(Some(v1.content_id), "---\ntype: note\n---\npisotón\n"), &actor, &budget)
+///     .unwrap_err();
+/// assert!(matches!(err, StoreError::Conflict(_)));
+/// ```
 #[derive(Debug, Default)]
 pub struct InMemoryStore {
     blobs: HashMap<ContentId, Arc<str>>,
@@ -50,6 +93,7 @@ pub struct InMemoryStore {
 }
 
 impl InMemoryStore {
+    /// Almacén vacío con la secuencia de revisiones en 1.
     pub fn new() -> Self {
         InMemoryStore { next_seq: 1, ..Default::default() }
     }

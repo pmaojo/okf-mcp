@@ -15,6 +15,12 @@
 //! use memory_store::InMemoryStore;
 //! contract::run_all(InMemoryStore::new);
 //! ```
+//!
+//! (El ejemplo lleva `ignore` a conciencia: `memory-store` DEPENDE
+//! de este crate, no al revés, así que un doctest de aquí no puede
+//! importarlo sin crear un ciclo. La versión ejecutable vive en los
+//! tests de cada implementación — véase
+//! `crates/memory-store/tests/contract.rs`.)
 
 use crate::{CommitRequest, MemoryRepository, SearchQuery, StoreError};
 use memory_model::{Budget, ConceptId, ContentId, Principal};
@@ -57,6 +63,8 @@ pub fn run_all<R: MemoryRepository>(mut mk: impl FnMut() -> R) {
     historia_reciente_primero_y_paginada(mk());
 }
 
+/// Crear parte en versión 1; `get` devuelve los bytes escritos;
+/// actualizar sobre la base correcta incrementa la versión.
 pub fn crear_leer_y_versionar<R: MemoryRepository>(mut repo: R) {
     let v1 = commit(&mut repo, "c/uno", None, &doc("Uno", "v1")).expect("crear");
     assert!(v1.created && v1.version == 1, "la creación es versión 1");
@@ -69,6 +77,8 @@ pub fn crear_leer_y_versionar<R: MemoryRepository>(mut repo: R) {
     assert!(!v2.created && v2.version == 2, "la actualización incrementa la versión");
 }
 
+/// Una base obsoleta produce [`StoreError::Conflict`] con los hashes
+/// correctos y NO altera la escritura más nueva.
 pub fn base_obsoleta_no_pisa<R: MemoryRepository>(mut repo: R) {
     let v1 = commit(&mut repo, "c", None, &doc("t", "v1")).unwrap();
     let v2 = commit(&mut repo, "c", Some(v1.content_id), &doc("t", "v2")).unwrap();
@@ -85,6 +95,8 @@ pub fn base_obsoleta_no_pisa<R: MemoryRepository>(mut repo: R) {
     assert_eq!(view.content_id, v2.content_id, "la escritura buena sigue intacta");
 }
 
+/// Reescribir contenido idéntico es `no_change`: ni versión nueva ni
+/// revisión nueva.
 pub fn commit_identico_es_idempotente<R: MemoryRepository>(mut repo: R) {
     let texto = doc("t", "igual");
     let v1 = commit(&mut repo, "c", None, &texto).unwrap();
@@ -95,12 +107,14 @@ pub fn commit_identico_es_idempotente<R: MemoryRepository>(mut repo: R) {
     assert_eq!(h.len(), 1, "no_change no crea revisión");
 }
 
+/// Un documento que no valida se rechaza ANTES de tocar el almacén.
 pub fn documento_invalido_no_deja_rastro<R: MemoryRepository>(mut repo: R) {
     let err = commit(&mut repo, "c", None, "sin frontmatter").unwrap_err();
     assert!(matches!(err, StoreError::Okf(_)), "validación antes que nada");
     assert!(repo.get(&id("c")).unwrap().is_none(), "nada quedó escrito");
 }
 
+/// Lo inexistente es `None` en `get` y `NotFound` en `history`.
 pub fn inexistente_es_none_y_notfound<R: MemoryRepository>(repo: R) {
     assert!(repo.get(&id("no/existe")).unwrap().is_none(), "get -> None");
     assert!(
@@ -109,6 +123,7 @@ pub fn inexistente_es_none_y_notfound<R: MemoryRepository>(repo: R) {
     );
 }
 
+/// Los criterios de búsqueda se combinan con AND y `limit` corta.
 pub fn busqueda_respeta_filtros_y_limite<R: MemoryRepository>(mut repo: R) {
     commit(&mut repo, "people/ana", None,
         "---\ntype: person\ntitle: Ana\ntags:\n  - rust\n---\nIngeniera\n").unwrap();
@@ -130,6 +145,8 @@ pub fn busqueda_respeta_filtros_y_limite<R: MemoryRepository>(mut repo: R) {
     assert!(repo.search(&q(Some("nada-de-esto"), None, None, None), &budget).unwrap().is_empty());
 }
 
+/// La historia sale de más reciente a más antigua y `before_seq`
+/// pagina sin solapar.
 pub fn historia_reciente_primero_y_paginada<R: MemoryRepository>(mut repo: R) {
     let mut last = None;
     for i in 0..5 {

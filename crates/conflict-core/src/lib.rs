@@ -15,6 +15,7 @@
 //! > en silencio.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 use memory_model::ContentId;
 
@@ -33,6 +34,9 @@ pub enum CommitDecision {
     Conflict(Conflict),
 }
 
+/// Los tres hashes que el cliente necesita para releer, re-aplicar
+/// su cambio y reintentar. Un conflicto sin datos es un callejón sin
+/// salida; uno estructurado es un paso del protocolo.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conflict {
     /// Lo que el agente creía que había (None = creía que no existía).
@@ -49,6 +53,30 @@ pub struct Conflict {
 /// * `expected`  — hash que el cliente declara haber leído
 ///                 (`None` = "estoy creando este documento").
 /// * `incoming`  — hash del contenido que quiere escribir.
+///
+/// # Ejemplo
+///
+/// Los cuatro destinos posibles, uno por variante de
+/// [`CommitDecision`]:
+///
+/// ```
+/// use conflict_core::{decide, CommitDecision};
+/// use memory_model::ContentId;
+///
+/// let h = |b: u8| ContentId([b; 32]);
+///
+/// // No existe y nadie esperaba que existiera: creación limpia.
+/// assert_eq!(decide(None, None, h(1)), CommitDecision::Create);
+/// // La base declarada sigue siendo la cabeza: avance normal.
+/// assert_eq!(decide(Some(h(1)), Some(h(1)), h(2)), CommitDecision::Update);
+/// // Contenido idéntico al actual: idempotencia gratis.
+/// assert_eq!(decide(Some(h(1)), Some(h(1)), h(1)), CommitDecision::NoChange);
+/// // Base obsoleta: conflicto estructurado, jamás sobreescritura.
+/// assert!(matches!(
+///     decide(Some(h(3)), Some(h(1)), h(2)),
+///     CommitDecision::Conflict(_),
+/// ));
+/// ```
 pub fn decide(
     head: Option<ContentId>,
     expected: Option<ContentId>,

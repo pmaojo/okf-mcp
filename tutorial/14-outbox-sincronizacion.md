@@ -116,6 +116,8 @@ El worker ofrece dos modos de ejecución:
 
 ## 8. Frontera de producción
 
+> 🧰 **La rueda de serie:** el patrón outbox es SQL + disciplina (sin crate), pero un framework de jobs como [`apalis`](https://docs.rs/apalis) añade reintentos, backoff y métricas. El mapa completo y el criterio para elegir: [La rueda de serie](la-rueda-de-serie.md).
+
 Para desplegar el worker:
 1. Configura `GITHUB_TOKEN` (Personal Access Token de GitHub con permisos de escritura en el repo).
 2. Configura `GITHUB_REPO` (formato `usuario/repositorio`).

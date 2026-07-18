@@ -1,34 +1,35 @@
 # Capítulo 6 — Compare-and-swap: nadie pierde una escritura
 
-Crate: [`crates/conflict-core`](../crates/conflict-core/src/lib.rs)
-
-## 1. El problema
+Crate: [`crates/conflict-core`](../crates/conflict-core/src/lib.rs) ·
+[referencia](https://pmaojo.github.io/okf-mcp/conflict_core/)
 
 Dos agentes leen `people/alice` a la vez. El agente A añade un
 proyecto; el agente B corrige el cargo. B escribe primero. Si A
 escribe después "lo que él tiene" — su edición sobre la versión que
-leyó — la corrección de B **desaparece sin dejar rastro**. Es la
-*actualización perdida*, el bug de concurrencia más antiguo del
-mundo, y con agentes de IA editando memoria compartida deja de ser
-teórico: es el caso normal.
+leyó — la corrección de B **desaparece sin dejar rastro**.
 
-Los cerrojos (locks) no sirven aquí: el "leer, pensar, escribir" de
-un agente dura segundos o minutos, y un lock de esa duración en un
-servidor sin estado (¡Vercel puede matar la instancia!) es otra
-categoría de incidente.
+Acabas de ver la *actualización perdida*, el bug de concurrencia más
+antiguo del mundo. En la mayoría de sistemas es un caso raro que
+aparece bajo carga; con agentes de IA editando memoria compartida
+deja de ser teórico y pasa a ser el caso normal: los agentes leen,
+piensan durante segundos o minutos, y escriben. Ese hueco entre leer
+y escribir es una autopista para el conflicto.
 
-## 2. El invariante
+¿Cerrojos? Piénsalo dos veces. Un lock que dura lo que tarda un
+modelo en razonar, sostenido en un servidor sin estado donde Vercel
+puede matar la instancia a mitad… es cambiar un incidente por otro.
+La respuesta de este capítulo es concurrencia OPTIMISTA: no
+impedimos el conflicto — lo detectamos con precisión quirúrgica y lo
+devolvemos con los datos para resolverlo. El invariante:
 
-> **Toda escritura declara la base sobre la que se hizo. Si la base ya no es la cabeza actual, la escritura se rechaza con un conflicto estructurado. El almacén jamás pisa en silencio.**
+> **Toda escritura declara la base sobre la que se hizo. Si la base
+> ya no es la cabeza actual, la escritura se rechaza con un
+> conflicto estructurado. El almacén jamás pisa en silencio.**
 
-Concurrencia OPTIMISTA: no impedimos el conflicto, lo detectamos con
-precisión y lo devolvemos con los datos para resolverlo (releer,
-re-aplicar, reintentar).
+## Una función, cuatro destinos
 
-## 3. La implementación mínima
-
-Lo primero es notar lo que este crate NO tiene: almacén, hash, E/S.
-Es UNA función pura:
+Lo primero que llama la atención de `conflict-core` es lo que NO
+tiene: almacén, hash, E/S. Es UNA función pura:
 
 ```rust
 pub fn decide(
@@ -51,8 +52,8 @@ pub enum CommitDecision {
 
 El cuerpo es un `match` sobre `(head, expected)` — cuatro
 combinaciones de `Option` — y el compilador exige contemplarlas
-todas. Esa exhaustividad no es estilo: es la especificación hecha
-código. La tabla completa:
+todas. Esa exhaustividad no es una cuestión de estilo: es la
+especificación hecha código. La tabla completa:
 
 | head | expected | relación | decisión |
 | ---- | -------- | -------- | -------- |
@@ -62,23 +63,14 @@ código. La tabla completa:
 | Some(h) | Some(e), h == e | base correcta | `Update` (o `NoChange` si incoming == h) |
 | Some(h) | Some(e), h != e | base obsoleta | `Conflict` (o `NoChange` si incoming == h: convergencia) |
 
-Los dos `NoChange` "raros" salen gratis del hash de contenido
-(capítulo 2): si dos agentes escriben byte a byte lo mismo, no hay
-nada que perder y por tanto no hay conflicto que declarar. Es
-**idempotencia por identidad de contenido** — un reintento de red
-duplicado no crea una revisión duplicada.
+Fíjate en los dos `NoChange` "raros" de la última columna, porque
+son el capítulo 2 pagando dividendos: si dos agentes escriben byte a
+byte lo mismo, no hay nada que perder y por tanto no hay conflicto
+que declarar. Es **idempotencia por identidad de contenido** — un
+reintento de red duplicado no crea una revisión duplicada, sin una
+sola línea de código de deduplicación.
 
-## 3.5. Conceptos de Rust en este capítulo
-
-Este capítulo destaca por su sencillez estructural gracias a dos conceptos de Rust:
-
-* **Funciones puras y determinismo:** En Rust, las funciones son inmutables por defecto. La función `decide` es una *función pura*: toma datos de entrada por valor y devuelve un resultado sin realizar lecturas de disco, red ni modificar variables externas. Esto hace que sea predecible al 100% y que testearla requiera solo una línea de código, sin necesidad de simulaciones (mocks) complejas.
-* **Pattern matching sobre tuplas de `Option`:** En lugar de anidar múltiples sentencias `if`, Rust permite agrupar varios valores en una tupla y compararlos a la vez: `match (head, expected)`. El compilador analiza de forma matemática todas las combinaciones posibles de `Some` y `None` y te obliga a manejarlas todas. Si olvidas alguna, el programa no compila.
-* **El trait `Copy`:** El tipo `ContentId` implementa `Copy` porque internamente solo guarda un array fijo de 32 bytes (`[u8; 32]`). En Rust, los tipos simples y pequeños que implementan `Copy` se copian de forma automática y barata (un simple copiado de bits en el stack) al pasarse como parámetros o asignarse a otras variables. Esto elimina la necesidad de llamar a `.clone()` y evita problemas con el borrow checker. Los tipos grandes que manejan memoria en el heap (como `String`) no pueden implementar `Copy`.
-
-## 4. Una versión deliberadamente rota
-
-La versión que casi todo el mundo escribe primero:
+## La versión que casi todo el mundo escribe primero
 
 ```rust
 // ❌ NO HACER: comparar versiones… leídas en otra consulta
@@ -88,22 +80,24 @@ if version_actual == version_esperada {
 }
 ```
 
-## 5. Por qué falla
-
-Entre el paso 1 y el paso 2 hay un hueco. Dos peticiones
+Parece exactamente lo que pide el invariante: comprobar antes de
+escribir. El defecto está en el espacio en blanco entre las líneas.
+Entre el paso 1 y el paso 2 hay un hueco, y dos peticiones
 concurrentes pueden AMBAS leer `version_actual == 7`, ambas pasar el
 `if`, y ambas escribir: la segunda pisa a la primera exactamente
-como si no hubiera comprobación. Es un TOCTOU (*time of check to
-time of use*): la comprobación y el uso deben ser UN acto atómico.
+como si la comprobación no existiera. Este patrón de fallo tiene
+nombre — TOCTOU, *time of check to time of use* — y la moraleja es
+que la comprobación y el uso deben ser UN acto atómico.
 
-¿Y por qué nuestro `decide` puro no tiene este problema? Porque la
-atomicidad no es responsabilidad de la decisión, sino de quien la
-ejecuta con exclusividad:
+¿Y por qué nuestro `decide` puro no sufre TOCTOU, si él tampoco es
+atómico? Porque la atomicidad no es responsabilidad de la decisión,
+sino de quien la ejecuta con exclusividad. Y aquí el proyecto juega
+la misma carta dos veces:
 
 - **Hito 1 (RAM):** `commit` recibe `&mut self`. El sistema de
   préstamos de Rust garantiza EN COMPILACIÓN que nadie más toca el
   almacén entre la lectura de la cabeza y la escritura. El borrow
-  checker es aquí un mutex estático.
+  checker actúa de mutex estático.
 - **Hito 2 (Postgres):** el mismo `decide` se convierte en el
   `WHERE` de un `UPDATE`:
   ```sql
@@ -112,21 +106,12 @@ ejecuta con exclusividad:
   ```
   Si afecta 0 filas → conflicto. La atomicidad la da la base de
   datos; la SEMÁNTICA (qué significa cada caso) ya está definida y
-  testeada aquí.
+  testeada aquí, en 50 líneas puras.
 
-## 6. Memoria y asignación
+## Testear una decisión, no una carrera
 
-Cero asignaciones: `ContentId` es `Copy` (32 bytes en el stack) y
-`decide` solo compara. Vale la pena notar el porqué: un `[u8; 32]`
-es `Copy` porque copiarlo es un `memcpy` trivial sin recursos que
-liberar. `String` no puede serlo. Cuando diseñes tipos de dominio,
-"¿puede ser `Copy`?" es una pregunta de ergonomía importante: los
-tipos `Copy` fluyen por el código sin peleas con el borrow checker.
-
-## 7. Tests
-
-Siete tests, uno por fila de la tabla de decisión (más las
-convergencias). Como la función es pura, cada test son tres líneas:
+Como la función es pura, cada fila de la tabla es un test de tres
+líneas:
 
 ```rust
 #[test]
@@ -138,19 +123,20 @@ fn base_obsoleta_es_conflicto() {
 }
 ```
 
-Compáralo con testear la versión rota: necesitarías dos hilos, un
-sleep estratégico y una oración. **La pureza no es estética funcional: es testeabilidad comprada al precio de mover la E/S a otra parte.**
-
-El test de integración del capítulo 8 cierra el círculo con el
-escenario narrado en §1: dos agentes, mismo `expected_hash`, el
+Ahora imagina testear la versión rota: dos hilos, un sleep
+estratégico y una oración. **La pureza no es estética funcional: es
+testeabilidad comprada al precio de mover la E/S a otra parte.** El
+test de integración del capítulo 8 cerrará el círculo con la escena
+que abrió este capítulo: dos agentes, mismo `expected_hash`, el
 segundo recibe `revision_conflict` y el contenido del primero sigue
 intacto.
 
-## 8. Frontera de producción
+## La frontera de producción
 
-Ya contada en §5: `decide` se traduce a un `UPDATE ... WHERE`
-condicional y la fila afectada (1 o 0) selecciona la rama. El enum
-`Conflict` viaja al cliente como JSON:
+> 🧰 **La rueda de serie:** esta rueda son 50 líneas puras: no hay crate que mejore eso. Para el merge a tres bandas futuro, [`similar`](https://docs.rs/similar) o [`diffy`](https://docs.rs/diffy). El mapa completo y el criterio para elegir: [La rueda de serie](la-rueda-de-serie.md).
+
+En producción, `decide` se traduce al `UPDATE ... WHERE` condicional
+que ya viste, y el `Conflict` viaja al cliente como JSON:
 
 ```json
 {
@@ -166,7 +152,22 @@ Ese `hint` no es decoración: el consumidor es un MODELO de lenguaje,
 y un error que explica el protocolo de recuperación convierte un
 fallo en un bucle de reintento que funciona solo.
 
-## 9. Principios SOLID en juego
+---
+
+## Apéndice del capítulo
+
+### Conceptos de Rust
+
+* **Funciones puras y determinismo:** `decide` toma datos de entrada y devuelve un resultado sin leer disco, red ni modificar variables externas. Es predecible al 100 % y testearla no requiere mocks ni simulaciones.
+* **Pattern matching sobre tuplas de `Option`:** en lugar de anidar `if`s, Rust permite agrupar valores en una tupla y compararlos a la vez: `match (head, expected)`. El compilador analiza todas las combinaciones de `Some`/`None` y obliga a manejarlas todas; si olvidas una, no compila.
+* **El trait `Copy`:** `ContentId` implementa `Copy` porque solo guarda `[u8; 32]`: copiarlo es un copiado de bits en el stack, automático y barato, sin `.clone()` ni peleas con el borrow checker. Los tipos que manejan heap (como `String`) no pueden ser `Copy`. Cuando diseñes tipos de dominio, "¿puede ser `Copy`?" es una pregunta de ergonomía importante.
+
+### Memoria y asignación
+
+Cero asignaciones: `ContentId` es `Copy` (32 bytes en el stack) y
+`decide` solo compara. Ese es todo el presupuesto del crate.
+
+### SOLID en juego
 
 - **S en su forma más pura:** este crate es una función. Su única
   razón de cambio es que cambie la POLÍTICA de concurrencia. Ni el
@@ -181,7 +182,7 @@ fallo en un bucle de reintento que funciona solo.
   masivo de un bundle), reutiliza `decide` y es CONSISTENTE por
   construcción con el camino normal.
 
-## 10. Ejercicios
+### Ejercicios
 
 1. **Guiado.** Añade a `Conflict` el campo `concept_id`. ¿Qué firmas
    cambian en cadena? Eso que acabas de medir es el acoplamiento

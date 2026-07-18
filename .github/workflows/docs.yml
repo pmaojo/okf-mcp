@@ -1,0 +1,66 @@
+# Publica la documentación rustdoc del workspace en GitHub Pages.
+#
+# La puerta de calidad estricta (missing_docs + doctests) vive en
+# scripts/check-docs.sh y corre en rust.yml con cada push/PR; este
+# workflow solo CONSTRUYE y PUBLICA el sitio en cada push a main.
+#
+# Requisito único (una vez): Settings → Pages → Source = "GitHub
+# Actions". La URL resultante: https://<usuario>.github.io/okf-mcp/
+name: Docs
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Construir rustdoc del workspace
+        run: cargo doc --workspace --no-deps
+
+      - name: Portada con redirección al crate de dominio
+        run: |
+          rm -f target/doc/.lock
+          cat > target/doc/index.html <<'EOF'
+          <!DOCTYPE html>
+          <html lang="es">
+          <meta charset="utf-8">
+          <meta http-equiv="refresh" content="0; url=memory_model/index.html">
+          <title>okf-mcp — documentación</title>
+          <p>Redirigiendo a
+            <a href="memory_model/index.html">memory_model</a>,
+            el crate de dominio por el que empieza el tutorial.</p>
+          </html>
+          EOF
+
+      - name: Subir artefacto de Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/doc
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Desplegar a GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

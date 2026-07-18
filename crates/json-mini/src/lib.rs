@@ -13,8 +13,23 @@
 //! - Límites explícitos de profundidad y tamaño ANTES de asignar.
 //! - Errores con offset de byte: un parser que dice "error" sin
 //!   decir dónde no enseña nada.
+//!
+//! # Ejemplo
+//!
+//! Ida y vuelta determinista: [`parse`] → [`Value`] → [`to_string`].
+//!
+//! ```
+//! use json_mini::{parse, to_string, Value};
+//!
+//! let v = parse(r#"{"z": 1, "a": [true, null]}"#)?;
+//! assert_eq!(v.get("z").and_then(Value::as_u64), Some(1));
+//! // Las claves salen ordenadas SIEMPRE (BTreeMap):
+//! assert_eq!(to_string(&v), r#"{"a":[true,null],"z":1}"#);
+//! # Ok::<(), json_mini::ParseError>(())
+//! ```
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -23,29 +38,50 @@ use std::fmt;
 /// de ~10; 64 deja margen y evita agotar la pila con `[[[[...`.
 pub const MAX_DEPTH: usize = 64;
 
+/// Un valor JSON. El tipo suma completo: seis variantes, ni una más.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
+    /// `null`.
     Null,
+    /// `true` o `false`.
     Bool(bool),
+    /// Todo número JSON es un `f64` (ver la nota del crate sobre
+    /// fidelidad de enteros de 64 bits).
     Number(f64),
+    /// String ya des-escapado (los `\uXXXX` llegan como `char`).
     String(String),
+    /// `[...]`, en orden de llegada.
     Array(Vec<Value>),
+    /// `{...}` sobre [`BTreeMap`]: orden de claves determinista.
     Object(BTreeMap<String, Value>),
 }
 
 impl Value {
+    /// El string prestado, si esto es un [`Value::String`].
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Value::String(s) => Some(s),
             _ => None,
         }
     }
+    /// El número, si esto es un [`Value::Number`].
     pub fn as_f64(&self) -> Option<f64> {
         match self {
             Value::Number(n) => Some(*n),
             _ => None,
         }
     }
+    /// El número como entero sin signo, solo si la conversión es
+    /// EXACTA: sin signo, sin parte fraccionaria y dentro del rango
+    /// seguro de `f64` (2⁵³).
+    ///
+    /// ```
+    /// use json_mini::parse;
+    ///
+    /// assert_eq!(parse("42").unwrap().as_u64(), Some(42));
+    /// assert_eq!(parse("1.5").unwrap().as_u64(), None);
+    /// assert_eq!(parse("-1").unwrap().as_u64(), None);
+    /// ```
     pub fn as_u64(&self) -> Option<u64> {
         match self {
             Value::Number(n) if *n >= 0.0 && n.fract() == 0.0 && *n <= 9007199254740992.0 => {
@@ -54,18 +90,21 @@ impl Value {
             _ => None,
         }
     }
+    /// El booleano, si esto es un [`Value::Bool`].
     pub fn as_bool(&self) -> Option<bool> {
         match self {
             Value::Bool(b) => Some(*b),
             _ => None,
         }
     }
+    /// El mapa prestado, si esto es un [`Value::Object`].
     pub fn as_object(&self) -> Option<&BTreeMap<String, Value>> {
         match self {
             Value::Object(m) => Some(m),
             _ => None,
         }
     }
+    /// Los elementos prestados, si esto es un [`Value::Array`].
     pub fn as_array(&self) -> Option<&[Value]> {
         match self {
             Value::Array(a) => Some(a),
@@ -79,26 +118,38 @@ impl Value {
 }
 
 /// Constructor ergonómico de objetos para el lado servidor.
+///
+/// ```
+/// use json_mini::{obj, n, s};
+///
+/// let v = obj([("nombre", s("alice")), ("edad", n(30.0))]);
+/// assert_eq!(json_mini::to_string(&v), r#"{"edad":30,"nombre":"alice"}"#);
+/// ```
 pub fn obj<const N: usize>(pairs: [(&str, Value); N]) -> Value {
     Value::Object(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
 }
 
+/// Atajo: [`Value::String`] desde un `&str`.
 pub fn s(text: &str) -> Value {
     Value::String(text.to_string())
 }
 
+/// Atajo: [`Value::Number`].
 pub fn n(num: f64) -> Value {
     Value::Number(num)
 }
 
+/// Atajo: [`Value::Array`].
 pub fn arr(items: Vec<Value>) -> Value {
     Value::Array(items)
 }
 
+/// Error de análisis, siempre con posición.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseError {
     /// Offset del byte donde se detectó el problema.
     pub offset: usize,
+    /// Qué se esperaba o qué se encontró.
     pub message: String,
 }
 
@@ -112,6 +163,15 @@ impl std::error::Error for ParseError {}
 
 /// Parsea un documento JSON completo. Rechaza contenido extra tras
 /// el valor raíz (p. ej. `{}garbage`).
+///
+/// # Errores
+///
+/// [`ParseError`] apunta al byte exacto del problema:
+///
+/// ```
+/// let err = json_mini::parse(r#"{"a":1}basura"#).unwrap_err();
+/// assert_eq!(err.offset, 7); // justo tras el '}' del valor raíz
+/// ```
 pub fn parse(input: &str) -> Result<Value, ParseError> {
     let mut p = Parser { bytes: input.as_bytes(), pos: 0 };
     p.skip_ws();
@@ -369,7 +429,9 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// Serializa a JSON compacto y determinista.
+/// Serializa a JSON compacto y determinista: mismas claves, mismos
+/// bytes. Los tests comparan strings y los hashes de respuestas son
+/// estables gracias a esto.
 pub fn to_string(value: &Value) -> String {
     let mut out = String::new();
     write_value(&mut out, value);

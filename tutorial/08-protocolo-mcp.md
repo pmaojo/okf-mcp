@@ -1,21 +1,23 @@
 # Capítulo 8 — El protocolo MCP y el transporte: strings entran, strings salen
 
-Crates: [`crates/mcp-core`](../crates/mcp-core/src/lib.rs), [`crates/memory-tools`](../crates/memory-tools/src/lib.rs) y [`crates/mcp-stdio`](../crates/mcp-stdio/src)
+Crates: [`crates/mcp-core`](../crates/mcp-core/src/lib.rs),
+[`crates/memory-tools`](../crates/memory-tools/src/lib.rs) y
+[`crates/mcp-stdio`](../crates/mcp-stdio/src) ·
+[referencia](https://pmaojo.github.io/okf-mcp/mcp_core/)
 
-## 1. El problema
+Este es el capítulo donde todo lo que llevas construido empieza a
+hablar con el mundo. MCP (Model Context Protocol) define cómo:
+JSON-RPC 2.0 con un ciclo de vida (`initialize` →
+`notifications/initialized` → operar) y un contrato de herramientas
+(`tools/list`, `tools/call`).
 
-Todo lo construido necesita hablar con el mundo. MCP (Model Context
-Protocol) define cómo: JSON-RPC 2.0 con un ciclo de vida
-(`initialize` → `notifications/initialized` → operar) y un contrato
-de herramientas (`tools/list`, `tools/call`). Y hay que servirlo por
-DOS transportes con vidas muy distintas: stdio hoy (un proceso por
-cliente, líneas por stdin/stdout) y HTTP sin estado en Vercel mañana
-(una función efímera por petición).
-
-Si el protocolo se implementa PEGADO al transporte, mañana se
-reescribe. Ese es el problema real del capítulo.
-
-## 2. El invariante
+Pero hay una complicación de calendario que conviene mirar de
+frente: el servidor va a vivir en DOS transportes con vidas muy
+distintas. Hoy, stdio — un proceso por cliente, líneas por
+stdin/stdout. Mañana, HTTP sin estado en Vercel — una función
+efímera por petición. Si implementas el protocolo PEGADO al
+transporte de hoy, mañana lo reescribes entero. Ese es el problema
+real del capítulo, y su solución cabe en una firma:
 
 > **El núcleo del protocolo es una función sobre strings:**
 > `handle_message(&str) -> Option<String>`.
@@ -23,13 +25,16 @@ reescribe. Ese es el problema real del capítulo.
 > entregar — una línea de stdin, un body HTTP, un test — llama y
 > recibe.
 
-El `Option` codifica una regla de JSON-RPC que descubre quien lo
-implementa: las NOTIFICACIONES (mensajes sin `id`) jamás se
-responden, ni siquiera con errores. `None` es "no contestes nada".
+El `Option` del retorno no es un capricho: codifica una regla de
+JSON-RPC que descubre todo el que lo implementa. Las NOTIFICACIONES
+(mensajes sin `id`) jamás se responden, ni siquiera con errores.
+`None` significa "no contestes nada". (Es una de las cosas que la
+documentación publicada de `McpServer` demuestra con un ejemplo
+ejecutable — sin un solo socket.)
 
-## 3. La implementación mínima
+## Un router de tres niveles y dos canales de error
 
-**El despacho** (mcp-core) es un router de tres niveles:
+El despacho de `mcp-core` se lee como un embudo:
 
 ```text
 ¿parsea como JSON?         no → error -32700 (id null)
@@ -39,10 +44,10 @@ método conocido            no → error -32601
   initialize / ping / tools/list / tools/call
 ```
 
-Con una distinción que vale un examen: **error de protocolo vs fallo de dominio**.
-Una herramienta desconocida es `-32602` (el
-CLIENTE programó mal). Pero un conflicto CAS NO es un error
-JSON-RPC: es un resultado con `isError: true`:
+Y esconde una distinción que vale un examen: **error de protocolo
+frente a fallo de dominio**. Una herramienta desconocida es `-32602`
+— el CLIENTE programó mal. Pero un conflicto CAS NO es un error
+JSON-RPC: es un resultado legítimo con `isError: true`:
 
 ```rust
 // Fallo de dominio: respuesta correcta de protocolo con isError=true.
@@ -50,15 +55,18 @@ JSON-RPC: es un resultado con `isError: true`:
 Err(ToolError::Failed(msg)) => ok_response(id, tool_result(&msg, true)),
 ```
 
-La razón es quién consume cada canal: los errores JSON-RPC los ve el
-CÓDIGO cliente (y típicamente los convierte en excepciones); el
-resultado con `isError` lo ve el MODELO, que es quien puede leer
-"revision_conflict, current_hash es X" y actuar. Confundir los dos
-canales hace tu servidor técnicamente correcto e inútil en la
-práctica.
+¿Por qué tanto cuidado con el canal? Porque cada uno tiene un lector
+distinto. Los errores JSON-RPC los ve el CÓDIGO cliente, que
+típicamente los convierte en excepciones. El resultado con `isError`
+lo ve el MODELO — el único que puede leer "revision_conflict,
+current_hash es X", entender el hint del capítulo 6 y reintentar.
+Confundir los dos canales produce un servidor técnicamente correcto
+e inútil en la práctica.
 
-**Las herramientas** (memory-tools/src/lib.rs) son la capa de traducción
-JSON ↔ dominio, genérica sobre el repositorio:
+## Herramientas genéricas, transporte de sesenta líneas
+
+Entre el protocolo y el almacén está la capa de traducción JSON ↔
+dominio, y su declaración es SOLID en una línea:
 
 ```rust
 pub struct MemoryTools<R> { repo: R, actor: Principal, budget: Budget }
@@ -67,12 +75,11 @@ impl<R> ToolHandler for MemoryTools<R>
 where R: MemoryRepository + NeighborSource<Error = Infallible>
 ```
 
-Ese `where` es SOLID en una línea: las herramientas exigen
-CAPACIDADES (repositorio + fuente de vecinos), no un tipo concreto.
-`InMemoryStore` las tiene hoy; el adaptador Supabase las tendrá
-mañana; el `McpServer` no distingue.
+Ese `where` exige CAPACIDADES (repositorio + fuente de vecinos), no
+un tipo concreto. `InMemoryStore` las tiene hoy; el adaptador
+Supabase las tendrá mañana; el `McpServer` no distingue.
 
-**El transporte** (mcp-stdio/main.rs) queda en ~60 líneas de E/S:
+¿Y el transporte, el que parecía el protagonista? Sesenta líneas:
 
 ```rust
 loop {
@@ -84,17 +91,14 @@ loop {
 }
 ```
 
-`read_bounded_line` merece su §4 propio, porque su versión ingenua
-es el bug de memoria más común de los servidores de línea.
+Todo el trabajo del capítulo fue empujar la complejidad LEJOS de
+aquí. Pero ese `read_bounded_line` de aspecto inocente se merece su
+propia sección, porque su versión ingenua es el bug de memoria más
+común de los servidores de línea.
 
-## 3.5. Conceptos de Rust en este capítulo
+## Dos maneras de romper un lector de líneas
 
-Este capítulo une todas las piezas del workspace y define la frontera de E/S:
-
-* **Cláusulas `where` para restricciones de Genéricos:** Al declarar `impl<R> ToolHandler for MemoryTools<R> where R: MemoryRepository + NeighborSource<Error = Infallible>`, estamos usando genéricos restringidos. La palabra clave `where` permite especificar de forma muy legible los requisitos que debe cumplir el tipo genérico `R`: debe ser capaz de actuar como un almacén de memoria (`MemoryRepository`) y a la vez poder listar sus vecinos en el grafo (`NeighborSource`), garantizando además que no producirá errores al recorrer el grafo (`Error = Infallible`).
-* **Entrada/Salida Síncrona y Búferes:** Para la comunicación del protocolo por línea de comandos (stdio), usamos los tipos estándares de entrada y salida (`std::io::stdin()` y `std::io::stdout()`). En Rust, realizar E/S se modela mediante traits como `std::io::Read` y `std::io::Write`. Usar un lector con búfer (`BufReader`) es indispensable para evitar hacer llamadas al sistema operativo por cada byte leído, acumulando los caracteres en memoria intermedia de forma automática.
-
-## 4. Una versión deliberadamente rota
+La primera está en todos los tutoriales de Rust:
 
 ```rust
 // ❌ NO HACER: el read_line de los tutoriales
@@ -102,36 +106,76 @@ let mut line = String::new();
 stdin.read_line(&mut line)?;   // ¿cuánto asigna esto?
 ```
 
-Y la segunda rotura, más sutil, dentro del lector acotado bien
-intencionado: validar UTF-8 **trozo a trozo** según llegan del
-buffer interno de 8 KiB.
+Respuesta: lo que haga falta hasta el `\n`. Un cliente — malicioso o
+simplemente roto — que envía 10 GB sin salto de línea se convierte
+en 10 GB de RAM del servidor. En Vercel: OOM, instancia muerta,
+factura. La versión acotada cuenta ANTES de extender y descarta
+hasta el `\n` para resincronizar, respondiendo un error JSON-RPC en
+vez de morir.
 
-## 5. Por qué falla
+La segunda rotura es más sutil, y es una historia real de ESTE
+repositorio. La primera versión del lector acotado validaba UTF-8
+**trozo a trozo**, con `from_utf8(&chunk)` sobre cada lectura del
+buffer interno de 8 KiB. Suena razonable. Ahora piensa en una `ñ` —
+dos bytes — que cae JUSTO en la costura entre dos lecturas: cada
+mitad es individualmente inválida, y el servidor rechaza una línea
+perfectamente legal. Una vez de cada ocho mil, según dónde caiga la
+ñ. Un heisenbug de manual. La corrección: acumular BYTES y validar
+UNA vez al final ([main.rs](../crates/mcp-stdio/src/main.rs), busca
+"costura"). La moraleja generaliza: **UTF-8 es una propiedad del
+mensaje completo, no de sus fragmentos de transporte.**
 
-**La primera:** `read_line` asigna lo que haga falta hasta el
-`\n`. Un cliente (malicioso o simplemente roto) que envía 10 GB sin
-salto de línea se convierte en 10 GB de RAM del servidor. En Vercel:
-OOM, instancia muerta, factura. La versión acotada cuenta ANTES de
-extender y descarta hasta el `\n` para resincronizar, respondiendo
-un error JSON-RPC en vez de morir.
+(Segunda historia real en dos capítulos — recuerda el bucle
+infinito del SHA-256. Los bugs de este libro no son inventados: son
+los que escribimos nosotros y cazaron los tests. Esa es la
+publicidad honesta de los tests.)
 
-**La segunda es una historia real de ESTE repositorio:** la primera
-versión validaba cada trozo con `from_utf8(&chunk)`. Un carácter
-multibyte (una `ñ`, un emoji) que caiga JUSTO en la costura de dos
-lecturas del buffer se parte en dos trozos individualmente inválidos
-→ el servidor rechaza una línea perfectamente legal, una vez de cada
-ocho mil, según dónde caiga la ñ. Un heisenbug de manual. La
-corrección: acumular BYTES y validar UNA vez al final
-([main.rs](../crates/mcp-stdio/src/main.rs), busca "costura").
-La moraleja generaliza: **UTF-8 es una propiedad del mensaje completo, no de sus fragmentos de transporte.**
+## La conversación completa, como test
 
-(Y ya que estamos en historias reales: el `update()` de SHA-256 de
-este repo se colgó en un bucle infinito por machacar `buffer_len`
-con un resto vacío — capítulo 2, §5 del código. Los bugs de este
-tutorial no son inventados; son los que escribimos nosotros y
-cazaron los tests. Esa es la publicidad honesta de los tests.)
+El [test de integración](../crates/mcp-stdio/tests/integration.rs)
+es un cliente real de principio a fin: initialize → initialized →
+tools/list → crear dos documentos enlazados → buscar → resolver con
+vecindario → provocar el conflicto CAS → comprobar que la historia
+registra 2 revisiones y no 3. Si mañana rompes cualquier pieza de la
+pila, este test lo cuenta en el idioma del usuario final: "la
+conversación ya no funciona".
 
-## 6. Memoria y asignación
+Lo acompaña `entradas_hostiles`: traversal (rechazado como
+`-32602`), documento sin frontmatter (fallo de dominio legible),
+concepto inexistente (`not_found` estructurado). Fíjate en qué canal
+usa cada uno — es la distinción de los dos canales, hecha test.
+
+## La frontera de producción
+
+> 🧰 **La rueda de serie:** en producción, [`rmcp`](https://docs.rs/rmcp) (el SDK oficial de MCP en Rust) o [`jsonrpsee`](https://docs.rs/jsonrpsee) para JSON-RPC genérico. El mapa completo y el criterio para elegir: [La rueda de serie](la-rueda-de-serie.md).
+
+El hito 2 añade `vercel-entry`: una función que recibe `POST /mcp`,
+saca el body y llama… exactamente a `handle_message`. El diseño sin
+estado del hito 1 es lo que lo hace posible:
+
+- Sin `MCP-Session-Id`, sin estado entre mensajes: cada petición es
+  autónoma (las sesiones son opcionales en MCP Streamable HTTP).
+- `GET /mcp` → `405` (no ofrecemos stream servidor→cliente).
+- La autenticación OAuth (hito 3) envuelve la llamada: valida el
+  JWT, construye el `Principal` real (hoy `local_dev()`), y ese
+  principal ya fluye hasta las revisiones — mira `Revision.actor`:
+  el hueco está esperando desde el capítulo 1.
+
+Lo que se reescribirá honestamente: el `Value` de json-mini en el
+endpoint público será `serde_json` en el adaptador, y `mcp-core`
+debería entonces hablar DTOs propios en vez de `Value` (la deuda
+declarada del capítulo 3).
+
+---
+
+## Apéndice del capítulo
+
+### Conceptos de Rust
+
+* **Cláusulas `where` para genéricos restringidos:** `impl<R> ToolHandler for MemoryTools<R> where R: MemoryRepository + NeighborSource<Error = Infallible>` especifica de forma legible los requisitos del tipo `R`: actuar como almacén, listar vecinos, y garantizar que recorrer el grafo no falla (`Error = Infallible`).
+* **E/S síncrona y búferes:** la comunicación por stdio usa `std::io::stdin()`/`stdout()`, modelada con los traits `Read` y `Write`. Un lector con búfer (`BufReader`) es indispensable para no hacer una llamada al sistema por byte: acumula en memoria intermedia automáticamente.
+
+### Memoria y asignación
 
 Presupuesto de una petición completa, de fuera adentro:
 
@@ -146,41 +190,7 @@ respuesta          una String, cota práctica por el presupuesto del grafo
 Cada capa aplica SU límite con la información que SOLO ella tiene.
 No hay un "límite global mágico": hay defensa en profundidad.
 
-## 7. Tests
-
-El [test de integración](../crates/mcp-stdio/tests/integration.rs)
-es la conversación completa de un cliente real: initialize →
-initialized → tools/list → crear dos documentos enlazados → buscar →
-resolver con vecindario → provocar el conflicto CAS → comprobar que
-la historia registra 2 revisiones y no 3. Si mañana rompes cualquier
-pieza de la pila, este test lo cuenta en el idioma del usuario
-final: "la conversación ya no funciona".
-
-Más `entradas_hostiles`: traversal (rechazado como `-32602`),
-documento sin frontmatter (fallo de dominio legible), concepto
-inexistente (`not_found` estructurado). Fíjate qué canal usa cada
-uno — es la distinción del §3 hecha test.
-
-## 8. Frontera de producción
-
-El hito 2 añade `vercel-entry`: una función que recibe `POST /mcp`,
-saca el body y llama… exactamente a `handle_message`. El diseño
-sin estado del hito 1 es lo que lo hace posible:
-
-- Sin `MCP-Session-Id`, sin estado entre mensajes: cada petición es
-  autónoma (las sesiones son opcionales en MCP Streamable HTTP).
-- `GET /mcp` → `405` (no ofrecemos stream servidor→cliente).
-- La autenticación OAuth (hito 3) envuelve la llamada: valida el
-  JWT, construye el `Principal` real (hoy `local_dev()`), y ese
-  principal ya fluye hasta las revisiones — mira `Revision.actor`:
-  el hueco está esperando desde el capítulo 1.
-
-Lo que se reescribirá honestamente: el `Value` de json-mini en el
-endpoint público será `serde_json` en `json-wire`, y `mcp-core`
-debería entonces hablar DTOs propios en vez de `Value` (la deuda
-declarada del capítulo 3, §9).
-
-## 9. Principios SOLID en juego
+### SOLID en juego
 
 - **D, el examen final:** dibuja las flechas. `main.rs` → `McpServer`
   → `ToolHandler` (trait) ← `MemoryTools<R>` → `MemoryRepository`
@@ -199,7 +209,7 @@ declarada del capítulo 3, §9).
   handlers sustituibles bajo el mismo trait, y el servidor no
   distingue. Ya lo has visto tres veces; ya es un patrón tuyo.
 
-## 10. Ejercicios
+### Ejercicios
 
 1. **Guiado.** Añade la herramienta `memory_stats` (número de
    conceptos, revisiones, bytes totales). ¿Qué método le falta a
@@ -215,9 +225,9 @@ declarada del capítulo 3, §9).
    `mcp-core` — pero para servir recursos `ui://` (vistas MCP Apps),
    no `okf://<concept-id>` (el Markdown exacto de un concepto). La
    máquina genérica ya existe y es la misma para ambos casos; lo que
-   queda abierto es añadir un segundo tipo de `UiResource` (o un trait
-   separado) para exponer `okf://` también. Las URIs ya viajan en
-   `memory_search` y `memory_resolve` esperándote. Decide: ¿qué
+   queda abierto es añadir un segundo tipo de `UiResource` (o un
+   trait separado) para exponer `okf://` también. Las URIs ya viajan
+   en `memory_search` y `memory_resolve` esperándote. Decide: ¿qué
    presupuesto aplica a `resources/read`?
 
 ---

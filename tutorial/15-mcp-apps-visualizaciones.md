@@ -196,6 +196,8 @@ siempre en `None` (la raíz) en como mucho `visited.len()` pasos.
 
 ## 8. Frontera de producción
 
+> 🧰 **La rueda de serie:** para HTML generado con tipos y verificado en compilación, [`maud`](https://docs.rs/maud) o [`askama`](https://docs.rs/askama) en lugar de `&'static str`. El mapa completo y el criterio para elegir: [La rueda de serie](la-rueda-de-serie.md).
+
 Lo que este capítulo NO hace, a propósito: no adopta OWL/RDF ni
 ningún modelo de ontología formal para tipar los enlaces `[[...]]` o
 los `doc_type`. Se consideró explícitamente y se descartó para este

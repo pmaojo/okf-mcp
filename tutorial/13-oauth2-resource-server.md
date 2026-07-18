@@ -121,6 +121,8 @@ Nótese que `vercel.json` necesita un `rewrite` explícito para `/.well-known/oa
 
 ## 9. Frontera de producción: variables de entorno reales
 
+> 🧰 **La rueda de serie:** la validación de firmas es [`jsonwebtoken`](https://docs.rs/jsonwebtoken) con criptografía auditada debajo — esta frontera nunca se cruza a mano. El mapa completo y el criterio para elegir: [La rueda de serie](la-rueda-de-serie.md).
+
 Para este despliegue concreto (Supabase como Authorization Server), las variables de entorno de Vercel son:
 
 | Variable | Valor | Para qué |

@@ -8,6 +8,9 @@ frontera (HTTP, TLS, JWT, Supabase, Vercel) del hito 2.
 
 Este repositorio es a la vez un proyecto real y un **tutorial muy
 didáctico** de Rust y de principios SOLID: ver [`tutorial/`](tutorial/).
+La referencia de API generada con `cargo doc` se publica en
+**<https://pmaojo.github.io/okf-mcp/>** en cada push a `main`
+(capítulo 16 del tutorial).
 
 ## Estado
 
@@ -58,7 +61,9 @@ llevan `#![forbid(unsafe_code)]`.
 ## Uso
 
 ```bash
-cargo test               # toda la suite
+cargo test               # toda la suite (doctests incluidos)
+./scripts/check-docs.sh  # docs del núcleo sin warnings + doctests
+cargo doc --no-deps --open        # la referencia de API, en local
 cargo run -p mcp-stdio   # servidor MCP por stdio
 PORT=8787 cargo run -p mcp-http   # servidor MCP por HTTP (POST /mcp)
 ```
