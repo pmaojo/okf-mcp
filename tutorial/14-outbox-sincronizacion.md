@@ -111,15 +111,10 @@ sqlx::query("INSERT INTO embeddings (concept_id, embedding) VALUES ($1, $2)")
     .bind(Vector::from(values))
 ```
 
-La primera versión de este proyecto formateaba el vector a mano como el
-literal de texto `"[0.1,0.2,...]"` y lo enviaba con un cast
-`$2::vector`. Funciona — pgvector acepta ese literal — pero es la rueda
-reinventada en el lado equivocado de la frontera: aquí ya estamos en un
-adaptador, y la regla del apéndice
-[la rueda de serie](la-rueda-de-serie.md) aplica en su segunda mitad:
-*despliega la de serie*. El crate `pgvector` elimina el ida-y-vuelta por
-texto y el riesgo de desalinear el formato con lo que el servidor
-espera.
+Aquí ya estamos en un adaptador, así que aplica la segunda mitad de la
+regla del apéndice [la rueda de serie](la-rueda-de-serie.md):
+*despliega la de serie*. El vector viaja tipado y en binario, sin
+ida-y-vuelta por texto.
 
 ## 3.5. Conceptos de Rust en este capítulo
 
