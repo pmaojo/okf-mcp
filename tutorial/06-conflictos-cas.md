@@ -19,9 +19,7 @@ categoría de incidente.
 
 ## 2. El invariante
 
-> **Toda escritura declara la base sobre la que se hizo. Si la base
-> ya no es la cabeza actual, la escritura se rechaza con un conflicto
-> estructurado. El almacén jamás pisa en silencio.**
+> **Toda escritura declara la base sobre la que se hizo. Si la base ya no es la cabeza actual, la escritura se rechaza con un conflicto estructurado. El almacén jamás pisa en silencio.**
 
 Concurrencia OPTIMISTA: no impedimos el conflicto, lo detectamos con
 precisión y lo devolvemos con los datos para resolverlo (releer,
@@ -141,9 +139,7 @@ fn base_obsoleta_es_conflicto() {
 ```
 
 Compáralo con testear la versión rota: necesitarías dos hilos, un
-sleep estratégico y una oración. **La pureza no es estética
-funcional: es testeabilidad comprada al precio de mover la E/S a
-otra parte.**
+sleep estratégico y una oración. **La pureza no es estética funcional: es testeabilidad comprada al precio de mover la E/S a otra parte.**
 
 El test de integración del capítulo 8 cierra el círculo con el
 escenario narrado en §1: dos agentes, mismo `expected_hash`, el

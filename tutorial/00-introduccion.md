@@ -30,8 +30,7 @@ servidor puede recorrer.
 
 ## La restricción que lo cambia todo
 
-> **El motor de conocimiento usa exclusivamente la biblioteca
-> estándar de Rust.** Ni `serde`, ni `tokio`, ni regex, ni un crate
+> **El motor de conocimiento usa exclusivamente la biblioteca estándar de Rust.** Ni `serde`, ni `tokio`, ni regex, ni un crate
 > de YAML. En el hito 1, ni siquiera los adaptadores tienen
 > dependencias: el JSON y el SHA-256 están escritos a mano.
 
@@ -39,8 +38,7 @@ servidor puede recorrer.
 endpoint público, no: usaría `serde_json`. Y ese es exactamente el
 segundo aprendizaje del proyecto:
 
-> **Las dependencias se permiten en las fronteras del sistema;
-> la lógica de negocio permanece portable, testeable y `std`-only.**
+> **Las dependencias se permiten en las fronteras del sistema; la lógica de negocio permanece portable, testeable y `std`-only.**
 
 Escribir el parser de JSON a mano te enseña qué hace `serde_json`
 por ti. Mantenerlo fuera del núcleo te enseña arquitectura. Las dos

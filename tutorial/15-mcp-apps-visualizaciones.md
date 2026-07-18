@@ -16,8 +16,8 @@ Crates: [`crates/mcp-core`](../crates/mcp-core/src/lib.rs), [`crates/graph-core`
 ## 1. El problema
 
 `memory_resolve` con `depth: 2` puede devolver perfectamente 40
-vecinos. Como JSON son 40 líneas de `{"concept_id": ..., "depth": ...,
-"parent": ...}` que un humano tiene que reconstruir mentalmente como
+vecinos. Como JSON son 40 líneas de `{"concept_id": ..., "depth": ..., "parent": ...}`
+que un humano tiene que reconstruir mentalmente como
 un árbol. El mismo dato, como grafo con anillos por profundidad y
 líneas padre→hijo, se entiende en un vistazo. `memory_history` tiene
 el mismo problema en su propia forma: una lista de revisiones es una
@@ -32,18 +32,14 @@ regresión para clientes que no conocen la extensión.
 
 ## 2. El invariante
 
-> **Un cliente que no entiende `_meta` sigue viendo exactamente las
-> mismas herramientas, con el mismo JSON, que veía antes de que este
-> capítulo existiera — porque el spec le OBLIGA a ignorar los campos
-> `_meta` que no reconoce, no porque el servidor se los esconda.**
+> **Un cliente que no entiende `_meta` sigue viendo exactamente las mismas herramientas, con el mismo JSON, que veía antes de que este capítulo existiera — porque el spec le OBLIGA a ignorar los campos `_meta` que no reconoce, no porque el servidor se los esconda.**
 
 La primera versión de este capítulo tenía un invariante distinto y
 más intuitivo — pero equivocado en la práctica (sección 5 cuenta la
 historia completa): que el SERVIDOR debía negociar en `initialize` y
 esconder `_meta.ui` a los clientes que no declararan soporte de la
 extensión. Suena razonable, y cualquiera lo escribiría igual la
-primera vez. El problema es empírico, no de diseño: **los clientes
-MCP Apps reales — Claude incluido — nunca declaran esa capability.**
+primera vez. El problema es empírico, no de diseño: **los clientes MCP Apps reales — Claude incluido — nunca declaran esa capability.**
 Un servidor que la exige nunca ve `_meta` llegar a nadie. La
 degradación elegante real no depende de que el servidor adivine qué
 sabe el cliente; depende de que el protocolo diga que `_meta`
@@ -154,8 +150,8 @@ ningún error, sin ningún log, sin nada que apuntara a `mcp-core`. Solo
 
 La causa se encontró comparando con otro servidor MCP (en Python, sin
 relación con este proyecto) que sí renderiza vistas en Claude en
-producción: su capa de metadata **nunca comprueba ninguna capability
-del cliente** — manda `_meta` siempre, en cada tool que tiene vista, y
+producción: su capa de metadata **nunca comprueba ninguna capability del cliente** —
+manda `_meta` siempre, en cada tool que tiene vista, y
 además de `ui.resourceUri` manda `openai/outputTemplate` y
 `openai/widgetAccessible`, que son el vocabulario real del Apps SDK de
 OpenAI que Claude adoptó. Es decir: el cliente real ni declara la

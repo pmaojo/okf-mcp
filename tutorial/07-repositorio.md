@@ -14,8 +14,7 @@ RAM (hito 1) y la de Supabase (hito 2) sean intercambiables.
 
 El modelo de datos entero cabe en una frase:
 
-> **Los contenidos son inmutables y direccionados por su hash; lo
-> único que cambia es a qué contenido apunta cada concepto.**
+> **Los contenidos son inmutables y direccionados por su hash; lo único que cambia es a qué contenido apunta cada concepto.**
 
 ```text
 blobs      : ContentId -> Arc<str>       (inmutable, deduplicado)
@@ -167,8 +166,8 @@ La tabla de traducción a Supabase (hito 2) ya está decidida:
 | `links` derivado | tabla `okf_links`, reconstruida por commit |
 | `&mut self` | transacción + la condición del UPDATE |
 
-Más una pieza nueva sin equivalente en RAM: la **outbox
-transaccional** (eventos "documento cambiado" insertados en la misma
+Más una pieza nueva sin equivalente en RAM: la **outbox transaccional**
+(eventos "documento cambiado" insertados en la misma
 transacción, consumidos por un worker para Git y embeddings). El
 trait `MemoryRepository` no se entera de nada de esto.
 

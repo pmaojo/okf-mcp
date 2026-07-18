@@ -22,16 +22,12 @@ Pero HTTP trae exigencias que stdio no tenía:
 
 ## 2. El invariante
 
-> **`route()` decide QUÉ responder sin abrir un socket, sin
-> `tokio`, sin conocer `InMemoryStore`. `server.rs` decide CÓMO leer
-> bytes de un `TcpStream` sin conocer JSON-RPC.**
+> **`route()` decide QUÉ responder sin abrir un socket, sin `tokio`, sin conocer `InMemoryStore`. `server.rs` decide CÓMO leer bytes de un `TcpStream` sin conocer JSON-RPC.**
 
 Es el mismo movimiento del capítulo 8, una capa más arriba. Y una
 segunda promesa, más estrecha:
 
-> **Ninguna cabecera del cliente hace que el servidor asigne más
-> memoria de la que su presupuesto permite — ni siquiera para
-> RECHAZAR la petición.**
+> **Ninguna cabecera del cliente hace que el servidor asigne más memoria de la que su presupuesto permite — ni siquiera para RECHAZAR la petición.**
 
 ## 3. La implementación mínima
 

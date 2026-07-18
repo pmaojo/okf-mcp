@@ -76,8 +76,8 @@ Fíjate en `in_code_fence`: un ejemplo de código que contiene
 entiende justo la cantidad mínima de Markdown para no mentir.
 
 Y el detalle que conecta con el capítulo 1: cada enlace pasa por
-`ConceptId::parse`. Un documento con `[[../etc/passwd]]` **no se
-guarda** — el error viaja con el offset del byte exacto.
+`ConceptId::parse`. Un documento con `[[../etc/passwd]]` **no se guarda** —
+el error viaja con el offset del byte exacto.
 
 ## 3.5. Conceptos de Rust en este capítulo
 

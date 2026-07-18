@@ -20,8 +20,7 @@ un incidente.
 
 ## 2. El invariante
 
-> **El recorrido jamás excede su presupuesto — nodos, profundidad,
-> bytes — y SIEMPRE informa de si truncó y por qué.**
+> **El recorrido jamás excede su presupuesto — nodos, profundidad, bytes — y SIEMPRE informa de si truncó y por qué.**
 
 La segunda mitad es tan importante como la primera. Un agente que
 recibe 128 nodos necesita saber si son TODOS los vecinos o los
@@ -194,8 +193,8 @@ sin haberlo conocido jamás.
    capítulo 15 — resultó ser exactamente lo que hacía falta para que
    una visualización de grafo pudiera dibujar aristas reales en vez de
    solo profundidades. El padre se captura en el único punto donde se
-   ENCOLA un vecino nuevo (`queue.push_back((neighbor, depth + 1,
-   Some(id.clone())))`) — un clon más, del nodo que ya tenías en la
+   ENCOLA un vecino nuevo (`queue.push_back((neighbor, depth + 1, Some(id.clone())))`) —
+   un clon más, del nodo que ya tenías en la
    mano, no de toda la cadena.
 2. **Medio.** Implementa `NeighborSource` para un grafo INVERSO
    (¿quién enlaza A alice?) sin cambiar `graph-core`. ¿Qué índice

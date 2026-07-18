@@ -37,8 +37,8 @@ impl ConceptId {
 
 El campo interno es privado y la única puerta de entrada es
 `parse()`. El compilador convierte el invariante en un teorema: toda
-función que reciba `ConceptId` puede asumir la validez **sin
-comprobar nada**, porque no existe ningún camino del universo que
+función que reciba `ConceptId` puede asumir la validez **sin comprobar nada**,
+porque no existe ningún camino del universo que
 produzca un `ConceptId` sin pasar por `parse`.
 
 ## 3. La implementación mínima

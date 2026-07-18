@@ -7,8 +7,8 @@ Crate: [`crates/json-mini`](../crates/json-mini/src/lib.rs)
 MCP habla JSON-RPC 2.0. Antes de poder servir el protocolo
 (capítulo 8) necesitamos convertir texto en estructura y estructura
 en texto. La industria resuelve esto con `serde` + `serde_json` — y
-conviene deshacer un malentendido común: **`serde` solo no parsea
-JSON**. `serde` es la maquinaria genérica de (de)serialización;
+conviene deshacer un malentendido común: **`serde` solo no parsea JSON**.
+`serde` es la maquinaria genérica de (de)serialización;
 `serde_json` es el formato. Escribir el nuestro nos enseña qué
 compramos cuando los usamos.
 
@@ -17,10 +17,8 @@ compramos cuando los usamos.
 Tres, en realidad:
 
 > 1. **Todo error lleva el offset del byte que lo causó.**
-> 2. **Ningún input, por hostil que sea, asigna memoria sin límite
->    ni desborda la pila.**
-> 3. **La serialización es determinista: el mismo `Value` produce
->    siempre el mismo string.**
+> 2. **Ningún input, por hostil que sea, asigna memoria sin límite ni desborda la pila.**
+> 3. **La serialización es determinista: el mismo `Value` produce siempre el mismo string.**
 
 ## 3. La implementación mínima
 
@@ -136,8 +134,8 @@ El otro agujero didáctico son los strings: `\uD83D` solo es medio
 carácter (subrogado alto de UTF-16). Nuestro parser exige la pareja
 `😀` y los combina en el codepoint real; un parser que los
 pusha sueltos fabrica Strings de Rust inválidos… bueno, no puede:
-`char::from_u32(0xD800)` devuelve `None`. **Rust hace imposible el
-bug** que en otros lenguajes produce mojibake — pero solo si usas
+`char::from_u32(0xD800)` devuelve `None`. **Rust hace imposible el bug**
+que en otros lenguajes produce mojibake — pero solo si usas
 `char::from_u32` en lugar de un `unsafe` apresurado. Nuestro
 workspace tiene `#![forbid(unsafe_code)]`: la vía rápida está
 cerrada por decreto.

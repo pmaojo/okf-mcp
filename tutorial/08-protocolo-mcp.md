@@ -39,8 +39,8 @@ método conocido            no → error -32601
   initialize / ping / tools/list / tools/call
 ```
 
-Con una distinción que vale un examen: **error de protocolo vs
-fallo de dominio**. Una herramienta desconocida es `-32602` (el
+Con una distinción que vale un examen: **error de protocolo vs fallo de dominio**.
+Una herramienta desconocida es `-32602` (el
 CLIENTE programó mal). Pero un conflicto CAS NO es un error
 JSON-RPC: es un resultado con `isError: true`:
 
@@ -123,8 +123,7 @@ lecturas del buffer se parte en dos trozos individualmente inválidos
 ocho mil, según dónde caiga la ñ. Un heisenbug de manual. La
 corrección: acumular BYTES y validar UNA vez al final
 ([main.rs](../crates/mcp-stdio/src/main.rs), busca "costura").
-La moraleja generaliza: **UTF-8 es una propiedad del mensaje
-completo, no de sus fragmentos de transporte.**
+La moraleja generaliza: **UTF-8 es una propiedad del mensaje completo, no de sus fragmentos de transporte.**
 
 (Y ya que estamos en historias reales: el `update()` de SHA-256 de
 este repo se colgó en un bucle infinito por machacar `buffer_len`

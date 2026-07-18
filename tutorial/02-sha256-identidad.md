@@ -26,8 +26,7 @@ herramienta real.
 
 ## 2. El invariante
 
-> **`content_id(doc)` depende de todos los bytes de `doc` y de nada
-> más.** Ni del troceo con que llegaron, ni del orden de llamadas,
+> **`content_id(doc)` depende de todos los bytes de `doc` y de nada más.** Ni del troceo con que llegaron, ni del orden de llamadas,
 > ni de metadatos externos.
 
 La segunda mitad del invariante es la interesante para Rust: el
@@ -113,8 +112,8 @@ Es el clásico **ataque de ambigüedad de concatenación**: las parejas
 `("a|b", "c")` y `("a", "b|c")` producen la misma entrada `a|b|c` y
 por tanto la misma identidad para documentos distintos. Toda
 identidad compuesta necesita enmarcar longitudes (como hace Git con
-su cabecera) o, mejor, no ser compuesta: nosotros hasheamos **los
-bytes exactos y completos del documento**, que es la representación
+su cabecera) o, mejor, no ser compuesta: nosotros hasheamos **los bytes exactos y completos del documento**,
+que es la representación
 canónica por definición. No hay piezas, no hay ambigüedad.
 
 El segundo fallo típico es más sutil: hashear una versión

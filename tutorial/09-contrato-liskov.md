@@ -18,8 +18,8 @@ a campo dos implementaciones cada vez que una cambia.
 
 ## 2. El invariante
 
-> **El principio de sustitución de Liskov no es una propiedad que se
-> declara: es una propiedad que se EJECUTA.** Si dos tipos implementan
+> **El principio de sustitución de Liskov no es una propiedad que se declara: es una propiedad que se EJECUTA.**
+> Si dos tipos implementan
 > el mismo trait y pasan la misma batería de tests de comportamiento,
 > son sustituibles. Si uno falla un test que el otro pasa, no lo son
 > — y lo sabemos en segundos, no en producción.
