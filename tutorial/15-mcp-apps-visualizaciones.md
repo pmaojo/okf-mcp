@@ -1,6 +1,8 @@
 # Capítulo 15 — MCP Apps: visualizaciones interactivas (grafo e historial)
 
-Crates: [`crates/mcp-core`](../crates/mcp-core/src/lib.rs), [`crates/graph-core`](../crates/graph-core/src/lib.rs), [`crates/memory-tools`](../crates/memory-tools/src/lib.rs)
+Crates: [`crates/mcp-core`](../crates/mcp-core/src/lib.rs),
+[`crates/graph-core`](../crates/graph-core/src/lib.rs),
+[`crates/memory-tools`](../crates/memory-tools/src/lib.rs)
 
 > **Capítulo opcional.** Todo lo que sigue — los recursos `ui://`, el
 > HTML de `graph-view.html`/`history-view.html`, `resources/list` y
@@ -23,12 +25,20 @@ líneas padre→hijo, se entiende en un vistazo. `memory_history` tiene
 el mismo problema en su propia forma: una lista de revisiones es una
 línea de tiempo que el cliente tiene que imaginarse.
 
-MCP resuelve esto con una extensión ("MCP Apps", [SEP-1724](https://github.com/modelcontextprotocol/ext-apps)):
+MCP resuelve esto con una extensión ("MCP Apps",
+[SEP-1724](https://github.com/modelcontextprotocol/ext-apps)):
 un servidor puede declarar recursos `ui://` — HTML autocontenido — y
 vincularlos a una herramienta. Si el cliente lo soporta, renderiza esa
 vista en un iframe en vez de (o además de) el JSON crudo. Si no lo
 soporta, la herramienta se comporta exactamente igual que antes: cero
 regresión para clientes que no conocen la extensión.
+
+
+El problema práctico lo ve la persona que depura una memoria grande: el JSON
+es correcto, pero no explica el grafo. El peligro es que, al añadir UI,
+rompamos clientes que solo conocen herramientas MCP básicas. Hexagonalmente,
+la visualización debe colgar de recursos y metadatos opcionales; el núcleo
+de herramientas sigue siendo el mismo puerto JSON.
 
 ## 2. El invariante
 
@@ -39,7 +49,8 @@ más intuitivo — pero equivocado en la práctica (sección 5 cuenta la
 historia completa): que el SERVIDOR debía negociar en `initialize` y
 esconder `_meta.ui` a los clientes que no declararan soporte de la
 extensión. Suena razonable, y cualquiera lo escribiría igual la
-primera vez. El problema es empírico, no de diseño: **los clientes MCP Apps reales — Claude incluido — nunca declaran esa capability.**
+primera vez. El problema es empírico, no de diseño: **los clientes MCP Apps
+reales — Claude incluido — nunca declaran esa capability.**
 Un servidor que la exige nunca ve `_meta` llegar a nadie. La
 degradación elegante real no depende de que el servidor adivine qué
 sabe el cliente; depende de que el protocolo diga que `_meta`
@@ -137,6 +148,12 @@ if let Some(uri) = t.ui_resource_uri {
 }
 ```
 
+
+La versión rota es muy comprensible: leer la especificación, ver una
+capability de cliente y esconder `_meta` hasta que el cliente la anuncie. Es
+el diseño que uno dibujaría primero en una pizarra porque parece una
+negociación limpia.
+
 ## 5. Por qué falla
 
 Compilaba, pasaba los tests (`EchoWithUi` inicializado con y sin la
@@ -193,6 +210,13 @@ aun así no decir nada sobre si un cliente real la activa.
 `graph-core` prueba que `Visited::parent` reconstruye un árbol sin
 ciclos: desde cualquier nodo visitado, subir por `parent` termina
 siempre en `None` (la raíz) en como mucho `visited.len()` pasos.
+
+
+El primer test TDD debe pedir `tools/list` como un cliente antiguo y
+comprobar que las herramientas siguen presentes y sus esquemas no cambian.
+Luego un test de `resources/read` verifica que el HTML embebido se entrega
+por URI. El verde demuestra segregación: clientes de datos y clientes
+visuales no comparten obligaciones.
 
 ## 8. Frontera de producción
 

@@ -16,6 +16,14 @@ Sin un mecanismo, la respuesta es "un humano lo revisa a ojo" — y
 los humanos se cansan, tienen fecha de entrega, y no comparan campo
 a campo dos implementaciones cada vez que una cambia.
 
+
+En la escena real, el conflicto lo sufre el adaptador que todavía no existe:
+una persona conecta PostgreSQL, todos los tests propios pasan, y el primer
+usuario descubre que una base obsoleta sí pisa una escritura reciente. El
+núcleo hexagonal no puede defenderse con buenos deseos; necesita que el
+puerto `MemoryRepository` tenga una ley ejecutable antes de aceptar
+adaptadores nuevos.
+
 ## 2. El invariante
 
 > **El principio de sustitución de Liskov no es una propiedad que se declara: es una propiedad que se EJECUTA.**
@@ -113,6 +121,11 @@ fn base_obsoleta_no_pisa_en_ram() { /* ... 15 líneas ... */ }
 fn base_obsoleta_no_pisa_en_supabase() { /* ... 15 líneas MUY parecidas ... */ }
 ```
 
+
+La versión rota nace de una intención sensata: avanzar rápido copiando el
+ejemplo que ya demostró el caso en RAM. Nadie duplica tests por malicia; se
+duplican porque parece más barato que extraer un contrato.
+
 ## 5. Por qué falla
 
 No es que no funcione — ambos tests pueden pasar hoy. El fallo
@@ -150,6 +163,12 @@ Es tests todo el capítulo. La lista, y qué invariante narra cada uno:
 | `inexistente_es_none_y_notfound` | dos formas distintas de "no está", cada una en su canal |
 | `busqueda_respeta_filtros_y_limite` | combinación AND de filtros + corte por `limit` |
 | `historia_reciente_primero_y_paginada` | orden y paginación sin solapes |
+
+
+En TDD, el primer test no se escribe en `memory-store`, sino contra el
+puerto: `base_obsoleta_no_pisa`. El rojo esperado no es un panic genérico,
+sino un `StoreError::Conflict` con `expected` y `current`; el verde llega
+cuando cualquier adaptador respeta el mismo CAS observable.
 
 ## 8. Frontera de producción
 

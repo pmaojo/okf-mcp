@@ -18,6 +18,13 @@ binario, y ese "alguien" no lo vamos a escribir nosotros a mano
 NIST con los que demostrar que una implementación casera es
 correcta, y el coste de equivocarse es un servicio caído).
 
+
+El fallo que buscamos evitar es muy prosaico: `route()` funciona en local,
+pero al desplegar alguien reescribe CORS, presupuestos y estado dentro del
+handler de Vercel. Entonces el usuario de producción recibe una semántica
+distinta de la del servidor std-only. La frontera hexagonal existe para que
+Vercel sea un adaptador fino, no una segunda aplicación.
+
 ## 2. El invariante
 
 > **Todo lo que vive fuera de `crates/vercel-entry` sigue siendo exactamente el mismo código que corre en tu máquina.**
@@ -61,7 +68,10 @@ parsear un socket TCP a mano (capítulo 10, §3). El adaptador de
 Vercel no reimplementa el enrutado, los códigos de estado ni el
 presupuesto — los HEREDA.
 
-El router incluye soporte para CORS (Cross-Origin Resource Sharing), indispensable porque clientes como Claude.ai ejecutan peticiones `fetch` directas desde el navegador del usuario, lo que genera peticiones previas de control (*preflight OPTIONS*):
+El router incluye soporte para CORS (Cross-Origin Resource Sharing),
+indispensable porque clientes como Claude.ai ejecutan peticiones `fetch`
+directas desde el navegador del usuario, lo que genera peticiones previas de
+control (*preflight OPTIONS*):
 
 ```rust
 let router = Router::new()
@@ -71,7 +81,15 @@ let app = ServiceBuilder::new().layer(VercelLayer::new()).service(router);
 run(app).await
 ```
 
-`fallback` en axum captura CUALQUIER petición que no matchee una ruta registrada — y como no registramos ninguna en este hito, captura todas las peticiones normales. Sin embargo, el `.layer(cors_layer())` (un middleware de `tower-http`) intercepta las peticiones de preflight `OPTIONS` antes de que lleguen al handler, respondiendo automáticamente con las cabeceras CORS adecuadas. La validación del origen en `cors_layer()` reutiliza la misma lista de `ALLOWED_ORIGINS` que ya conocemos de `mcp-http`, garantizando coherencia en todo el sistema. La decisión final sobre rutas normales sigue viviendo en `route()`.
+`fallback` en axum captura CUALQUIER petición que no matchee una ruta
+registrada — y como no registramos ninguna en este hito, captura todas las
+peticiones normales. Sin embargo, el `.layer(cors_layer())` (un middleware
+de `tower-http`) intercepta las peticiones de preflight `OPTIONS` antes de
+que lleguen al handler, respondiendo automáticamente con las cabeceras CORS
+adecuadas. La validación del origen en `cors_layer()` reutiliza la misma
+lista de `ALLOWED_ORIGINS` que ya conocemos de `mcp-http`, garantizando
+coherencia en todo el sistema. La decisión final sobre rutas normales sigue
+viviendo en `route()`.
 
 **El detalle que no es un descuido**, comentado en el propio código:
 
@@ -113,6 +131,13 @@ let router = Router::new()
     // ... una ruta de axum por cada regla de route() ...
 ```
 
+
+La versión rota la escribiría cualquiera con prisa por ver una URL viva:
+poner la lógica dentro del handler `async`, usar extractores de axum
+directamente en las decisiones y ajustar errores hasta que el navegador deje
+de quejarse. Parece productivo porque el despliegue responde; oculta que
+acabamos de bifurcar el protocolo.
+
 ## 5. Por qué falla
 
 No es que no compile: es que ahora hay DOS lugares donde vive la
@@ -153,6 +178,13 @@ se comprueba con `cargo build -p vercel-entry`, no con un test.
 Escribir un test que solo repitiera "route() hace lo que route()
 hace" sería duplicar aserciones sin añadir garantías: el antipatrón
 exacto del capítulo 9, aplicado a tests en vez de a repositorios.
+
+
+El primer test TDD no necesita Vercel: se prueba `route()` con el mismo
+`HttpRequest` que el adaptador fabricará. El rojo valioso sería que el
+handler serverless devuelva un código distinto al servidor TCP para la misma
+entrada; el verde llega cuando ambos caminos convergen en la misma llamada
+al puerto HTTP.
 
 ## 8. Frontera de producción
 

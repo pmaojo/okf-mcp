@@ -26,6 +26,14 @@ cargo doc --no-deps --open   # genera target/doc y lo abre
 cargo test --doc             # ejecuta TODOS los ejemplos
 ```
 
+
+El conflicto lo sufre quien entra al proyecto después: confía en un ejemplo
+de la documentación, lo copia y descubre que ya no compila. Peor aún, un
+adaptador nuevo implementa mal un trait porque la página del contrato omitía
+una precondición. `cargo doc` importa como arquitectura: la documentación
+pública es parte del puerto, y sus ejemplos deben obedecer el mismo TDD que
+el código.
+
 ## 2. El invariante
 
 > **Nada de lo que afirma la documentación queda sin verificar.**
@@ -158,6 +166,12 @@ El capítulo 3 presumía de errores con offset. Documentémoslo… mal:
 pub fn parse(input: &str) -> Result<Value, ParseError> {
 ```
 
+
+La versión rota se escribe con buena intención: dejar ejemplos en Markdown
+porque son más legibles y no obligan a pelear con imports. Durante semanas
+ayudan; después se convierten en deuda silenciosa porque ningún compilador
+los lee.
+
 ## 5. Por qué falla
 
 ```text
@@ -209,6 +223,12 @@ CI lo ejecuta en cada push y cada PR (`.github/workflows/rust.yml`).
 Nótese la asimetría deliberada: la puerta estricta cubre el núcleo
 (hito 1, solo `std`); los adaptadores de frontera se documentan
 igual pero su calidad se vigila con sus tests de contrato.
+
+
+El primer test TDD es un doctest mínimo en la página del trait: crear el
+tipo, llamar la función y fijar el resultado esperado. El rojo aparece como
+error de compilación, enlace roto o `assert_eq!`; el verde exige que la API
+documentada y la API real vuelvan a coincidir.
 
 ## 8. Frontera de producción
 
