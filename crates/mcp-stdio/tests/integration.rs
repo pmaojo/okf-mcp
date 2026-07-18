@@ -73,6 +73,28 @@ fn conversacion_completa() {
     assert!(!is_error);
     assert_eq!(payload.get("count"), Some(&Value::Number(2.0)));
 
+    // 4b. Filtros estructurados: tags es pertenencia literal y se
+    // combina en AND con type.
+    let (payload, is_error) =
+        call_tool(&mut srv, 40, "memory_search", r#"{"tags":["rust"],"type":"person"}"#);
+    assert!(!is_error);
+    assert_eq!(payload.get("count"), Some(&Value::Number(1.0)));
+    let hit = &payload.get("results").unwrap().as_array().unwrap()[0];
+    assert_eq!(hit.get("concept_id").unwrap().as_str(), Some("people/alice"));
+
+    // Sin coincidencias: count 0 limpio, sin degradar a otros candidatos.
+    let (payload, is_error) =
+        call_tool(&mut srv, 41, "memory_search", r#"{"tags":["rust","nope"],"tags_mode":"all"}"#);
+    assert!(!is_error);
+    assert_eq!(payload.get("count"), Some(&Value::Number(0.0)));
+    assert!(payload.get("results").unwrap().as_array().unwrap().is_empty());
+
+    // path_prefix lista una "carpeta" lógica del árbol de concept_id.
+    let (payload, is_error) =
+        call_tool(&mut srv, 42, "memory_search", r#"{"path_prefix":"projects/"}"#);
+    assert!(!is_error);
+    assert_eq!(payload.get("count"), Some(&Value::Number(1.0)));
+
     // 5. Resolver con vecindario
     let (payload, is_error) = call_tool(&mut srv, 5, "memory_resolve", r#"{"concept_id":"people/alice"}"#);
     assert!(!is_error);
@@ -128,4 +150,10 @@ fn entradas_hostiles() {
     let (payload, is_error) = call_tool(&mut srv, 4, "memory_resolve", r#"{"concept_id":"no/existe"}"#);
     assert!(is_error);
     assert_eq!(payload.get("kind").unwrap().as_str(), Some("not_found"));
+
+    // tags_mode fuera del enum → error de argumentos, no búsqueda silenciosa
+    let resp = srv.handle_message(
+        r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"memory_search","arguments":{"tags":["x"],"tags_mode":"o-esto-o-nada"}}}"#,
+    ).unwrap();
+    assert!(resp.contains("-32602"), "tags_mode inválido debe rechazarse: {resp}");
 }

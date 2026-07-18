@@ -33,6 +33,8 @@ pub struct DocumentView {
     pub doc_type: String,
     /// Campo `title` del frontmatter, si existe.
     pub title: Option<String>,
+    /// Campo `status` del frontmatter, si existe.
+    pub status: Option<String>,
     /// Campo `tags` del frontmatter.
     pub tags: Vec<String>,
     /// Enlaces `[[...]]` salientes, ya validados.
@@ -68,17 +70,41 @@ pub struct CommitOutcome {
     pub no_change: bool,
 }
 
+/// Cómo se combinan varios tags dentro del filtro `tags` de
+/// [`SearchQuery`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TagsMode {
+    /// Basta con que el documento tenga ALGUNO de los tags pedidos.
+    #[default]
+    Any,
+    /// El documento debe tener TODOS los tags pedidos.
+    All,
+}
+
 /// Consulta de búsqueda. Todos los criterios son opcionales y se
-/// combinan con AND.
+/// combinan con AND: los filtros estructurados (`doc_type`, `tags`)
+/// definen el subconjunto y `text` puntúa/filtra DENTRO de él. Si
+/// ningún documento pasa los filtros estructurados, el resultado es
+/// vacío — nunca se degrada a resultados que no los cumplan.
 #[derive(Debug, Clone, Default)]
 pub struct SearchQuery {
     /// Subcadena, sin distinción de mayúsculas, sobre id, título,
-    /// tags y cuerpo.
+    /// tags y cuerpo (o ranking semántico, si el backend lo soporta).
     pub text: Option<String>,
     /// Igualdad exacta sobre el campo `type` del frontmatter.
     pub doc_type: Option<String>,
-    /// Pertenencia exacta en la lista de tags.
-    pub tag: Option<String>,
+    /// Igualdad exacta sobre el campo `status` del frontmatter. Un
+    /// documento SIN `status` no coincide con ningún valor pedido.
+    pub status: Option<String>,
+    /// Prefijo LITERAL del `concept_id`: `skills/programming/` lista
+    /// esa "carpeta" lógica completa. La jerarquía de rutas pasa así
+    /// de convención visual a estructura consultable.
+    pub path_prefix: Option<String>,
+    /// Pertenencia LITERAL en la lista `tags` del frontmatter, sin
+    /// interpretación semántica. Vacío = sin filtro.
+    pub tags: Vec<String>,
+    /// Cómo se combinan los `tags` entre sí (`Any` por defecto).
+    pub tags_mode: TagsMode,
     /// Tope de resultados; siempre acotado además por
     /// `budget.max_search_results`.
     pub limit: Option<usize>,
@@ -95,6 +121,8 @@ pub struct SearchHit {
     pub doc_type: String,
     /// Campo `title` del frontmatter, si existe.
     pub title: Option<String>,
+    /// Campo `status` del frontmatter, si existe.
+    pub status: Option<String>,
     /// Campo `tags` del frontmatter.
     pub tags: Vec<String>,
 }

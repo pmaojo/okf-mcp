@@ -53,9 +53,20 @@ CREATE TABLE heads (
     version BIGINT NOT NULL,
     doc_type VARCHAR(100) NOT NULL,
     title VARCHAR(255),
+    status VARCHAR(100),
     tags TEXT[] NOT NULL
 );
 ```
+
+Las columnas `doc_type`, `title`, `status` y `tags` son metadatos
+DERIVADOS del frontmatter (los bytes de `blobs.raw` siguen siendo la
+verdad); existen para que los filtros estructurados de `memory_search`
+— `type`, `status`, `path_prefix`, `tags` con modo `any`/`all` — sean
+cláusulas `WHERE` literales que se aplican tanto a la búsqueda por
+palabra clave (`ILIKE`) como al ranking semántico (`pgvector`). Si
+ningún documento cumple los filtros, la respuesta es vacía: la
+similitud semántica ordena candidatos DENTRO del subconjunto filtrado,
+nunca lo amplía.
 
 Para implementar la concurrencia optimista (Compare-and-Swap) de forma
 segura contra una base de datos multi-cliente, `SupabaseStore::commit`
@@ -161,22 +172,31 @@ parametrizada que ya pasa la memoria RAM:
 #[test]
 fn supabase_cumple_el_contrato() {
     let Ok(db_url) = std::env::var("TEST_DATABASE_URL") else { return; };
-    // ... inicializa esquema ...
-    memory_store::contract::run_all(|| {
-        let pool = pool.clone();
-        block_on(async {
-            sqlx::query("TRUNCATE TABLE links, revisions, heads, blobs CASCADE")
-                .execute(&pool)
-                .await
-                .expect("vaciar tablas de test");
-        });
-        SupabaseStore::new(pool)
+    // Un ÚNICO runtime multihilo vivo durante todo el test...
+    rt.block_on(async move {
+        let pool = PgPool::connect(&db_url).await.expect("conectar");
+        sqlx::raw_sql(include_str!("../schema.sql")).execute(&pool).await.expect("esquema");
+        tokio::task::spawn(async move {
+            tokio::task::block_in_place(|| {
+                store_core::contract::run_all(|| {
+                    let pool = pool.clone();
+                    block_on(async { /* TRUNCATE links, revisions, heads, blobs */ });
+                    SupabaseStore::new(pool, None)
+                });
+            });
+        }).await.expect("el contrato completo debe pasar");
     });
 }
 ```
 
 Cada iteración de la suite realiza un `TRUNCATE` de la base de datos de
-pruebas para asegurar un estado limpio (aislamiento completo).
+pruebas para asegurar un estado limpio (aislamiento completo). Dos
+detalles del arnés que costaron un rojo cada uno: el esquema se aplica
+con `raw_sql` y no con `query` (varias sentencias separadas por `;` no
+caben en un prepared statement, ver §8), y TODO el test comparte un
+único runtime multihilo — crear un runtime nuevo por operación deja las
+conexiones del pool huérfanas del driver de IO del runtime destruido y
+el test muere en `PoolTimedOut`.
 
 
 En TDD, el primer rojo debe venir del contrato: `base_obsoleta_no_pisa`
@@ -211,7 +231,8 @@ statement seguiría recibiendo nombre si la consulta no marca
 `persistent(false)`.
 
 No hace falta ejecutar `schema.sql` a mano contra la base de producción:
-como todas sus sentencias son `CREATE TABLE IF NOT EXISTS` (idempotentes),
+como todas sus sentencias son idempotentes (`CREATE TABLE IF NOT EXISTS`,
+`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`),
 tanto `vercel-entry` ([`db::get_db_pool`](../crates/vercel-entry/src/db.rs),
 compartido por `api/mcp.rs` y `api/outbox.rs`) como `outbox-worker`
 ([main.rs](../crates/outbox-worker/src/main.rs), el daemon standalone) lo

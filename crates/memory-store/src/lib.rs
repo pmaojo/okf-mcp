@@ -27,7 +27,7 @@ use conflict_core::{decide, CommitDecision};
 use graph_core::NeighborSource;
 use hash_core::sha256;
 use memory_model::{Budget, ConceptId, ContentId, Principal, Revision};
-use store_core::{CommitOutcome, CommitRequest, DocumentView, MemoryRepository, SearchHit, SearchQuery, StoreError};
+use store_core::{CommitOutcome, CommitRequest, DocumentView, MemoryRepository, SearchHit, SearchQuery, StoreError, TagsMode};
 use std::collections::{BTreeMap, HashMap};
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -119,6 +119,7 @@ impl InMemoryStore {
             raw,
             doc_type: doc.doc_type,
             title: doc.title,
+            status: doc.status,
             tags: doc.tags,
             links: doc.links,
         })
@@ -145,14 +146,31 @@ impl MemoryRepository for InMemoryStore {
             if hits.len() >= limit {
                 break;
             }
+            // El prefijo se comprueba ANTES de construir la vista:
+            // descartar por id no requiere re-analizar el documento.
+            if let Some(prefix) = &query.path_prefix {
+                if !id.as_str().starts_with(prefix.as_str()) {
+                    continue;
+                }
+            }
             let view = self.view(id, head, budget)?;
             if let Some(t) = &query.doc_type {
                 if view.doc_type != *t {
                     continue;
                 }
             }
-            if let Some(tag) = &query.tag {
-                if !view.tags.iter().any(|x| x == tag) {
+            if let Some(st) = &query.status {
+                if view.status.as_deref() != Some(st.as_str()) {
+                    continue;
+                }
+            }
+            if !query.tags.is_empty() {
+                let has = |tag: &String| view.tags.iter().any(|x| x == tag);
+                let ok = match query.tags_mode {
+                    TagsMode::Any => query.tags.iter().any(has),
+                    TagsMode::All => query.tags.iter().all(has),
+                };
+                if !ok {
                     continue;
                 }
             }
@@ -173,6 +191,7 @@ impl MemoryRepository for InMemoryStore {
                 content_id: view.content_id,
                 doc_type: view.doc_type,
                 title: view.title,
+                status: view.status,
                 tags: view.tags,
             });
         }
@@ -381,18 +400,24 @@ mod tests {
         commit(&mut s, "notas/rust", None, &doc("Apuntes Rust", "lenguaje")).unwrap();
 
         let budget = Budget::default();
-        let q = |text: Option<&str>, doc_type: Option<&str>, tag: Option<&str>| SearchQuery {
+        let q = |text: Option<&str>, doc_type: Option<&str>, tags: &[&str]| SearchQuery {
             text: text.map(String::from),
             doc_type: doc_type.map(String::from),
-            tag: tag.map(String::from),
-            limit: None,
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            ..SearchQuery::default()
         };
 
-        assert_eq!(s.search(&q(Some("rust"), None, None), &budget).unwrap().len(), 2);
-        assert_eq!(s.search(&q(Some("rust"), Some("person"), None), &budget).unwrap().len(), 1);
-        assert_eq!(s.search(&q(None, None, Some("rust")), &budget).unwrap().len(), 1);
-        assert_eq!(s.search(&q(Some("ingeniera"), None, None), &budget).unwrap().len(), 1);
-        assert_eq!(s.search(&q(Some("nada-de-esto"), None, None), &budget).unwrap().len(), 0);
+        assert_eq!(s.search(&q(Some("rust"), None, &[]), &budget).unwrap().len(), 2);
+        assert_eq!(s.search(&q(Some("rust"), Some("person"), &[]), &budget).unwrap().len(), 1);
+        assert_eq!(s.search(&q(None, None, &["rust"]), &budget).unwrap().len(), 1);
+        assert_eq!(s.search(&q(Some("ingeniera"), None, &[]), &budget).unwrap().len(), 1);
+        assert_eq!(s.search(&q(Some("nada-de-esto"), None, &[]), &budget).unwrap().len(), 0);
+
+        let prefijo = SearchQuery {
+            path_prefix: Some("people/".to_string()),
+            ..SearchQuery::default()
+        };
+        assert_eq!(s.search(&prefijo, &budget).unwrap().len(), 2);
     }
 
     #[test]

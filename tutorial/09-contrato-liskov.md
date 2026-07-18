@@ -161,7 +161,7 @@ Es tests todo el capítulo. La lista, y qué invariante narra cada uno:
 | `commit_identico_es_idempotente` | mismo contenido → `no_change`, sin nueva revisión |
 | `documento_invalido_no_deja_rastro` | validar ANTES de tocar el almacén (capítulo 4 + 7) |
 | `inexistente_es_none_y_notfound` | dos formas distintas de "no está", cada una en su canal |
-| `busqueda_respeta_filtros_y_limite` | combinación AND de filtros + corte por `limit` |
+| `busqueda_respeta_filtros_y_limite` | filtros literales (`type`, `status`, `path_prefix`, `tags` any/all) en AND + corte por `limit`; sin coincidencias = vacío, nunca candidatos degradados |
 | `historia_reciente_primero_y_paginada` | orden y paginación sin solapes |
 
 

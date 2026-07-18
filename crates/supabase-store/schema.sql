@@ -11,8 +11,13 @@ CREATE TABLE IF NOT EXISTS heads (
     version BIGINT NOT NULL,
     doc_type VARCHAR(100) NOT NULL,
     title VARCHAR(255),
+    status VARCHAR(100), -- ciclo de vida ('active', 'archived'...), separado de doc_type
     tags TEXT[] NOT NULL
 );
+
+-- Migración para despliegues anteriores a la columna 'status'
+-- (CREATE TABLE IF NOT EXISTS no añade columnas a tablas existentes).
+ALTER TABLE heads ADD COLUMN IF NOT EXISTS status VARCHAR(100);
 
 CREATE TABLE IF NOT EXISTS revisions (
     seq BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -34,6 +39,9 @@ CREATE TABLE IF NOT EXISTS links (
 -- Índices para optimizar las búsquedas y la paginación de historia
 CREATE INDEX IF NOT EXISTS idx_revisions_concept_seq ON revisions(concept_id, seq DESC);
 CREATE INDEX IF NOT EXISTS idx_links_target ON links(target_id);
+-- GIN sobre tags: acelera los operadores de solapamiento (&&) y
+-- contención (@>) del filtro estructurado de memory_search.
+CREATE INDEX IF NOT EXISTS idx_heads_tags ON heads USING GIN (tags);
 
 CREATE TABLE IF NOT EXISTS outbox (
     seq BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

@@ -20,7 +20,7 @@ use graph_core::NeighborSource;
 use json_mini::{arr, n, obj, s, Value};
 use mcp_core::{ToolError, ToolHandler, ToolSpec, UiResource};
 use memory_model::{Budget, ConceptId, ContentId, Principal};
-use store_core::{CommitRequest, MemoryRepository, SearchQuery, StoreError};
+use store_core::{CommitRequest, MemoryRepository, SearchQuery, StoreError, TagsMode};
 use std::convert::Infallible;
 
 /// El [`ToolHandler`] de memoria, genérico sobre el repositorio.
@@ -58,6 +58,51 @@ where
                 .as_u64()
                 .map(|u| Some(u as usize))
                 .ok_or_else(|| ToolError::InvalidArguments(format!("'{key}' debe ser un entero >= 0"))),
+        }
+    }
+
+    /// `tags` acepta lista de strings o un string suelto (se trata
+    /// como lista de uno). También se acepta el alias legado `tag`
+    /// (string), que se AÑADE a la lista: los argumentos que el
+    /// esquema anunció alguna vez no se ignoran en silencio.
+    fn arg_tags(args: &Value) -> Result<Vec<String>, ToolError> {
+        let mut tags = match args.get("tags") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::String(s)) => vec![s.clone()],
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|v| {
+                    v.as_str().map(str::to_string).ok_or_else(|| {
+                        ToolError::InvalidArguments(
+                            "'tags' debe ser una lista de strings".to_string(),
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            Some(_) => {
+                return Err(ToolError::InvalidArguments(
+                    "'tags' debe ser una lista de strings".to_string(),
+                ))
+            }
+        };
+        if let Some(tag) = Self::arg_str(args, "tag") {
+            if !tags.contains(&tag) {
+                tags.push(tag);
+            }
+        }
+        Ok(tags)
+    }
+
+    fn arg_tags_mode(args: &Value) -> Result<TagsMode, ToolError> {
+        match args.get("tags_mode") {
+            None | Some(Value::Null) => Ok(TagsMode::Any),
+            Some(v) => match v.as_str() {
+                Some("any") => Ok(TagsMode::Any),
+                Some("all") => Ok(TagsMode::All),
+                _ => Err(ToolError::InvalidArguments(
+                    "'tags_mode' debe ser \"any\" o \"all\"".to_string(),
+                )),
+            },
         }
     }
 
@@ -99,7 +144,10 @@ where
         let query = SearchQuery {
             text: Self::arg_str(args, "query"),
             doc_type: Self::arg_str(args, "type"),
-            tag: Self::arg_str(args, "tag"),
+            status: Self::arg_str(args, "status"),
+            path_prefix: Self::arg_str(args, "path_prefix"),
+            tags: Self::arg_tags(args)?,
+            tags_mode: Self::arg_tags_mode(args)?,
             limit: Self::arg_usize(args, "limit")?,
         };
         let hits = self.repo.search(&query, &self.budget).map_err(Self::domain_error)?;
@@ -111,6 +159,7 @@ where
                     ("hash", s(&h.content_id.to_hex())),
                     ("type", s(&h.doc_type)),
                     ("title", h.title.as_deref().map(s).unwrap_or(Value::Null)),
+                    ("status", h.status.as_deref().map(s).unwrap_or(Value::Null)),
                     ("tags", arr(h.tags.iter().map(|t| s(t)).collect())),
                     ("uri", s(&format!("okf://{}", h.concept_id))),
                 ])
@@ -166,6 +215,7 @@ where
                     ("version", n(doc.version as f64)),
                     ("type", s(&doc.doc_type)),
                     ("title", doc.title.as_deref().map(s).unwrap_or(Value::Null)),
+                    ("status", doc.status.as_deref().map(s).unwrap_or(Value::Null)),
                     ("tags", arr(doc.tags.iter().map(|t| s(t)).collect())),
                     ("markdown", s(&doc.raw)),
                 ]),
@@ -249,13 +299,35 @@ fn opt_hash(h: Option<ContentId>) -> Value {
 }
 
 /// Esquema JSON mínimo: `{"type":"object","properties":{...},"required":[...]}`.
+///
+/// El tipo de cada propiedad admite dos formas compuestas además de
+/// los tipos JSON planos:
+/// - `"string[]"` → `{"type":"array","items":{"type":"string"}}`
+/// - `"enum:a|b"` → `{"type":"string","enum":["a","b"]}`
 fn schema<const N: usize, const M: usize>(
     props: [(&str, &str, &str); N],
     required: [&str; M],
 ) -> Value {
+    fn prop(ty: &str, desc: &str) -> Value {
+        if ty == "string[]" {
+            return obj([
+                ("type", s("array")),
+                ("items", obj([("type", s("string"))])),
+                ("description", s(desc)),
+            ]);
+        }
+        if let Some(variants) = ty.strip_prefix("enum:") {
+            return obj([
+                ("type", s("string")),
+                ("enum", arr(variants.split('|').map(s).collect())),
+                ("description", s(desc)),
+            ]);
+        }
+        obj([("type", s(ty)), ("description", s(desc))])
+    }
     let properties: Vec<(&str, Value)> = props
         .iter()
-        .map(|(name, ty, desc)| (*name, obj([("type", s(ty)), ("description", s(desc))])))
+        .map(|(name, ty, desc)| (*name, prop(ty, desc)))
         .collect();
     let mut properties_map = std::collections::BTreeMap::new();
     for (k, v) in properties {
@@ -276,12 +348,15 @@ where
         vec![
             ToolSpec {
                 name: "memory_search",
-                description: "Busca conceptos en la memoria. Devuelve candidatos compactos con su hash y URI; usa memory_resolve para leer el contenido.",
+                description: "Busca conceptos en la memoria. Dos mecanismos que se combinan en AND: los filtros ESTRUCTURADOS (type, status, path_prefix, tags) son literales sobre el frontmatter/id — si nada los cumple devuelve count: 0, nunca candidatos que no los cumplan —, y 'query' busca por texto/semántica DENTRO de ese subconjunto. Usa filtros para 'sé exactamente qué categoría quiero' y query para 'no sé cómo se llama pero trata de esto'. Devuelve candidatos compactos con su hash y URI; usa memory_resolve para leer el contenido.",
                 input_schema: schema(
                     [
-                        ("query", "string", "subcadena a buscar en id, título, tags y cuerpo"),
-                        ("type", "string", "filtra por el campo 'type' del frontmatter"),
-                        ("tag", "string", "filtra por tag exacto"),
+                        ("query", "string", "búsqueda por relevancia (semántica o subcadena en id, título, tags y cuerpo) dentro del subconjunto que pasa los filtros estructurados"),
+                        ("type", "string", "filtro literal: igualdad exacta con el campo 'type' del frontmatter"),
+                        ("status", "string", "filtro literal: igualdad exacta con el campo 'status' del frontmatter (ciclo de vida, p. ej. 'active'); documentos sin 'status' no coinciden"),
+                        ("path_prefix", "string", "filtro literal: solo concept_id que empiecen por este prefijo, p. ej. 'skills/programming/' lista esa carpeta lógica"),
+                        ("tags", "string[]", "filtro literal: solo documentos cuyo frontmatter 'tags' contiene estos valores exactos (sin interpretación semántica)"),
+                        ("tags_mode", "enum:any|all", "cómo combinar varios tags: 'any' (por defecto) basta uno; 'all' exige todos"),
                         ("limit", "integer", "máximo de resultados"),
                     ],
                     [],
