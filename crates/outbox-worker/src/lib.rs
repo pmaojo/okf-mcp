@@ -17,6 +17,16 @@ mod github_sync;
 use serde_json::Value;
 use sqlx::{PgPool, Row};
 
+/// Consultas con `persistent(false)`: `POSTGRES_URL` suele apuntar al
+/// pooler de Supabase en modo transacción, donde un prepared statement
+/// CON nombre (`sqlx_s_N`) puede colisionar con el de otra sesión
+/// lógica sobre la misma conexión física reciclada. El statement SIN
+/// nombre del protocolo se re-prepara en cada uso y no colisiona —
+/// misma regla que en `supabase-store` (ver su `pg_query`).
+pub(crate) fn pg_query(sql: &str) -> sqlx::query::Query<'_, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    sqlx::query(sql).persistent(false)
+}
+
 /// `schema.sql` compartido con `supabase-store`: mismo contenido que
 /// aplica `crates/vercel-entry/api/mcp.rs` en su propio cold start.
 /// `CREATE TABLE IF NOT EXISTS` lo hace seguro de repetir en cada
@@ -38,7 +48,7 @@ pub async fn process_batch(
 ) -> Result<usize, Box<dyn std::error::Error>> {
     // 1. Obtener un lote de eventos pendientes usando FOR UPDATE SKIP LOCKED
     let mut tx = pool.begin().await?;
-    let rows = sqlx::query(
+    let rows = pg_query(
         "SELECT seq, event_type, concept_id, content_id, payload
          FROM outbox
          WHERE status = 'pending'
@@ -94,7 +104,7 @@ pub async fn process_batch(
 
         // C. Actualizar estado en el outbox
         if success {
-            sqlx::query(
+            pg_query(
                 "UPDATE outbox
                  SET status = 'processed', processed_at = CURRENT_TIMESTAMP
                  WHERE seq = $1"
@@ -105,7 +115,7 @@ pub async fn process_batch(
             println!("Evento seq={} procesado con éxito.", seq);
         } else {
             eprintln!("Error procesando evento seq={}: {}", seq, error_msg);
-            sqlx::query(
+            pg_query(
                 "UPDATE outbox
                  SET attempts = attempts + 1,
                      status = CASE WHEN attempts >= 5 THEN 'failed' ELSE 'pending' END

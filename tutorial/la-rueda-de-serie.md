@@ -27,7 +27,7 @@ criterio para elegir. Cada capítulo enlaza aquí desde su sección
 | Tests de contrato (`store-core::contract`) | 9 | [`proptest`](https://docs.rs/proptest), [`quickcheck`](https://docs.rs/quickcheck) | El siguiente nivel del contrato ejecutable: propiedades con entradas generadas, no elegidas. |
 | Servidor HTTP/1.1 (`mcp-http`) | 10 | [`axum`](https://docs.rs/axum) + [`tower`](https://docs.rs/tower) + [`hyper`](https://docs.rs/hyper), sobre [`tokio`](https://docs.rs/tokio) | La pila estándar. El repo ya la usa donde toca: `vercel-entry` (hito 2). Cliente HTTP: [`reqwest`](https://docs.rs/reqwest) (async) o [`ureq`](https://docs.rs/ureq) (sync). |
 | Validación JWT + JWKS (hito 3) | 13 | [`jsonwebtoken`](https://docs.rs/jsonwebtoken), [`oauth2`](https://docs.rs/oauth2) | Firmas RSA/ECDSA con criptografía auditada debajo. Esta frontera NUNCA se cruza a mano (capítulo 2, regla de oro). |
-| Outbox + worker (hito 4) | 14 | [`apalis`](https://docs.rs/apalis), [`tokio-cron-scheduler`](https://docs.rs/tokio-cron-scheduler) | El patrón outbox no necesita crate (es SQL + disciplina), pero un framework de jobs te da reintentos, backoff y métricas. |
+| Outbox + worker (hito 4) | 14 | [`apalis`](https://docs.rs/apalis), [`tokio-cron-scheduler`](https://docs.rs/tokio-cron-scheduler) | El patrón outbox no necesita crate (es SQL + disciplina), pero un framework de jobs te da reintentos, backoff y métricas. Para el tipo `vector` de Postgres el repo usa [`pgvector`](https://docs.rs/pgvector) (feature `sqlx`). |
 | HTML embebido MCP Apps (hito 5) | 15 | [`maud`](https://docs.rs/maud), [`askama`](https://docs.rs/askama) | Plantillas HTML tipadas y verificadas en compilación, en lugar de `&'static str`. |
 
 ## Las que usarías en casi cualquier proyecto
@@ -36,7 +36,7 @@ No corresponden a un capítulo: corresponden a todos.
 
 | Necesidad | Crate | Por qué |
 |---|---|---|
-| Errores de biblioteca | [`thiserror`](https://docs.rs/thiserror) | Deriva los `impl Display`/`Error` que en este tutorial escribimos a mano una y otra vez (esa repetición era deliberada: ahora sabes exactamente qué te ahorra). |
+| Errores de biblioteca | [`thiserror`](https://docs.rs/thiserror) | Deriva los `impl Display`/`Error` que en este tutorial escribimos a mano una y otra vez (esa repetición era deliberada: ahora sabes exactamente qué te ahorra). El adaptador `gemini-embeddings` la usa: compara su `EmbedError` con los errores a mano del núcleo. |
 | Errores de aplicación | [`anyhow`](https://docs.rs/anyhow) | Un tipo de error universal con contexto para binarios, donde no necesitas que el llamante distinga variantes. |
 | Logs estructurados | [`tracing`](https://docs.rs/tracing) + [`tracing-subscriber`](https://docs.rs/tracing-subscriber) | Spans con contexto, no `println!`. Imprescindible en serverless. |
 | Argumentos de CLI | [`clap`](https://docs.rs/clap) | Derive de structs a flags, con ayuda generada. |
@@ -51,8 +51,11 @@ Las listas caducan; el criterio no. Antes de añadir una dependencia:
    mantenedor? Un crate brillante y abandonado es deuda
    (el caso `serde_yaml`, archivado en 2024, es la lección canónica).
 2. **Seguridad.** `cargo audit` consulta la base RUSTSEC;
-   `cargo deny` te deja vetar licencias y duplicados en CI. Ambos
-   son un paso de workflow, como nuestro `check-std-only.sh`.
+   `cargo deny` te deja vetar licencias y duplicados en CI. En este
+   repo ya no es teoría: el job `auditoria` de
+   `.github/workflows/rust.yml` corre `cargo deny check` (que cubre
+   también los advisories RUSTSEC) con la política de `deny.toml`,
+   como nuestro `check-std-only.sh`.
 3. **Peso transitivo.** `cargo tree` antes y después: cada
    dependencia trae las suyas, y el binario de Vercel del hito 2
    paga cada una en arranque en frío.

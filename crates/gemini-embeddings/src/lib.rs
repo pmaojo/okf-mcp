@@ -27,6 +27,16 @@ use serde::{Deserialize, Serialize};
 pub const MODEL: &str = "gemini-embedding-001";
 pub const DIMENSIONS: usize = 768;
 
+/// Fallo al pedir un embedding: o la red/deserialización (`reqwest`)
+/// o una respuesta de error de la propia API de Gemini.
+#[derive(Debug, thiserror::Error)]
+pub enum EmbedError {
+    #[error("fallo de red o deserialización hablando con Gemini: {0}")]
+    Http(#[from] reqwest::Error),
+    #[error("la API de Gemini devolvió un error: {body}")]
+    Api { body: String },
+}
+
 #[derive(Debug, Serialize)]
 struct EmbeddingRequestPart {
     text: String,
@@ -62,7 +72,7 @@ pub async fn embed(
     client: &reqwest::Client,
     api_key: &str,
     text: &str,
-) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+) -> Result<Vec<f32>, EmbedError> {
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:embedContent?key={api_key}"
     );
@@ -79,18 +89,9 @@ pub async fn embed(
 
     if !resp.status().is_success() {
         let err_text = resp.text().await?;
-        return Err(format!("Gemini API returned error: {err_text}").into());
+        return Err(EmbedError::Api { body: err_text });
     }
 
     let embed_resp: EmbeddingResponse = resp.json().await?;
     Ok(embed_resp.embedding.values)
-}
-
-/// Formatea un vector como el literal que espera el tipo `vector` de
-/// pgvector en una consulta de texto: `"[0.1,0.2,...]"`.
-pub fn to_pgvector_literal(values: &[f32]) -> String {
-    format!(
-        "[{}]",
-        values.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")
-    )
 }

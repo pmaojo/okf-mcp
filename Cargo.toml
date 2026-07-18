@@ -1,5 +1,7 @@
 [workspace]
-resolver = "2"
+# Resolver v3: tiene en cuenta rust-version (MSRV) al elegir versiones
+# de dependencias — ver [workspace.package].
+resolver = "3"
 members = [
     "crates/memory-model",
     "crates/hash-core",
@@ -21,6 +23,13 @@ members = [
 edition = "2021"
 version = "0.1.0"
 license = "MIT"
+# MSRV = el rustc del builder de Rust de Vercel. El resolver de Cargo
+# la respeta: descarta versiones de dependencias que pidan un rustc
+# más nuevo (p.ej. sqlx 0.9 exige 1.94).
+rust-version = "1.92"
+# Ningún crate del workspace se publica en crates.io: son piezas de
+# este proyecto/tutorial, no bibliotecas de propósito general.
+publish = false
 
 # Perfil de release compartido por todo el workspace (Cargo ignora
 # [profile.*] declarado en un Cargo.toml de crate miembro: solo se

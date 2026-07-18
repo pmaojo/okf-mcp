@@ -195,6 +195,21 @@ Para conectar Supabase con Vercel:
 3. El adaptador serverless traducirá las llamadas HTTP entrantes al
 repositorio Supabase de forma completamente transparente.
 
+El pooler en modo transacción tiene una consecuencia que no se ve hasta
+producción: entre transacción y transacción puede entregar la misma
+conexión física de Postgres a otra sesión lógica. Un prepared statement
+CON nombre (`sqlx` los llama `sqlx_s_N`) sobrevive en esa conexión, así
+que dos sesiones pueden chocar sobre el mismo nombre: `prepared
+statement "sqlx_s_N" already exists`. Por eso todas las consultas de
+`supabase-store` y `outbox-worker` se construyen con
+**`.persistent(false)`** (ver el helper `pg_query` en ambos crates):
+sqlx usa entonces el *statement sin nombre* del protocolo extendido,
+que se re-prepara en cada uso y no puede colisionar. Ojo con el falso
+amigo: `statement_cache_capacity(0)` en el pool (que `vercel-entry`
+también configura, como cinturón extra) solo desactiva la *caché*; el
+statement seguiría recibiendo nombre si la consulta no marca
+`persistent(false)`.
+
 No hace falta ejecutar `schema.sql` a mano contra la base de producción:
 como todas sus sentencias son `CREATE TABLE IF NOT EXISTS` (idempotentes),
 tanto `vercel-entry` ([`db::get_db_pool`](../crates/vercel-entry/src/db.rs),

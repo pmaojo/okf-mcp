@@ -28,14 +28,21 @@ pub async fn get_db_pool(db_url: &str) -> sqlx::PgPool {
     // capítulo 12 del tutorial). Ese pooler NO garantiza que la misma
     // conexión física atienda siempre a la misma sesión lógica de
     // sqlx: puede entregar la conexión a otra invocación entre
-    // sentencias. sqlx cachea prepared statements con nombres
-    // autogenerados (`sqlx_s_N`) asumiendo una conexión estable, así
-    // que dos invocaciones distintas pueden chocar sobre el mismo
-    // nombre en la misma conexión física reciclada por el pooler
-    // ("prepared statement \"sqlx_s_N\" already exists"). Desactivar
-    // el caché de prepared statements evita la colisión al precio de
-    // volver a preparar cada consulta — aceptable aquí porque cada
-    // invocación serverless ya es efímera.
+    // transacciones, y un prepared statement CON nombre (`sqlx_s_N`)
+    // que sobrevive en el backend colisiona con el homónimo de otra
+    // sesión ("prepared statement \"sqlx_s_N\" already exists").
+    //
+    // La protección contra eso son DOS piezas, y esta es la menor:
+    //
+    // 1. `persistent(false)` en CADA consulta de `supabase-store` y
+    //    `outbox-worker` (ver `pg_query` en ambos crates): sqlx usa el
+    //    statement SIN nombre del protocolo, que no puede colisionar.
+    //    Es la protección real — verificado en el código de sqlx 0.8
+    //    (y 0.9): `statement_cache_capacity(0)` NO evita que un
+    //    `sqlx::query` normal reciba nombre, solo evita cachearlo.
+    // 2. `statement_cache_capacity(0)` aquí: cinturón extra para que
+    //    ninguna consulta futura que olvide `persistent(false)` deje
+    //    además statements cacheados vivos entre invocaciones.
     let connect_options = PgConnectOptions::from_str(db_url)
         .expect("Invalid POSTGRES_URL")
         .statement_cache_capacity(0);
