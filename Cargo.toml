@@ -14,6 +14,7 @@ members = [
     "crates/mcp-stdio",
     "crates/mcp-http",
     "crates/vercel-entry", "crates/supabase-store", "crates/outbox-worker",
+    "crates/gemini-embeddings",
 ]
 
 [workspace.package]

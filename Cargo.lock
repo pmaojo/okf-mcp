@@ -518,6 +518,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gemini-embeddings"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1260,6 +1268,7 @@ name = "outbox-worker"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "gemini-embeddings",
  "reqwest",
  "serde",
  "serde_json",
@@ -2083,10 +2092,12 @@ name = "supabase-store"
 version = "0.1.0"
 dependencies = [
  "conflict-core",
+ "gemini-embeddings",
  "graph-core",
  "hash-core",
  "memory-model",
  "okf-core",
+ "reqwest",
  "serde",
  "serde_json",
  "sqlx",

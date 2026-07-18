@@ -1,12 +1,14 @@
 #![forbid(unsafe_code)]
 
 use conflict_core::{decide, CommitDecision};
+use gemini_embeddings::{embed, to_pgvector_literal};
 use graph_core::NeighborSource;
 use hash_core::sha256;
 use memory_model::{Budget, ConceptId, ContentId, Principal, Revision};
 use store_core::{
     CommitOutcome, CommitRequest, DocumentView, MemoryRepository, SearchHit, SearchQuery, StoreError,
 };
+use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Row};
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -28,11 +30,96 @@ fn block_on<F: std::future::Future>(fut: F) -> F::Output {
 #[derive(Debug, Clone)]
 pub struct SupabaseStore {
     pool: PgPool,
+    /// Si está configurada, `search` embebe el texto de la consulta
+    /// con Gemini y ordena por similitud semántica (`pgvector`) en vez
+    /// de la coincidencia de subcadena (`ILIKE`) — ver [`Self::search`].
+    gemini_api_key: Option<String>,
 }
 
 impl SupabaseStore {
-    pub fn new(pool: PgPool) -> Self {
-        SupabaseStore { pool }
+    pub fn new(pool: PgPool, gemini_api_key: Option<String>) -> Self {
+        SupabaseStore { pool, gemini_api_key }
+    }
+
+    async fn search_keyword(&self, query: &SearchQuery, limit: i64) -> Result<Vec<PgRow>, StoreError> {
+        sqlx::query(
+            "SELECT h.concept_id, h.content_id, h.doc_type, h.title, h.tags
+             FROM heads h
+             JOIN blobs b ON h.content_id = b.content_id
+             WHERE ($1::text IS NULL OR h.doc_type = $1)
+               AND ($2::text IS NULL OR $2 = ANY(h.tags))
+               AND ($3::text IS NULL OR (
+                   h.concept_id ILIKE $4 OR
+                   h.title ILIKE $4 OR
+                   b.raw ILIKE $4 OR
+                   EXISTS (SELECT 1 FROM unnest(h.tags) t WHERE t ILIKE $4)
+               ))
+             ORDER BY h.concept_id
+             LIMIT $5",
+        )
+        .bind(query.doc_type.as_deref())
+        .bind(query.tag.as_deref())
+        .bind(query.text.as_deref())
+        .bind(query.text.as_ref().map(|t| format!("%{}%", t)).as_deref())
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(e.to_string()))
+    }
+
+    /// Ranking por similitud semántica: `<=>` es la distancia de
+    /// coseno de pgvector (menor = más parecido), así que ordenar
+    /// ascendente ya da el orden de relevancia correcto. Solo entran
+    /// en el ranking los conceptos que YA tienen embedding calculado
+    /// (`JOIN embeddings`, no `LEFT JOIN`) — `outbox-worker` lo genera
+    /// de forma asíncrona tras cada commit, así que un concepto recién
+    /// escrito puede tardar hasta el próximo ciclo del outbox en
+    /// aparecer en una búsqueda semántica (sí aparece de inmediato en
+    /// la búsqueda por palabra clave, que no depende del outbox).
+    async fn search_semantic(
+        &self,
+        query: &SearchQuery,
+        embedding: &[f32],
+        limit: i64,
+    ) -> Result<Vec<PgRow>, StoreError> {
+        let vector = to_pgvector_literal(embedding);
+        sqlx::query(
+            "SELECT h.concept_id, h.content_id, h.doc_type, h.title, h.tags
+             FROM heads h
+             JOIN blobs b ON h.content_id = b.content_id
+             JOIN embeddings e ON e.concept_id = h.concept_id
+             WHERE ($1::text IS NULL OR h.doc_type = $1)
+               AND ($2::text IS NULL OR $2 = ANY(h.tags))
+             ORDER BY e.embedding <=> $3::vector
+             LIMIT $4",
+        )
+        .bind(query.doc_type.as_deref())
+        .bind(query.tag.as_deref())
+        .bind(vector)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(e.to_string()))
+    }
+}
+
+/// Misma forma de fila para `search_keyword` y `search_semantic`:
+/// ambas seleccionan exactamente las mismas columnas de `heads`.
+fn row_to_search_hit(row: PgRow) -> SearchHit {
+    let content_id_hex: String = row.get("content_id");
+    let content_id = ContentId::from_hex(&content_id_hex).expect("hash de db válido");
+    let concept_id_str: String = row.get("concept_id");
+    let concept_id = ConceptId::parse(&concept_id_str).expect("concept_id de db válido");
+    let doc_type: String = row.get("doc_type");
+    let title: Option<String> = row.get("title");
+    let tags: Vec<String> = row.get("tags");
+
+    SearchHit {
+        concept_id,
+        content_id,
+        doc_type,
+        title,
+        tags,
     }
 }
 
@@ -81,60 +168,33 @@ impl MemoryRepository for SupabaseStore {
         }
     }
 
+    /// Búsqueda semántica (pgvector, cuando hay `GEMINI_API_KEY`
+    /// configurada) con reintento automático a coincidencia de
+    /// subcadena (`ILIKE`) si no hay clave, o si la llamada a Gemini
+    /// falla — un problema transitorio del proveedor de embeddings no
+    /// debe tumbar la búsqueda por completo, solo degradarla.
     fn search(&self, query: &SearchQuery, budget: &Budget) -> Result<Vec<SearchHit>, StoreError> {
         let limit = query
             .limit
             .unwrap_or(budget.max_search_results)
             .min(budget.max_search_results) as i64;
 
-        let res = block_on(async {
-            sqlx::query(
-                "SELECT h.concept_id, h.content_id, h.doc_type, h.title, h.tags
-                 FROM heads h
-                 JOIN blobs b ON h.content_id = b.content_id
-                 WHERE ($1::text IS NULL OR h.doc_type = $1)
-                   AND ($2::text IS NULL OR $2 = ANY(h.tags))
-                   AND ($3::text IS NULL OR (
-                       h.concept_id ILIKE $4 OR
-                       h.title ILIKE $4 OR
-                       b.raw ILIKE $4 OR
-                       EXISTS (SELECT 1 FROM unnest(h.tags) t WHERE t ILIKE $4)
-                   ))
-                 ORDER BY h.concept_id
-                 LIMIT $5",
-            )
-            .bind(query.doc_type.as_deref())
-            .bind(query.tag.as_deref())
-            .bind(query.text.as_deref())
-            .bind(query.text.as_ref().map(|t| format!("%{}%", t)).as_deref())
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| StoreError::Backend(e.to_string()))
+        let rows = block_on(async {
+            if let (Some(text), Some(gemini_key)) =
+                (query.text.as_deref(), self.gemini_api_key.as_deref())
+            {
+                let client = reqwest::Client::new();
+                match embed(&client, gemini_key, text).await {
+                    Ok(embedding) => return self.search_semantic(query, &embedding, limit).await,
+                    Err(e) => eprintln!(
+                        "búsqueda semántica falló ({e}); usando coincidencia de texto (ILIKE) como respaldo"
+                    ),
+                }
+            }
+            self.search_keyword(query, limit).await
         })?;
 
-        let hits = res
-            .into_iter()
-            .map(|row| {
-                let content_id_hex: String = row.get("content_id");
-                let content_id = ContentId::from_hex(&content_id_hex).expect("hash de db válido");
-                let concept_id_str: String = row.get("concept_id");
-                let concept_id = ConceptId::parse(&concept_id_str).expect("concept_id de db válido");
-                let doc_type: String = row.get("doc_type");
-                let title: Option<String> = row.get("title");
-                let tags: Vec<String> = row.get("tags");
-
-                SearchHit {
-                    concept_id,
-                    content_id,
-                    doc_type,
-                    title,
-                    tags,
-                }
-            })
-            .collect();
-
-        Ok(hits)
+        Ok(rows.into_iter().map(row_to_search_hit).collect())
     }
 
     fn commit(

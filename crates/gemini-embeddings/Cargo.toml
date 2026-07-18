@@ -1,0 +1,16 @@
+# ADAPTADOR: dependencias externas permitidas
+#
+# Cliente HTTP mínimo de la API de embeddings de Gemini, compartido
+# por el camino de escritura (`outbox-worker`, indexa un concepto
+# commiteado) y el de lectura (`supabase-store`, indexa la consulta de
+# búsqueda) — ver comentario de módulo en `src/lib.rs` sobre por qué
+# NO deben duplicar esta llamada cada uno por su lado.
+[package]
+name = "gemini-embeddings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }

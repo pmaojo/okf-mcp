@@ -20,8 +20,8 @@ correcta, y el coste de equivocarse es un servicio caído).
 
 ## 2. El invariante
 
-> **Todo lo que vive fuera de `crates/vercel-entry` sigue siendo
-> exactamente el mismo código que corre en tu máquina.** Este crate
+> **Todo lo que vive fuera de `crates/vercel-entry` sigue siendo exactamente el mismo código que corre en tu máquina.**
+> Este crate
 > traduce; no decide.
 
 Es la frase que cierra el capítulo 10, llevada a sus últimas
@@ -166,8 +166,8 @@ falta para un despliegue real:
   del proyecto Vercel: el `Cargo.toml` de este crate y su carpeta
   `api/` deben estar donde el *builder* de Rust de Vercel los busca,
   y como este repositorio es un *workspace* con `crates/` en la
-  raíz, hay que decirle a Vercel dónde mirar. Las rutas `path =
-  "../memory-model"` etc. del `Cargo.toml` de este crate siguen
+  raíz, hay que decirle a Vercel dónde mirar. Las rutas `path = "../memory-model"`
+  etc. del `Cargo.toml` de este crate siguen
   resolviendo bien porque Cargo encuentra la raíz real del
   *workspace* subiendo directorios — Vercel solo necesita saber
   desde dónde ARRANCAR el build.

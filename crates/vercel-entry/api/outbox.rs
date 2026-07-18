@@ -20,35 +20,9 @@
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
-use sqlx::postgres::PgConnectOptions;
-use std::str::FromStr;
-use std::sync::OnceLock;
+use vercel_entry::db;
 use vercel_runtime::axum::VercelLayer;
 use vercel_runtime::{run, Error};
-
-static DB_POOL: OnceLock<sqlx::PgPool> = OnceLock::new();
-
-/// Mismo patrón que `api/mcp.rs::get_db_pool`: pool cacheado por
-/// instancia serverless, con el caché de prepared statements
-/// desactivado porque el pooler de Supabase (modo transacción) puede
-/// reciclar la conexión física entre invocaciones distintas.
-async fn get_db_pool(db_url: &str) -> sqlx::PgPool {
-    if let Some(pool) = DB_POOL.get() {
-        return pool.clone();
-    }
-    let connect_options = PgConnectOptions::from_str(db_url)
-        .expect("Invalid POSTGRES_URL")
-        .statement_cache_capacity(0);
-    let pool = sqlx::PgPool::connect_with(connect_options)
-        .await
-        .expect("Failed to connect to Supabase PostgreSQL database");
-    sqlx::raw_sql(outbox_worker::schema_sql())
-        .execute(&pool)
-        .await
-        .expect("Failed to apply database schema");
-    let _ = DB_POOL.set(pool.clone());
-    pool
-}
 
 /// `true` si la petición trae el `CRON_SECRET` esperado — o si no hay
 /// ningún `CRON_SECRET` configurado.
@@ -79,7 +53,7 @@ async fn outbox_handler(headers: HeaderMap) -> Response {
     let github_repo = std::env::var("GITHUB_REPO").ok();
     let gemini_key = std::env::var("GEMINI_API_KEY").ok();
 
-    let pool = get_db_pool(&db_url).await;
+    let pool = db::get_db_pool(&db_url).await;
     let client = reqwest::Client::new();
 
     match outbox_worker::process_batch(

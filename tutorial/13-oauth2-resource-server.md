@@ -99,15 +99,15 @@ Para probar la lógica de autenticación en desarrollo y pruebas unitarias, el v
 
 ## 8. Descubrimiento OAuth: cómo sabe el cliente MCP a dónde autenticarse
 
-Validar el JWT no basta: un cliente MCP genérico (Claude, u otro agente) no sabe de antemano contra qué Authorization Server debe autenticarse, ni tiene un token todavía en su primera petición. Dos piezas del protocolo resuelven esto, implementadas en [mcp.rs](../crates/vercel-entry/api/mcp.rs):
+Validar el JWT no basta: un cliente MCP genérico (Claude, u otro agente) no sabe de antemano contra qué Authorization Server debe autenticarse, ni tiene un token todavía en su primera petición. Dos piezas del protocolo resuelven esto:
 
-1. **`GET /.well-known/oauth-protected-resource`** (RFC 9728): un endpoint público, sin autenticación, que responde con el recurso protegido y la lista de Authorization Servers de confianza:
+1. **`GET /.well-known/oauth-protected-resource`** (RFC 9728), implementado en [`vercel_entry::oauth_proxy`](../crates/vercel-entry/src/oauth_proxy.rs): un endpoint público, sin autenticación, que responde con el recurso protegido y la lista de Authorization Servers de confianza:
 
    ```json
    {"resource": "https://tu-dominio/mcp", "authorization_servers": ["https://<proyecto>.supabase.co/auth/v1"]}
    ```
 
-2. **Cabecera `WWW-Authenticate` en la respuesta 401**: cuando `validate_jwt` falla (token ausente, expirado o inválido), la respuesta incluye:
+2. **Cabecera `WWW-Authenticate` en la respuesta 401**, construida en `mcp_handler` ([mcp.rs](../crates/vercel-entry/api/mcp.rs)): cuando `validate_jwt` falla (token ausente, expirado o inválido), la respuesta incluye:
 
    ```
    WWW-Authenticate: Bearer resource_metadata="https://tu-dominio/.well-known/oauth-protected-resource"
@@ -170,7 +170,7 @@ Con todo lo anterior en su sitio — `/.well-known/oauth-protected-resource` res
 
 La conclusión, tras descartar todo lo demás: el modo "Client ID manual" de Claude para conectores MCP no delega en el `authorization_servers` anunciado — asume que el propio servidor MCP aloja el Authorization Server en su mismo dominio, con los paths estándar `/authorize` y `/token`. Es una limitación observada del cliente, no algo que la especificación MCP exija.
 
-La solución no es pelearse con Claude, es dárselo: [mcp.rs](../crates/vercel-entry/api/mcp.rs) implementa `/authorize` y `/token` como un **proxy transparente** hacia los endpoints reales de Supabase.
+La solución no es pelearse con Claude, es dárselo: [`vercel_entry::oauth_proxy`](../crates/vercel-entry/src/oauth_proxy.rs) implementa `/authorize` y `/token` como un **proxy transparente** hacia los endpoints reales de Supabase.
 
 ```rust
 async fn authorize_proxy_handler(uri: Uri) -> Response {
@@ -193,7 +193,7 @@ Con el proxy transparente funcionando, Claude redirigirá la sesión del usuario
 
 Supabase Auth espera que, tras iniciar sesión, el usuario acepte explícitamente conceder permisos a la aplicación externa (en este caso, el cliente de Claude). Pero **Supabase no aloja esta pantalla por defecto**. En su lugar, exige que el desarrollador proporcione una "Consent URI" (o *Authorization Path* en la configuración del OAuth Server en Supabase) que apunte a una interfaz web creada por nosotros.
 
-Para evitar tener que desplegar y mantener un frontend separado para un solo archivo HTML, [mcp.rs](../crates/vercel-entry/api/mcp.rs) aloja e implementa la pantalla de consentimiento directamente en la ruta **`GET /oauth/consent`**:
+Para evitar tener que desplegar y mantener un frontend separado para un solo archivo HTML, [`vercel_entry::oauth_proxy`](../crates/vercel-entry/src/oauth_proxy.rs) aloja e implementa la pantalla de consentimiento directamente en la ruta **`GET /oauth/consent`**:
 
 1. **Servicio del HTML estático:** Rust lee una plantilla HTML/JS empotrada en el binario (`CONSENT_PAGE_TEMPLATE`) y reemplaza dinámicamente marcadores como `__OAUTH_ISSUER_JSON__` y `__SUPABASE_ANON_KEY_JSON__` con las variables de entorno reales.
 2. **Lógica de consentimiento en el cliente (JavaScript):**
