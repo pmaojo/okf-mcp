@@ -98,3 +98,67 @@ async fn fetch_sha(
         Ok(None)
     }
 }
+
+#[derive(Debug, Serialize)]
+struct GithubDeleteRequest {
+    message: String,
+    sha: String,
+}
+
+/// Elimina un concepto de GitHub en la ruta `docs/{concept_id}.md` utilizando la API de Contents.
+/// Realiza un flujo CAS (Compare-And-Swap) releyendo el SHA en caso de conflicto por concurrencia.
+pub async fn delete_from_github(
+    client: &reqwest::Client,
+    token: &str,
+    repo: &str,
+    concept_id: &str,
+    reason: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = format!("docs/{concept_id}.md");
+    let url = format!("https://api.github.com/repos/{repo}/contents/{path}");
+
+    let mut headers = HeaderMap::new();
+    headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {token}"))?);
+    headers.insert(USER_AGENT, HeaderValue::from_static("okf-mcp-outbox-worker"));
+    headers.insert("Accept", HeaderValue::from_static("application/vnd.github+json"));
+
+    const MAX_INTENTOS: u32 = 3;
+    for intento in 1..=MAX_INTENTOS {
+        let sha = match fetch_sha(client, &url, &headers).await? {
+            Some(sha) => sha,
+            None => {
+                println!("Concepto {concept_id} ya no existe en GitHub. Saltando borrado.");
+                return Ok(());
+            }
+        };
+
+        let delete_req = GithubDeleteRequest {
+            message: reason.to_string(),
+            sha,
+        };
+
+        let delete_resp = client.delete(&url)
+            .headers(headers.clone())
+            .json(&delete_req)
+            .send()
+            .await?;
+
+        if delete_resp.status().is_success() || delete_resp.status() == reqwest::StatusCode::NOT_FOUND {
+            println!("Concepto {concept_id} borrado de GitHub exitosamente.");
+            return Ok(());
+        }
+
+        let sha_obsoleto = delete_resp.status() == reqwest::StatusCode::CONFLICT;
+        if sha_obsoleto && intento < MAX_INTENTOS {
+            eprintln!(
+                "sha obsoleto borrando {concept_id} (intento {intento}/{MAX_INTENTOS}); releyendo y reintentando"
+            );
+            continue;
+        }
+
+        let err_text = delete_resp.text().await?;
+        return Err(format!("GitHub API returned error on delete: {err_text}").into());
+    }
+
+    unreachable!("el bucle siempre devuelve en el último intento (éxito o error)");
+}

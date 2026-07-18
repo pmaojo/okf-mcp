@@ -303,6 +303,8 @@ pub struct Budget {
     pub max_links_per_document: usize,
     /// Resultados máximos de una búsqueda.
     pub max_search_results: usize,
+    /// Commits máximos en una operación en lote (`commit_bulk`).
+    pub max_bulk_commits: usize,
 }
 
 impl Default for Budget {
@@ -316,6 +318,7 @@ impl Default for Budget {
             max_graph_depth: 4,
             max_links_per_document: 512,
             max_search_results: 50,
+            max_bulk_commits: 25,
         }
     }
 }

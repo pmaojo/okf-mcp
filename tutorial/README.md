@@ -1,6 +1,6 @@
 # Tutorial — Construye un servidor MCP de memoria en Rust puro (`std`)
 
-Un tutorial muy didáctico de Rust **y** de principios SOLID,
+Un tutorial de Rust **y** de principios SOLID,
 construyendo un sistema real: el servidor de memoria de este
 repositorio. Cada capítulo sigue la misma plantilla:
 
@@ -49,6 +49,12 @@ repositorio. Cada capítulo sigue la misma plantilla:
 | # | Capítulo | Rust | SOLID protagonista |
 |---|----------|------|--------------------|
 | 15 | [MCP Apps: grafo e historial](15-mcp-apps-visualizaciones.md) (opcional — extensión negociable, no forma parte del núcleo) | métodos de trait con cuerpo por defecto, `&'static str` embebido | **O**, I, D |
+
+## Hito 6 — Diagnóstico y Mantenimiento (Observabilidad)
+
+| # | Capítulo | Rust | SOLID protagonista |
+|---|----------|------|--------------------|
+| 17 | [Mantenimiento y Observabilidad](17-mantenimiento-observabilidad.md) | segregación de interfaces, consultas agregadas de base de datos | **I**, S |
 
 ## Transversal — La documentación ejecutable
 

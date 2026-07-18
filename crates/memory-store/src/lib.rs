@@ -23,11 +23,16 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-use conflict_core::{decide, CommitDecision};
+use conflict_core::{decide, CommitDecision, Conflict};
 use graph_core::NeighborSource;
 use hash_core::sha256;
 use memory_model::{Budget, ConceptId, ContentId, Principal, Revision};
-use store_core::{CommitOutcome, CommitRequest, DocumentView, MemoryRepository, SearchHit, SearchQuery, StoreError};
+use okf_core::Link;
+use store_core::{
+    matches_prefix, Backlink, BulkItem, BulkOutcome, CommitOutcome, CommitRequest, DeleteOutcome,
+    DocumentView, EmbedOutcome, GraphStats, LinkHealth, MemoryRepository, SearchHit, SearchQuery,
+    StoreError, StoreMaintenance, StoreStatus, ValidationReport,
+};
 use std::collections::{BTreeMap, HashMap};
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -39,6 +44,9 @@ pub struct Head {
     pub content_id: ContentId,
     /// Cuántas veces avanzó (1 = recién creado).
     pub version: u64,
+    /// Borrado lógico: la cabeza queda enterrada (invisible para
+    /// `get`/`search`) pero la historia y la versión sobreviven.
+    pub deleted: bool,
 }
 
 /// Implementación en memoria del hito 1.
@@ -82,13 +90,14 @@ pub struct Head {
 ///     .unwrap_err();
 /// assert!(matches!(err, StoreError::Conflict(_)));
 /// ```
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct InMemoryStore {
     blobs: HashMap<ContentId, Arc<str>>,
     heads: BTreeMap<ConceptId, Head>,
     revisions: Vec<Revision>,
-    /// Índice derivado: se reconstruye en cada commit del documento.
-    links: BTreeMap<ConceptId, Vec<ConceptId>>,
+    /// Índice derivado: se reconstruye en cada commit del documento
+    /// y se vacía en su borrado (un borrado deja de enlazar).
+    links: BTreeMap<ConceptId, Vec<Link>>,
     next_seq: u64,
 }
 
@@ -125,9 +134,16 @@ impl InMemoryStore {
     }
 }
 
+impl InMemoryStore {
+    /// La cabeza VIVA de `id`: `None` si no existe o está borrada.
+    fn live_head(&self, id: &ConceptId) -> Option<&Head> {
+        self.heads.get(id).filter(|h| !h.deleted)
+    }
+}
+
 impl MemoryRepository for InMemoryStore {
     fn get(&self, id: &ConceptId) -> Result<Option<DocumentView>, StoreError> {
-        match self.heads.get(id) {
+        match self.live_head(id) {
             None => Ok(None),
             Some(head) => Ok(Some(self.view(id, head, &Budget::default())?)),
         }
@@ -144,6 +160,14 @@ impl MemoryRepository for InMemoryStore {
         for (id, head) in &self.heads {
             if hits.len() >= limit {
                 break;
+            }
+            if head.deleted {
+                continue;
+            }
+            if let Some(prefix) = &query.path_prefix {
+                if !matches_prefix(id.as_str(), prefix) {
+                    continue;
+                }
             }
             let view = self.view(id, head, budget)?;
             if let Some(t) = &query.doc_type {
@@ -189,15 +213,19 @@ impl MemoryRepository for InMemoryStore {
         //    inválido no debe ni llegar a producir un conflicto.
         let doc = okf_core::parse_document(&request.markdown, budget)?;
 
-        // 2. Identidad de contenido y decisión CAS pura.
+        // 2. Identidad de contenido y decisión CAS pura. Una cabeza
+        //    borrada lógicamente cuenta como inexistente para el CAS
+        //    (recrear parte de expected = None), pero su versión
+        //    sobrevive: la numeración nunca retrocede.
         let incoming = Self::content_id(&request.markdown);
         let head = self.heads.get(&request.concept_id);
-        let decision = decide(head.map(|h| h.content_id), request.expected, incoming);
+        let live = head.filter(|h| !h.deleted);
+        let decision = decide(live.map(|h| h.content_id), request.expected, incoming);
 
         match decision {
             CommitDecision::Conflict(c) => Err(StoreError::Conflict(c)),
             CommitDecision::NoChange => {
-                let head = self.heads.get(&request.concept_id).expect("NoChange implica cabeza");
+                let head = live.expect("NoChange implica cabeza viva");
                 Ok(CommitOutcome {
                     revision: None,
                     content_id: head.content_id,
@@ -208,7 +236,7 @@ impl MemoryRepository for InMemoryStore {
             }
             CommitDecision::Create | CommitDecision::Update => {
                 let created = matches!(decision, CommitDecision::Create);
-                let base = head.map(|h| h.content_id);
+                let base = live.map(|h| h.content_id);
                 let version = head.map(|h| h.version + 1).unwrap_or(1);
 
                 // 3. Escribir: blob inmutable, cabeza, revisión e
@@ -220,7 +248,7 @@ impl MemoryRepository for InMemoryStore {
                     .or_insert_with(|| Arc::from(request.markdown.as_str()));
                 self.heads.insert(
                     request.concept_id.clone(),
-                    Head { content_id: incoming, version },
+                    Head { content_id: incoming, version, deleted: false },
                 );
                 self.links.insert(request.concept_id.clone(), doc.links.clone());
 
@@ -266,6 +294,268 @@ impl MemoryRepository for InMemoryStore {
             .collect();
         Ok(out)
     }
+
+    fn delete(
+        &mut self,
+        id: &ConceptId,
+        expected: ContentId,
+        actor: &Principal,
+        reason: String,
+    ) -> Result<DeleteOutcome, StoreError> {
+        let head = match self.live_head(id) {
+            None => return Err(StoreError::NotFound(id.clone())),
+            Some(h) => h.clone(),
+        };
+        if head.content_id != expected {
+            // El mismo contrato CAS que un commit: los hashes reales,
+            // para releer y decidir. `incoming` no aplica a un
+            // borrado; va el hash que el cliente declaró.
+            return Err(StoreError::Conflict(Conflict {
+                expected: Some(expected),
+                current: Some(head.content_id),
+                incoming: expected,
+            }));
+        }
+
+        // Enterrar la cabeza, vaciar sus enlaces salientes y dejar
+        // constancia en la historia — todo con &mut exclusivo, igual
+        // de atómico que un commit.
+        if let Some(h) = self.heads.get_mut(id) {
+            h.deleted = true;
+        }
+        self.links.remove(id);
+
+        let revision = Revision {
+            seq: self.next_seq,
+            concept_id: id.clone(),
+            base: Some(head.content_id),
+            result: head.content_id,
+            actor: actor.clone(),
+            reason,
+        };
+        self.next_seq += 1;
+        self.revisions.push(revision.clone());
+
+        Ok(DeleteOutcome { content_id: head.content_id, version: head.version, revision })
+    }
+
+    fn backlinks(&self, id: &ConceptId) -> Result<Vec<Backlink>, StoreError> {
+        // Recorrido lineal del índice: en memoria el grafo cabe
+        // entero; en Postgres esto es un índice sobre `target_id`.
+        let mut out = Vec::new();
+        for (source, links) in &self.links {
+            let Some(head) = self.live_head(source) else { continue };
+            let Some(link) = links.iter().find(|l| l.target == *id) else { continue };
+            let view = self.view(source, head, &Budget::default())?;
+            out.push(Backlink {
+                source: SearchHit {
+                    concept_id: view.concept_id,
+                    content_id: view.content_id,
+                    doc_type: view.doc_type,
+                    title: view.title,
+                    tags: view.tags,
+                },
+                rel: link.rel.clone(),
+            });
+        }
+        Ok(out)
+    }
+
+    fn commit_bulk(
+        &mut self,
+        requests: Vec<CommitRequest>,
+        atomic: bool,
+        actor: &Principal,
+        budget: &Budget,
+    ) -> Result<BulkOutcome, StoreError> {
+        if !atomic {
+            let items = requests
+                .into_iter()
+                .map(|req| match self.commit(req, actor, budget) {
+                    Ok(outcome) => BulkItem::Done(outcome),
+                    Err(e) => BulkItem::Failed(e),
+                })
+                .collect();
+            return Ok(BulkOutcome { applied: true, items });
+        }
+
+        // Atómico en memoria: aplicar sobre un CLON y quedárselo solo
+        // si todo fue bien. El clon es la transacción — barato aquí
+        // (los blobs son Arc compartidos), imposible de olvidar hacer
+        // rollback.
+        let mut speculative = self.clone();
+        let mut items = Vec::with_capacity(requests.len());
+        let mut failed_at: Option<usize> = None;
+        for (idx, req) in requests.into_iter().enumerate() {
+            if failed_at.is_some() {
+                items.push(BulkItem::Skipped);
+                continue;
+            }
+            match speculative.commit(req, actor, budget) {
+                Ok(outcome) => items.push(BulkItem::Done(outcome)),
+                Err(e) => {
+                    failed_at = Some(idx);
+                    items.push(BulkItem::Failed(e));
+                }
+            }
+        }
+
+        match failed_at {
+            None => {
+                *self = speculative;
+                Ok(BulkOutcome { applied: true, items })
+            }
+            Some(idx) => {
+                // Todo o nada: lo aplicado en el clon se descarta y
+                // los items que habían ido bien pasan a Skipped.
+                for (i, item) in items.iter_mut().enumerate() {
+                    if i != idx {
+                        *item = BulkItem::Skipped;
+                    }
+                }
+                Ok(BulkOutcome { applied: false, items })
+            }
+        }
+    }
+}
+
+impl StoreMaintenance for InMemoryStore {
+    fn link_health(&self, id: &ConceptId) -> Result<LinkHealth, StoreError> {
+        if self.live_head(id).is_none() {
+            return Err(StoreError::NotFound(id.clone()));
+        }
+        let mut health = LinkHealth::default();
+        for link in self.links.get(id).into_iter().flatten() {
+            match self.heads.get(&link.target) {
+                Some(h) if !h.deleted => health.ok.push(link.clone()),
+                Some(_) => health.deleted.push(link.clone()),
+                None => health.broken.push(link.clone()),
+            }
+        }
+        Ok(health)
+    }
+
+    fn validate(
+        &self,
+        path_prefix: Option<&str>,
+        budget: &Budget,
+    ) -> Result<ValidationReport, StoreError> {
+        let cap = budget.max_search_results;
+        let mut report = ValidationReport::default();
+        for (source, links) in &self.links {
+            if self.live_head(source).is_none() {
+                continue;
+            }
+            if let Some(prefix) = path_prefix {
+                if !matches_prefix(source.as_str(), prefix) {
+                    continue;
+                }
+            }
+            for link in links {
+                match self.heads.get(&link.target) {
+                    Some(h) if !h.deleted => {}
+                    Some(_) => {
+                        report.deleted_referenced_total += 1;
+                        if report.deleted_referenced.len() < cap {
+                            report.deleted_referenced.push((source.clone(), link.target.clone()));
+                        }
+                    }
+                    None => {
+                        report.broken_links_total += 1;
+                        if report.broken_links.len() < cap {
+                            report.broken_links.push((source.clone(), link.target.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        // Sin índice semántico no hay embeddings que deber: vacío es
+        // la verdad, no un hueco sin implementar.
+        Ok(report)
+    }
+
+    fn stats(&self, budget: &Budget) -> Result<GraphStats, StoreError> {
+        let cap = budget.max_search_results;
+        let mut stats = GraphStats::default();
+        let mut by_type: BTreeMap<String, usize> = BTreeMap::new();
+        let mut by_tag: BTreeMap<String, usize> = BTreeMap::new();
+        let mut incoming: BTreeMap<ConceptId, usize> = BTreeMap::new();
+
+        for (id, head) in &self.heads {
+            if head.deleted {
+                stats.deleted_documents += 1;
+                continue;
+            }
+            stats.documents += 1;
+            let view = self.view(id, head, budget)?;
+            *by_type.entry(view.doc_type).or_default() += 1;
+            for tag in view.tags {
+                *by_tag.entry(tag).or_default() += 1;
+            }
+        }
+        for (source, links) in &self.links {
+            if self.live_head(source).is_none() {
+                continue;
+            }
+            for link in links {
+                *incoming.entry(link.target.clone()).or_default() += 1;
+            }
+        }
+
+        stats.by_type = sorted_desc(by_type, cap);
+        stats.by_tag = sorted_desc(by_tag, cap);
+        let mut top: Vec<(ConceptId, usize)> = incoming.clone().into_iter().collect();
+        top.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        top.truncate(cap);
+        stats.top_linked = top;
+
+        for (id, head) in &self.heads {
+            if stats.orphans.len() >= cap {
+                break;
+            }
+            let sin_salientes = self.links.get(id).is_none_or(|l| l.is_empty());
+            if !head.deleted && sin_salientes && !incoming.contains_key(id) {
+                stats.orphans.push(id.clone());
+            }
+        }
+        Ok(stats)
+    }
+
+    fn status(&self) -> Result<StoreStatus, StoreError> {
+        let budget = Budget::default();
+        let report = self.validate(None, &budget)?;
+        let mut status = StoreStatus::default();
+        for head in self.heads.values() {
+            if head.deleted {
+                status.deleted_documents += 1;
+            } else {
+                status.documents += 1;
+            }
+        }
+        status.broken_links = report.broken_links_total;
+        status.deleted_referenced = report.deleted_referenced_total;
+        // Embeddings y outbox no existen en este backend: cero es
+        // el estado real, no un valor por rellenar.
+        Ok(status)
+    }
+
+    fn embed_pending(
+        &mut self,
+        _path_prefix: Option<&str>,
+        _max: usize,
+    ) -> Result<EmbedOutcome, StoreError> {
+        // La búsqueda en memoria es textual: no hay índice semántico
+        // que reparar, así que nunca hay trabajo pendiente.
+        Ok(EmbedOutcome::default())
+    }
+}
+
+/// Ordena un recuento de mayor a menor (empates por clave) y corta.
+fn sorted_desc(map: BTreeMap<String, usize>, cap: usize) -> Vec<(String, usize)> {
+    let mut v: Vec<(String, usize)> = map.into_iter().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    v.truncate(cap);
+    v
 }
 
 /// SOLID-I: el grafo solo necesita vecinos y tamaños; se los damos
@@ -274,13 +564,16 @@ impl NeighborSource for InMemoryStore {
     type Error = Infallible;
 
     fn neighbors(&self, id: &ConceptId) -> Result<Vec<ConceptId>, Infallible> {
-        Ok(self.links.get(id).cloned().unwrap_or_default())
+        Ok(self
+            .links
+            .get(id)
+            .map(|links| links.iter().map(|l| l.target.clone()).collect())
+            .unwrap_or_default())
     }
 
     fn document_size(&self, id: &ConceptId) -> Result<Option<usize>, Infallible> {
         Ok(self
-            .heads
-            .get(id)
+            .live_head(id)
             .and_then(|h| self.blobs.get(&h.content_id))
             .map(|blob| blob.len()))
     }
@@ -385,6 +678,7 @@ mod tests {
             text: text.map(String::from),
             doc_type: doc_type.map(String::from),
             tag: tag.map(String::from),
+            path_prefix: None,
             limit: None,
         };
 

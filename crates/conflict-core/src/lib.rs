@@ -51,7 +51,7 @@ pub struct Conflict {
 ///
 /// * `head`      — hash actual de la cabeza, si el documento existe.
 /// * `expected`  — hash que el cliente declara haber leído
-///                 (`None` = "estoy creando este documento").
+///   (`None` = "estoy creando este documento").
 /// * `incoming`  — hash del contenido que quiere escribir.
 ///
 /// # Ejemplo

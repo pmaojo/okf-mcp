@@ -201,8 +201,7 @@ mod tests {
     #[test]
     fn cuerpo_demasiado_grande_es_413() {
         let mut s = server();
-        let mut budget = Budget::default();
-        budget.max_request_bytes = 10;
+        let budget = Budget { max_request_bytes: 10, ..Budget::default() };
         let r = req("POST", "/mcp", "0123456789ABCDEF");
         let resp = route(&r, &budget, &[], &mut s);
         assert_eq!(resp.status, 413);

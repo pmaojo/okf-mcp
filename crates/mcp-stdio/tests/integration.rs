@@ -48,12 +48,26 @@ fn conversacion_completa() {
     assert!(resp.get("result").is_some());
     assert!(srv.handle_message(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).is_none());
 
-    // 2. tools/list expone las cuatro herramientas
+    // 2. tools/list expone las 13 herramientas
     let resp = send(&mut srv, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
     let tools = resp.get("result").unwrap().get("tools").unwrap().as_array().unwrap();
     let names: Vec<&str> = tools.iter().map(|t| t.get("name").unwrap().as_str().unwrap()).collect();
-    assert_eq!(names.len(), 4);
-    for expected in ["memory_search", "memory_resolve", "memory_commit", "memory_history"] {
+    assert_eq!(names.len(), 13);
+    for expected in [
+        "memory_search",
+        "memory_resolve",
+        "memory_commit",
+        "memory_history",
+        "memory_delete",
+        "memory_list",
+        "memory_backlinks",
+        "memory_embed",
+        "memory_patch",
+        "memory_bulk_commit",
+        "memory_validate",
+        "memory_status",
+        "memory_stats",
+    ] {
         assert!(names.contains(&expected), "falta {expected}");
     }
 
@@ -84,7 +98,7 @@ fn conversacion_completa() {
 
     // 6. Conflicto CAS: escribir con un hash obsoleto
     let update_ok = format!(
-        r#"{{"concept_id":"people/alice","expected_hash":"{alice_hash}","reason":"actualizo rol","markdown":"---\ntype: person\ntitle: Alice\n---\nAhora es staff.\n"}}"#
+        r#"{{"concept_id":"people/alice","expected_hash":"{alice_hash}","reason":"actualizo rol","markdown":"---\ntype: person\ntitle: Alice\n---\nAhora es staff en [[projects/okf-mcp]].\n"}}"#
     );
     let (_, is_error) = call_tool(&mut srv, 6, "memory_commit", &update_ok);
     assert!(!is_error);
@@ -102,6 +116,34 @@ fn conversacion_completa() {
     let (payload, is_error) = call_tool(&mut srv, 8, "memory_history", r#"{"concept_id":"people/alice"}"#);
     assert!(!is_error);
     assert_eq!(payload.get("revisions").unwrap().as_array().unwrap().len(), 2);
+
+    // 8. Backlinks
+    let (payload, is_error) = call_tool(&mut srv, 9, "memory_backlinks", r#"{"concept_id":"projects/okf-mcp"}"#);
+    assert!(!is_error);
+    let backlinks = payload.get("backlinks").unwrap().as_array().unwrap();
+    assert_eq!(backlinks.len(), 1);
+    assert_eq!(backlinks[0].get("source").unwrap().get("concept_id").unwrap().as_str(), Some("people/alice"));
+
+    // 9. Borrado lógico
+    let (hist_payload, _) = call_tool(&mut srv, 10, "memory_history", r#"{"concept_id":"people/alice"}"#);
+    let current_hash = hist_payload.get("revisions").unwrap().as_array().unwrap()[0]
+        .get("result_hash").unwrap().as_str().unwrap().to_string();
+
+    let delete_args = format!(
+        r#"{{"concept_id":"people/alice","expected_hash":"{current_hash}","reason":"despido"}}"#
+    );
+    let (payload, is_error) = call_tool(&mut srv, 11, "memory_delete", &delete_args);
+    assert!(!is_error, "delete falló: {payload:?}");
+
+    // Resolver alice ahora debe dar NotFound (not_found)
+    let (payload, is_error) = call_tool(&mut srv, 12, "memory_resolve", r#"{"concept_id":"people/alice"}"#);
+    assert!(is_error);
+    assert_eq!(payload.get("kind").unwrap().as_str(), Some("not_found"));
+
+    // El backlink desde alice a projects/okf-mcp debe haber desaparecido
+    let (payload, is_error) = call_tool(&mut srv, 13, "memory_backlinks", r#"{"concept_id":"projects/okf-mcp"}"#);
+    assert!(!is_error);
+    assert_eq!(payload.get("backlinks").unwrap().as_array().unwrap().len(), 0);
 }
 
 #[test]
