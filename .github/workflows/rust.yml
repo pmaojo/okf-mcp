@@ -24,3 +24,14 @@ jobs:
       run: ./scripts/check-std-only.sh
     - name: Documentación como puerta de calidad
       run: ./scripts/check-docs.sh
+
+  # Criterio 2 de tutorial/la-rueda-de-serie.md: la seguridad de las
+  # dependencias es un paso de workflow, como check-std-only.sh.
+  # `cargo deny check` cubre las cuatro patas: advisories (RUSTSEC),
+  # licencias (lista blanca de deny.toml), duplicados y fuentes.
+  auditoria:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: cargo deny (RUSTSEC, licencias, duplicados, fuentes)
+      uses: EmbarkStudios/cargo-deny-action@v2

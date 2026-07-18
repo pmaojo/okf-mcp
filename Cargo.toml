@@ -21,6 +21,9 @@ members = [
 edition = "2021"
 version = "0.1.0"
 license = "MIT"
+# Ningún crate del workspace se publica en crates.io: son piezas de
+# este proyecto/tutorial, no bibliotecas de propósito general.
+publish = false
 
 # Perfil de release compartido por todo el workspace (Cargo ignora
 # [profile.*] declarado en un Cargo.toml de crate miembro: solo se

@@ -1,7 +1,8 @@
 #![forbid(unsafe_code)]
 
 use conflict_core::{decide, CommitDecision};
-use gemini_embeddings::{embed, to_pgvector_literal};
+use gemini_embeddings::embed;
+use pgvector::Vector;
 use graph_core::NeighborSource;
 use hash_core::sha256;
 use memory_model::{Budget, ConceptId, ContentId, Principal, Revision};
@@ -82,7 +83,7 @@ impl SupabaseStore {
         embedding: &[f32],
         limit: i64,
     ) -> Result<Vec<PgRow>, StoreError> {
-        let vector = to_pgvector_literal(embedding);
+        let vector = Vector::from(embedding.to_vec());
         sqlx::query(
             "SELECT h.concept_id, h.content_id, h.doc_type, h.title, h.tags
              FROM heads h
@@ -90,7 +91,7 @@ impl SupabaseStore {
              JOIN embeddings e ON e.concept_id = h.concept_id
              WHERE ($1::text IS NULL OR h.doc_type = $1)
                AND ($2::text IS NULL OR $2 = ANY(h.tags))
-             ORDER BY e.embedding <=> $3::vector
+             ORDER BY e.embedding <=> $3
              LIMIT $4",
         )
         .bind(query.doc_type.as_deref())

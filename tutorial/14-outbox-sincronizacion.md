@@ -98,20 +98,34 @@ CREATE TABLE embeddings (
 );
 ```
 
-Como el driver de base de datos no siempre implementa tipos de vectores
-nativos, formateamos el vector flotante de Gemini como una cadena de texto
-estructurada `"[0.1, 0.2, ...]"`. PostgreSQL y `pgvector` interpretan este
-formato de forma nativa e independiente del controlador:
+Para pasar el vector flotante de Gemini a la consulta usamos el crate
+[`pgvector`](https://docs.rs/pgvector) (con su feature `sqlx`), que
+enseña a `sqlx` el tipo `vector` de PostgreSQL y lo transmite en
+binario, tipado, como cualquier otro parámetro de `bind`:
 
 ```rust
-let vector_str = format!("[{}]", values.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
+use pgvector::Vector;
+
+sqlx::query("INSERT INTO embeddings (concept_id, embedding) VALUES ($1, $2)")
+    .bind(concept_id)
+    .bind(Vector::from(values))
 ```
+
+La primera versión de este proyecto formateaba el vector a mano como el
+literal de texto `"[0.1,0.2,...]"` y lo enviaba con un cast
+`$2::vector`. Funciona — pgvector acepta ese literal — pero es la rueda
+reinventada en el lado equivocado de la frontera: aquí ya estamos en un
+adaptador, y la regla del apéndice
+[la rueda de serie](la-rueda-de-serie.md) aplica en su segunda mitad:
+*despliega la de serie*. El crate `pgvector` elimina el ida-y-vuelta por
+texto y el riesgo de desalinear el formato con lo que el servidor
+espera.
 
 ## 3.5. Conceptos de Rust en este capítulo
 
 Este capítulo combina APIs de terceros y transformaciones de datos para la sincronización eventual:
 
-* **Codificación y formateo de texto (`join`):** Para comunicarnos con sistemas externos como GitHub o bases de datos vectoriales, a menudo debemos formatear tipos nativos a texto. La expresión `values.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")` es muy idiomática en Rust: recorre los elementos (los valores decimales del vector), los convierte a string, los acumula en un vector intermedio e inserta comas entre ellos para crear la representación textual `"[x,y,z]"` que `pgvector` espera.
+* **Tipos de terceros en `bind` (newtypes sobre el driver):** `pgvector::Vector` es un newtype sobre `Vec<f32>` que implementa los traits `Type`/`Encode` de `sqlx`; por eso puede pasarse a `bind()` igual que un `&str` o un `i64`. Es el mismo patrón newtype del capítulo 1, aplicado por un crate externo para extender un driver sin tocarlo (principio O de SOLID).
 * **Bucles en segundo plano (Daemon loops):** Para que el worker procese eventos continuamente en segundo plano sin devorar el 100% de la CPU, usamos un bucle `loop` combinado con pausas asíncronas (`tokio::time::sleep()`). Esto suspende la ejecución del worker temporalmente, liberando la CPU hasta que transcurra el tiempo configurado o llegue una señal del sistema.
 * **Integración con crates externos (Base64):** Rust no incluye codificación base64 en su biblioteca estándar. En este capítulo se utiliza el crate `base64` para codificar los archivos en el formato que exige la API REST de GitHub. En el `Cargo.toml` del worker declaramos esta dependencia, la cual se descarga y compila de forma aislada, manteniendo las fronteras limpias.
 

@@ -1,0 +1,40 @@
+# Política de dependencias del workspace (`cargo deny check`).
+#
+# Es el criterio 2 de tutorial/la-rueda-de-serie.md hecho paso de CI,
+# junto a check-std-only.sh: advisories de la base RUSTSEC, licencias
+# permitidas por lista blanca, duplicados vigilados y fuentes fiables.
+# Solo afecta a los adaptadores: el núcleo no tiene dependencias que
+# auditar (esa es SU política de seguridad).
+
+[graph]
+all-features = true
+
+[advisories]
+yanked = "deny"
+
+[licenses]
+# Lista blanca: permisivas habituales del ecosistema Rust. Añadir aquí
+# una licencia es una decisión consciente, no un default.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+]
+
+[bans]
+# Duplicados: aviso, no error — los arrastran transitivas de
+# vercel_runtime/reqwest y no se pueden deduplicar desde aquí.
+multiple-versions = "warn"
+# Sin versiones comodín de crates.io; los path-deps internos del
+# workspace (sin campo `version`) sí están permitidos.
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -5,7 +5,8 @@
 //! a GitHub, ver [`crate::github_sync`] — comparten `process_batch`
 //! solo porque el mismo evento de outbox dispara ambos.
 
-use gemini_embeddings::{embed, to_pgvector_literal};
+use gemini_embeddings::embed;
+use pgvector::Vector;
 use sqlx::PgPool;
 
 pub async fn generate_and_save_embedding(
@@ -16,16 +17,15 @@ pub async fn generate_and_save_embedding(
     markdown: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let values = embed(client, gemini_key, markdown).await?;
-    let vector_str = to_pgvector_literal(&values);
 
     // Guardar o actualizar en pgvector
     sqlx::query(
         "INSERT INTO embeddings (concept_id, embedding)
-         VALUES ($1, $2::vector)
+         VALUES ($1, $2)
          ON CONFLICT (concept_id) DO UPDATE SET embedding = EXCLUDED.embedding"
     )
     .bind(concept_id)
-    .bind(vector_str)
+    .bind(Vector::from(values))
     .execute(pool)
     .await?;
 

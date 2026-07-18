@@ -72,16 +72,22 @@ Gemini.
     `vercel_runtime`, `sqlx`, `jsonwebtoken`, `reqwest`, `serde` y
     `serde_json` para la función serverless, CORS, OAuth/JWT y acceso a
     PostgreSQL.
-  - `supabase-store`: `tokio`, `sqlx`, `serde`, `serde_json`, `reqwest`
-    y `gemini-embeddings` para persistencia PostgreSQL/Supabase,
-    `pgvector` y búsqueda semántica opcional.
-  - `outbox-worker`: `tokio`, `sqlx`, `serde`, `serde_json`, `reqwest`,
-    `base64` y `gemini-embeddings` para procesar eventos pendientes y
-    sincronizar con servicios externos.
-  - `gemini-embeddings`: `reqwest` y `serde` para llamar a la API de
-    embeddings de Gemini.
+  - `supabase-store`: `tokio`, `sqlx`, `pgvector`, `serde`,
+    `serde_json`, `reqwest` y `gemini-embeddings` para persistencia
+    PostgreSQL/Supabase y búsqueda semántica opcional.
+  - `outbox-worker`: `tokio`, `sqlx`, `pgvector`, `serde`,
+    `serde_json`, `reqwest`, `base64` y `gemini-embeddings` para
+    procesar eventos pendientes y sincronizar con servicios externos.
+  - `gemini-embeddings`: `reqwest`, `serde` y `thiserror` para llamar a
+    la API de embeddings de Gemini.
 - `json-mini` aparece como *dev-dependency* en algunos crates solo para
   parsear aserciones de tests.
+
+Las dependencias de los adaptadores se auditan en CI con `cargo deny`
+(advisories RUSTSEC, lista blanca de licencias, duplicados y fuentes;
+política en [`deny.toml`](deny.toml)) — es el criterio 2 del apéndice
+[la rueda de serie](tutorial/la-rueda-de-serie.md) convertido en paso
+de workflow.
 
 Todos los crates llevan `#![forbid(unsafe_code)]`. Si se usa
 `scripts/check-std-only.sh`, debe interpretarse como una comprobación

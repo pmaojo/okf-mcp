@@ -54,5 +54,5 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE IF NOT EXISTS embeddings (
     concept_id VARCHAR(255) PRIMARY KEY REFERENCES heads(concept_id) ON DELETE CASCADE,
-    embedding vector(768) -- Dimensiones por defecto de text-embedding-004 de Gemini
+    embedding vector(768) -- gemini-embedding-001 truncado a 768 dims (ver gemini-embeddings::DIMENSIONS)
 );
