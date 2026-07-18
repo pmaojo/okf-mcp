@@ -163,6 +163,8 @@ uno — es la distinción del §3 hecha test.
 
 ## 8. Frontera de producción
 
+> 🧰 **La rueda de serie:** en producción, [`rmcp`](https://docs.rs/rmcp) (el SDK oficial de MCP en Rust) o [`jsonrpsee`](https://docs.rs/jsonrpsee) para JSON-RPC genérico. El mapa completo y el criterio para elegir: [La rueda de serie](la-rueda-de-serie.md).
+
 El hito 2 añade `vercel-entry`: una función que recibe `POST /mcp`,
 saca el body y llama… exactamente a `handle_message`. El diseño
 sin estado del hito 1 es lo que lo hace posible:

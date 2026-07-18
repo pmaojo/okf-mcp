@@ -161,6 +161,8 @@ Cada corte tiene su test (`respeta_max_nodes`, `respeta_max_depth`,
 
 ## 8. Frontera de producción
 
+> 🧰 **La rueda de serie:** en producción, [`petgraph`](https://docs.rs/petgraph) — aquí la lección era el ACOTADO por presupuesto, no el BFS. El mapa completo y el criterio para elegir: [La rueda de serie](la-rueda-de-serie.md).
+
 Sobre Supabase, `neighbors` no puede ser una consulta SQL por nodo
 (el clásico N+1). El adaptador del hito 2 hará *batch*: traer la
 adyacencia de un conjunto de candidatos en una consulta y servir

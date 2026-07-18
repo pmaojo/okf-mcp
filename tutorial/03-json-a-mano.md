@@ -170,6 +170,8 @@ Más dos de decisiones documentadas: claves duplicadas (gana la
 
 ## 8. Frontera de producción
 
+> 🧰 **La rueda de serie:** en producción, [`serde`](https://docs.rs/serde) + [`serde_json`](https://docs.rs/serde_json) sustituyen este capítulo entero con un `#[derive]`. El mapa completo y el criterio para elegir: [La rueda de serie](la-rueda-de-serie.md).
+
 En el hito 2, el endpoint público de Vercel parseará con
 `serde_json` en el crate adaptador `json-wire`, por tres razones
 honestas: rendimiento (SIMD, años de optimización), fuzzing
@@ -200,7 +202,7 @@ detalle del adaptador.
 1. **Guiado.** Añade `Value::pointer("/params/name")` al estilo
    JSON Pointer (RFC 6901, sin `~` escapes). Escribe primero los
    tests de: clave ausente, índice de array, índice no numérico.
-2. **Medio.** Nuestro parser acepta `" "` (NUL escapado) dentro
+2. **Medio.** Nuestro parser acepta `"\u0000"` (NUL escapado) dentro
    de strings. ¿Debería? Investiga qué hace `serde_json`, decide, y
    escribe el test que fije tu decisión. No hay respuesta única:
    hay decisión documentada o bug futuro.

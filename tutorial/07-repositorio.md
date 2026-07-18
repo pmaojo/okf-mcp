@@ -156,6 +156,8 @@ alimenta al BFS del capítulo 5 vía `NeighborSource`.
 
 ## 8. Frontera de producción
 
+> 🧰 **La rueda de serie:** en producción, [`sqlx`](https://docs.rs/sqlx) — y este repo YA lo usa en `supabase-store` (hito 2), sin tocar a los consumidores del trait. El mapa completo y el criterio para elegir: [La rueda de serie](la-rueda-de-serie.md).
+
 La tabla de traducción a Supabase (hito 2) ya está decidida:
 
 | RAM (hito 1) | Postgres (hito 2) |

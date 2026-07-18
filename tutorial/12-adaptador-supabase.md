@@ -126,6 +126,8 @@ Cada iteración de la suite realiza un `TRUNCATE` de la base de datos de pruebas
 
 ## 8. Frontera de producción
 
+> 🧰 **La rueda de serie:** ya estamos al otro lado de la frontera: [`sqlx`](https://docs.rs/sqlx) es la rueda de serie. Alternativas con más abstracción: [`sea-orm`](https://docs.rs/sea-orm), [`diesel`](https://docs.rs/diesel). El mapa completo y el criterio para elegir: [La rueda de serie](la-rueda-de-serie.md).
+
 Para conectar Supabase con Vercel:
 1. Añade la variable de entorno `POSTGRES_URL` en tu proyecto de Vercel.
 2. Asegúrate de que apunta al pooler de Supabase en modo de transacción (puerto 6543) en entornos con autoescala.

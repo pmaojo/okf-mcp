@@ -170,6 +170,8 @@ histórico condensado en una línea.
 
 ## 8. Frontera de producción
 
+> 🧰 **La rueda de serie:** en producción, el boilerplate de newtypes validados lo quitan [`nutype`](https://docs.rs/nutype) o [`validator`](https://docs.rs/validator). El mapa completo y el criterio para elegir: [La rueda de serie](la-rueda-de-serie.md).
+
 Nada cambia aquí en producción: este código ES el de producción.
 `memory-model` no tiene dependencias que sustituir. Lo único que se
 añade en el hito 2 es presión: el `ConceptId` viajará a SQL (como

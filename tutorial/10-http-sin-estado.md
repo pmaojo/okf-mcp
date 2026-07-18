@@ -221,6 +221,8 @@ TERMINE es, en sí mismo, la prueba.
 
 ## 8. Frontera de producción
 
+> 🧰 **La rueda de serie:** en producción, [`axum`](https://docs.rs/axum) + [`tower`](https://docs.rs/tower) sobre [`tokio`](https://docs.rs/tokio) — exactamente lo que hace `vercel-entry` al otro lado de la frontera. El mapa completo y el criterio para elegir: [La rueda de serie](la-rueda-de-serie.md).
+
 Esto ya casi ES la frontera. Lo que falta:
 
 - **`vercel-entry`** (adaptador, con `tokio` + `vercel_runtime`):

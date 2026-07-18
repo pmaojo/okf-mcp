@@ -56,6 +56,13 @@ repositorio. Cada capítulo sigue la misma plantilla:
 |---|----------|------|--------------------|
 | 16 | [`cargo doc`: la documentación que compila](16-cargo-doc.md) | doctests, enlaces intra-doc, `missing_docs`, `compile_fail` | **L** como página del trait, S por crate |
 
+## La rueda de serie
+
+Reinventamos ruedas para entenderlas, no para desplegarlas. Cada
+capítulo señala en su "Frontera de producción" el crate idóneo
+(🧰), y el mapa completo — con el criterio para elegir dependencias
+— vive en [La rueda de serie](la-rueda-de-serie.md).
+
 ## La referencia navegable
 
 La API completa del workspace, generada con `cargo doc` y publicada

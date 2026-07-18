@@ -151,6 +151,8 @@ las costuras entre bloques.
 
 ## 8. Frontera de producción
 
+> 🧰 **La rueda de serie:** en producción, [`sha2`](https://docs.rs/sha2) (auditado, SIMD) o [`blake3`](https://docs.rs/blake3) si el algoritmo lo eliges tú. El mapa completo y el criterio para elegir: [La rueda de serie](la-rueda-de-serie.md).
+
 Para IDENTIDAD DE CONTENIDO, este código puede quedarse: es correcto
 (vectores NIST) y su rendimiento es adecuado para documentos de
 cientos de KiB. Aun así, en el hito 2 lo natural será medirlo contra

@@ -164,6 +164,8 @@ un valor.
 
 ## 8. Frontera de producción
 
+> 🧰 **La rueda de serie:** en producción, [`gray_matter`](https://docs.rs/gray_matter) para frontmatter y [`pulldown-cmark`](https://docs.rs/pulldown-cmark) para escanear Markdown (`serde_yaml` está archivado; mira sus sucesores). El mapa completo y el criterio para elegir: [La rueda de serie](la-rueda-de-serie.md).
+
 El plan del proyecto (hito 2) añade `okf-yaml`: un adaptador con un
 crate YAML maduro que valida el documento COMPLETO contra el formato
 OKF real. La convivencia será:

@@ -148,6 +148,8 @@ intacto.
 
 ## 8. Frontera de producción
 
+> 🧰 **La rueda de serie:** esta rueda son 50 líneas puras: no hay crate que mejore eso. Para el merge a tres bandas futuro, [`similar`](https://docs.rs/similar) o [`diffy`](https://docs.rs/diffy). El mapa completo y el criterio para elegir: [La rueda de serie](la-rueda-de-serie.md).
+
 Ya contada en §5: `decide` se traduce a un `UPDATE ... WHERE`
 condicional y la fila afectada (1 o 0) selecciona la rama. El enum
 `Conflict` viaja al cliente como JSON:
