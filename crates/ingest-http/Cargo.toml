@@ -1,0 +1,28 @@
+# ADAPTADOR: dependencias externas permitidas
+#
+# Implementaciones HTTP de los puertos de `ingest-core`: descarga de
+# fuentes desde GitHub (API de trees + raw.githubusercontent.com) y
+# síntesis server-side con Gemini (`generateContent`). Todo lo que
+# toca la red vive aquí, fuera del núcleo `std`-only. El cliente de
+# generación NO va en `gemini-embeddings`: aquel crate existe para
+# garantizar que los dos caminos de embeddings usan el mismo modelo y
+# dimensionalidad, un invariante que la síntesis no comparte.
+[package]
+name = "ingest-http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# `rt-multi-thread` para el puente síncrono `block_on` (block_in_place),
+# igual que en supabase-store.
+tokio = { version = "1", features = ["rt-multi-thread"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0" }
+ingest-core = { path = "../ingest-core" }
+
+[dev-dependencies]
+memory-model = { path = "../memory-model" }

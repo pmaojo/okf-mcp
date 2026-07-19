@@ -894,6 +894,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ingest-core"
+version = "0.1.0"
+dependencies = [
+ "memory-model",
+ "okf-core",
+]
+
+[[package]]
+name = "ingest-http"
+version = "0.1.0"
+dependencies = [
+ "ingest-core",
+ "memory-model",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1079,9 +1099,11 @@ dependencies = [
  "conflict-core",
  "graph-core",
  "hash-core",
+ "ingest-core",
  "json-mini",
  "mcp-core",
  "memory-model",
+ "memory-store",
  "okf-core",
  "store-core",
 ]
@@ -2396,6 +2418,8 @@ name = "vercel-entry"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "ingest-core",
+ "ingest-http",
  "jsonwebtoken",
  "mcp-core",
  "mcp-http",

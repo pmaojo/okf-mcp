@@ -36,7 +36,7 @@ La referencia de API generada con `cargo doc` se publica en
 ┌────────────────────────────────────────────────────────────────────┐
 │ mcp-core     JSON-RPC 2.0 + ciclo de vida MCP + despacho           │
 │ json-mini    parser/serializador JSON educativo                    │
-│ memory-tools 13 herramientas MCP genéricas sobre MemoryRepository  │
+│ memory-tools 14 herramientas MCP genéricas sobre MemoryRepository  │
 │ store-core   puerto MemoryRepository + contrato Liskov             │
 │ memory-model ConceptId, ContentId, Budget, Revision, Principal     │
 │ okf-core     frontmatter YAML (subconjunto) + enlaces [[...]]      │
@@ -44,6 +44,7 @@ La referencia de API generada con `cargo doc` se publica en
 │ conflict-core decisiones compare-and-swap puras                    │
 │ hash-core    SHA-256 a mano (vectores NIST)                        │
 │ memory-store InMemoryStore para desarrollo y tests                 │
+│ ingest-core  detección/planificación de skill_ingest + puertos     │
 └───────────────┬────────────────────────────────────────────────────┘
                 │
                 ▼
@@ -52,6 +53,7 @@ La referencia de API generada con `cargo doc` se publica en
 │ supabase-store    SupabaseStore implementa MemoryRepository        │
 │ outbox-worker     procesa outbox, GitHub y embeddings              │
 │ gemini-embeddings cliente del proveedor de embeddings              │
+│ ingest-http       fetch de GitHub + síntesis Gemini (skill_ingest) │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -66,7 +68,7 @@ Gemini.
 - **Núcleo y puertos sin dependencias externas de producción:**
   `memory-model`, `hash-core`, `json-mini`, `okf-core`, `graph-core`,
   `conflict-core`, `store-core`, `memory-store`, `memory-tools`,
-  `mcp-core`, `mcp-stdio` y `mcp-http`.
+  `mcp-core`, `mcp-stdio`, `mcp-http` e `ingest-core`.
 - **Adaptadores con dependencias externas permitidas:**
   - `vercel-entry`: `tokio`, `axum`, `tower`, `tower-http`,
     `vercel_runtime`, `sqlx`, `jsonwebtoken`, `reqwest`, `serde` y
@@ -80,6 +82,9 @@ Gemini.
     procesar eventos pendientes y sincronizar con servicios externos.
   - `gemini-embeddings`: `reqwest`, `serde` y `thiserror` para llamar a
     la API de embeddings de Gemini.
+  - `ingest-http`: `tokio`, `reqwest`, `serde` y `serde_json` para
+    descargar fuentes de GitHub y sintetizar con Gemini
+    (`generateContent`) en la herramienta `skill_ingest`.
 - `json-mini` aparece como *dev-dependency* en algunos crates solo para
   parsear aserciones de tests.
 
@@ -139,7 +144,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
 navegador se acepta; sin configurar, cualquier origin pasa — aceptable
 en desarrollo, nunca en producción.
 
-## Las 13 herramientas
+## Las 14 herramientas
 
 | Herramienta | Qué hace |
 | --- | --- |
@@ -156,6 +161,54 @@ en desarrollo, nunca en producción.
 | `memory_validate` | reportar enlaces rotos, referencias a borrados y embeddings obsoletos |
 | `memory_status` | resumen operativo rápido de la salud del sistema |
 | `memory_stats` | estadísticas del grafo (hubs, huérfanos, recuentos de tipos/tags) |
+| `skill_ingest` | ingerir skills de un repo/carpeta/archivo externo del lado del servidor |
+
+### `skill_ingest`
+
+Ingiere skills desde una fuente externa **sin que el contenido pase por
+el contexto del modelo cliente**: el servidor descarga, detecta el
+formato, empaqueta y commitea; al cliente solo le llega el resumen del
+resultado. Es el mismo principio que `memory_embed` — delegar el
+trabajo pesado al servidor.
+
+```json
+{"name":"skill_ingest","arguments":{
+  "source":"udapy/rust-agentic-skills",
+  "path_prefix":"skills/programming",
+  "dry_run":true
+}}
+```
+
+- `source`: URL de repo, subcarpeta (`.../tree/main/skills`) o archivo
+  de GitHub, el atajo `owner/repo`, o una URL directa a un archivo.
+- `format` (opcional): `auto` (por defecto), `agentic-skills`
+  (convención `SKILL.md` por subdirectorio, la de `npx skills add`),
+  `shadcn` (`components/ui/*.tsx`), `okf` (ya es OKF → commit con los
+  bytes exactos) o `raw` (envolver markdown tal cual).
+- `synthesize` (opcional): por defecto la conversión es
+  **determinista** — se genera solo la cabecera OKF (`type: skill`,
+  `title`, `tags`, `source`) y el contenido original se conserva
+  íntegro, etiquetado `verbatim-import`. Con `synthesize: true` el
+  servidor genera con Gemini un resumen original (etiquetado
+  `synthesized`) en lugar del texto de terceros — útil si la licencia
+  de la fuente no permite copiarlo.
+- `dry_run` (opcional): devuelve el plan (unidades, títulos, acciones)
+  sin escribir nada.
+
+Un repo con varias skills (`skills/*/SKILL.md`) produce un concepto
+por skill en una sola llamada, con el mismo mecanismo interno que
+`memory_bulk_commit` (no atómico: cada unidad se aplica o se descarta
+por su cuenta y el resumen lo cuenta todo). La reingesta es
+idempotente si nada cambió; si el concepto ya existe con otro
+contenido, la unidad se descarta con un aviso — actualizar exige
+`memory_commit` con `expected_hash`, como cualquier otra escritura.
+
+La herramienta solo se anuncia en despliegues con el adaptador de
+descarga configurado (`vercel-entry`); `mcp-stdio` y `mcp-http`
+locales son `std`-only y no la exponen. `GITHUB_TOKEN` (opcional)
+sube el límite de peticiones de la API de GitHub y permite repos
+privados; `GEMINI_SYNTHESIS_MODEL` (opcional) cambia el modelo de
+síntesis sin redesplegar (por defecto `gemini-3.5-flash`).
 
 ## Desplegar en Vercel
 
@@ -179,6 +232,12 @@ en desarrollo, nunca en producción.
      pantalla de consentimiento hacia Supabase.
    - `GEMINI_API_KEY` (opcional): habilita búsqueda semántica y
      embeddings; sin ella, la búsqueda degrada a coincidencia textual.
+     También habilita el modo `synthesize: true` de `skill_ingest`.
+   - `GITHUB_TOKEN` (opcional): lo usa `skill_ingest` para subir el
+     límite de peticiones de la API de GitHub y acceder a repos
+     privados al descargar fuentes.
+   - `GEMINI_SYNTHESIS_MODEL` (opcional): modelo de generación para la
+     síntesis de `skill_ingest` (por defecto `gemini-3.5-flash`).
 4. Si usas la integración de Supabase en el marketplace de Vercel,
    mapea sus credenciales a los nombres anteriores. El código actual
    espera `POSTGRES_URL` para la conexión de base de datos.

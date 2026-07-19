@@ -1,0 +1,984 @@
+//! Ingesta de skills externas: detección de formato, planificación y
+//! empaquetado OKF. Lógica 100% pura y `std`-only.
+//!
+//! Este crate es el NÚCLEO de la herramienta `skill_ingest`: recibe
+//! los archivos ya descargados de una fuente (un repo de GitHub, una
+//! carpeta, un archivo suelto), detecta la convención en la que están
+//! escritos y produce un plan de unidades listas para commitear en la
+//! memoria — sin que el contenido pase por el contexto del modelo.
+//!
+//! SOLID en juego:
+//! - **S:** aquí solo vive la lógica de detección y empaquetado. Ni
+//!   red ni almacenamiento: descargar es cosa del adaptador que
+//!   implemente [`SourceFetcher`], y sintetizar con un LLM es cosa
+//!   del adaptador que implemente [`Synthesizer`].
+//! - **D:** `memory-tools` consume estos dos puertos como traits; los
+//!   adaptadores con `reqwest` viven en `ingest-http`, fuera del
+//!   núcleo `std`-only.
+//!
+//! Formatos soportados (ver [`SkillFormat`]):
+//! - `agentic-skills`: convención `SKILL.md` por subdirectorio (la
+//!   misma que instala `npx skills add`).
+//! - `shadcn`: registro de componentes `components/ui/*.tsx`.
+//! - `okf`: documentos que ya son OKF válido → se commitean verbatim.
+//! - `raw`: override explícito para envolver markdown ajeno tal cual.
+//! - `auto`: detección por convención de archivos.
+//!
+//! Sobre el contenido no-OKF: cada unidad lleva DOS caminos y quien
+//! orquesta (la herramienta `skill_ingest`) elige uno según lo que
+//! pidió el cliente:
+//! - **determinista** (por defecto): solo se genera la cabecera YAML
+//!   OKF; el cuerpo original se conserva ÍNTEGRO, etiquetado
+//!   `verbatim-import` y con su `source` — el contenido de una skill
+//!   es la skill, y una síntesis puede perder pasos o alucinar;
+//! - **síntesis** (opt-in): material para que un LLM server-side
+//!   escriba un documento original, sin frases literales — útil
+//!   cuando la licencia de la fuente no permite conservar el texto.
+
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+
+use memory_model::{Budget, ConceptId};
+use std::fmt;
+
+/// Bytes máximos de material fuente por unidad de síntesis. El
+/// material va al proveedor LLM, no al contexto del cliente, pero
+/// sigue costando: se trunca con marca visible.
+pub const MATERIAL_MAX_BYTES: usize = 48 * 1024;
+
+/// Un archivo obtenido de la fuente externa.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceFile {
+    /// Ruta relativa dentro de la fuente (p. ej. `skills/foo/SKILL.md`).
+    pub path: String,
+    /// Contenido textual completo del archivo.
+    pub content: String,
+}
+
+/// Formato pedido por el cliente en el argumento `format`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillFormat {
+    /// Detectar por convención de archivos (el valor por defecto).
+    Auto,
+    /// Convención `SKILL.md` por subdirectorio.
+    AgenticSkills,
+    /// Registro de componentes `components/ui/`.
+    Shadcn,
+    /// Los archivos ya son documentos OKF válidos.
+    Okf,
+    /// Envolver el markdown tal cual (override explícito del usuario).
+    Raw,
+}
+
+impl SkillFormat {
+    /// Parsea el valor del argumento `format`. `None` si no es uno de
+    /// `auto | agentic-skills | shadcn | okf | raw`.
+    ///
+    /// ```
+    /// use ingest_core::SkillFormat;
+    /// assert_eq!(SkillFormat::parse("auto"), Some(SkillFormat::Auto));
+    /// assert_eq!(SkillFormat::parse("magic"), None);
+    /// ```
+    pub fn parse(s: &str) -> Option<SkillFormat> {
+        match s {
+            "auto" => Some(SkillFormat::Auto),
+            "agentic-skills" => Some(SkillFormat::AgenticSkills),
+            "shadcn" => Some(SkillFormat::Shadcn),
+            "okf" => Some(SkillFormat::Okf),
+            "raw" => Some(SkillFormat::Raw),
+            _ => None,
+        }
+    }
+}
+
+/// Formato efectivo tras resolver `auto`. `Generic` es el fallback de
+/// la detección: markdown suelto sin convención reconocible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolvedFormat {
+    /// Convención `SKILL.md` por subdirectorio.
+    AgenticSkills,
+    /// Registro de componentes `components/ui/`.
+    Shadcn,
+    /// Documentos OKF válidos, commiteables verbatim.
+    Okf,
+    /// Envoltorio verbatim explícito.
+    Raw,
+    /// Markdown suelto sin convención: una unidad por archivo.
+    Generic,
+}
+
+impl ResolvedFormat {
+    /// Nombre estable para informes (`"agentic-skills"`, `"okf"`, …).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ResolvedFormat::AgenticSkills => "agentic-skills",
+            ResolvedFormat::Shadcn => "shadcn",
+            ResolvedFormat::Okf => "okf",
+            ResolvedFormat::Raw => "raw",
+            ResolvedFormat::Generic => "generic",
+        }
+    }
+}
+
+/// Qué hacer con una unidad del plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlannedAction {
+    /// El documento ya es OKF: commitear tal cual (bytes exactos).
+    Commit {
+        /// Documento OKF completo, ya validado.
+        markdown: String,
+    },
+    /// La fuente no es OKF: hay que convertirla. El orquestador elige
+    /// entre el documento determinista (cabecera generada + contenido
+    /// original íntegro) o una síntesis LLM a partir del material.
+    Convert {
+        /// Documento determinista, etiquetado `verbatim-import`, ya
+        /// validado: el camino por defecto, fiel a la fuente.
+        deterministic: String,
+        /// Material fuente para el sintetizador (síntesis opt-in).
+        material: String,
+    },
+}
+
+/// Una unidad del plan: un concepto que se creará en la memoria.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedUnit {
+    /// Id lógico destino (`path_prefix/slug`).
+    pub concept_id: ConceptId,
+    /// Título humano detectado en la fuente.
+    pub title: String,
+    /// Acción a ejecutar.
+    pub action: PlannedAction,
+}
+
+/// El plan completo de una ingesta.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IngestPlan {
+    /// Formato efectivo tras resolver `auto`.
+    pub format: ResolvedFormat,
+    /// Unidades a materializar, en orden determinista.
+    pub units: Vec<PlannedUnit>,
+    /// Elementos descartados: `(qué, por qué)`.
+    pub skipped: Vec<(String, String)>,
+}
+
+/// Todo lo que puede salir mal en la ingesta.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IngestError {
+    /// La fuente no es una URL/referencia que se sepa interpretar.
+    InvalidSource(String),
+    /// Fallo descargando la fuente (red, API, permisos).
+    Fetch(String),
+    /// Fallo del proveedor de síntesis.
+    Synthesis(String),
+    /// La fuente no aportó ningún archivo utilizable.
+    EmptySource,
+}
+
+impl fmt::Display for IngestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            IngestError::InvalidSource(m) => write!(f, "fuente inválida: {m}"),
+            IngestError::Fetch(m) => write!(f, "fallo descargando la fuente: {m}"),
+            IngestError::Synthesis(m) => write!(f, "fallo del sintetizador: {m}"),
+            IngestError::EmptySource => write!(f, "la fuente no aportó archivos utilizables"),
+        }
+    }
+}
+
+impl std::error::Error for IngestError {}
+
+/// Puerto de descarga: dada una fuente (URL de repo, carpeta o
+/// archivo, o el atajo `owner/repo`), devuelve los archivos de texto
+/// que contiene. La implementación real (HTTP) vive en `ingest-http`.
+pub trait SourceFetcher {
+    /// Descarga los archivos de `source`. Debe acotar por su cuenta
+    /// cuántos archivos y de qué tamaño descarga.
+    fn fetch(&self, source: &str) -> Result<Vec<SourceFile>, IngestError>;
+}
+
+/// Puerto de síntesis: dado un prompt, devuelve un cuerpo Markdown
+/// ORIGINAL. La implementación real (Gemini) vive en `ingest-http`.
+pub trait Synthesizer {
+    /// Genera el cuerpo Markdown a partir del prompt de
+    /// [`synthesis_prompt`].
+    fn synthesize(&self, prompt: &str) -> Result<String, IngestError>;
+}
+
+// -------------------------------------------------------------------
+// Detección de formato
+// -------------------------------------------------------------------
+
+/// Resuelve el formato efectivo: si `requested` no es `Auto`, manda
+/// el usuario; con `Auto` se detecta por convención de archivos.
+pub fn resolve_format(
+    requested: SkillFormat,
+    files: &[SourceFile],
+    budget: &Budget,
+) -> ResolvedFormat {
+    match requested {
+        SkillFormat::AgenticSkills => ResolvedFormat::AgenticSkills,
+        SkillFormat::Shadcn => ResolvedFormat::Shadcn,
+        SkillFormat::Okf => ResolvedFormat::Okf,
+        SkillFormat::Raw => ResolvedFormat::Raw,
+        SkillFormat::Auto => detect_format(files, budget),
+    }
+}
+
+fn detect_format(files: &[SourceFile], budget: &Budget) -> ResolvedFormat {
+    if files.iter().any(|f| is_skill_md(&f.path)) {
+        return ResolvedFormat::AgenticSkills;
+    }
+    if files.iter().any(|f| f.path.contains("components/ui/")) {
+        return ResolvedFormat::Shadcn;
+    }
+    let mds: Vec<&SourceFile> = files.iter().filter(|f| is_markdown(&f.path)).collect();
+    if !mds.is_empty()
+        && mds.iter().all(|f| okf_core::parse_document(&f.content, budget).is_ok())
+    {
+        return ResolvedFormat::Okf;
+    }
+    ResolvedFormat::Generic
+}
+
+fn is_skill_md(path: &str) -> bool {
+    path == "SKILL.md" || path.ends_with("/SKILL.md")
+}
+
+fn is_markdown(path: &str) -> bool {
+    path.ends_with(".md") || path.ends_with(".markdown") || path.ends_with(".mdx")
+}
+
+// -------------------------------------------------------------------
+// Utilidades de nombres
+// -------------------------------------------------------------------
+
+/// Convierte un nombre arbitrario en un segmento válido de
+/// [`ConceptId`]: minúsculas ASCII, dígitos, `_`, y `-` como
+/// separador colapsado.
+///
+/// ```
+/// use ingest_core::slugify;
+/// assert_eq!(slugify("Rust Kernel Driver!"), "rust-kernel-driver");
+/// assert_eq!(slugify("__ok__"), "__ok__");
+/// assert_eq!(slugify("···"), "item");
+/// ```
+pub fn slugify(raw: &str) -> String {
+    let mut out = String::new();
+    let mut pending_dash = false;
+    for ch in raw.chars() {
+        let c = ch.to_ascii_lowercase();
+        if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' {
+            if pending_dash && !out.is_empty() {
+                out.push('-');
+            }
+            pending_dash = false;
+            out.push(c);
+        } else {
+            pending_dash = true;
+        }
+    }
+    if out.is_empty() {
+        "item".to_string()
+    } else {
+        out
+    }
+}
+
+/// Slug de una ruta: cada segmento pasa por [`slugify`], conservando
+/// las barras. La extensión del último segmento se descarta.
+fn slug_path(path: &str) -> String {
+    let sin_ext = match path.rsplit_once('.') {
+        Some((stem, ext)) if !ext.contains('/') && !stem.is_empty() => stem,
+        _ => path,
+    };
+    sin_ext
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(slugify)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn last_segment(path: &str) -> &str {
+    path.trim_end_matches('/').rsplit('/').next().unwrap_or(path)
+}
+
+fn file_stem(path: &str) -> &str {
+    let name = last_segment(path);
+    match name.rsplit_once('.') {
+        Some((stem, _)) if !stem.is_empty() => stem,
+        _ => name,
+    }
+}
+
+/// Sanea un valor para usarlo como escalar de frontmatter del
+/// subconjunto OKF: sin saltos de línea, sin `"` ni `#`, y sin
+/// empezar por un marcador YAML rechazado (`| > & * { [`).
+fn sanitize_scalar(raw: &str) -> String {
+    let mut out = String::new();
+    for ch in raw.chars() {
+        match ch {
+            '\n' | '\r' | '\t' => out.push(' '),
+            '"' | '#' => {}
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    let mut trimmed = out.trim();
+    while let Some(rest) = trimmed
+        .strip_prefix(['|', '>', '&', '*', '{', '['])
+        .map(str::trim_start)
+    {
+        trimmed = rest;
+    }
+    let collapsed: String = {
+        let mut acc = String::new();
+        let mut prev_space = false;
+        for ch in trimmed.chars() {
+            if ch == ' ' {
+                if !prev_space {
+                    acc.push(' ');
+                }
+                prev_space = true;
+            } else {
+                prev_space = false;
+                acc.push(ch);
+            }
+        }
+        acc
+    };
+    if collapsed.is_empty() {
+        "sin título".to_string()
+    } else {
+        collapsed
+    }
+}
+
+fn truncate_on_char_boundary(s: &mut String, max: usize) {
+    if s.len() <= max {
+        return;
+    }
+    let mut m = max;
+    while m > 0 && !s.is_char_boundary(m) {
+        m -= 1;
+    }
+    s.truncate(m);
+}
+
+// -------------------------------------------------------------------
+// Empaquetado OKF
+// -------------------------------------------------------------------
+
+/// Envuelve un cuerpo Markdown en un documento OKF `type: skill`,
+/// validado contra el presupuesto. Neutraliza secuencias `[[` (el
+/// contenido importado no debe crear enlaces del grafo por accidente)
+/// y trunca el cuerpo si supera `budget.max_document_bytes`, con
+/// marca visible.
+///
+/// `mode_tag` etiqueta la procedencia del cuerpo: `synthesized`
+/// (documento original generado server-side) o `verbatim-import`
+/// (contenido de terceros conservado tal cual, a revisar licencia).
+///
+/// ```
+/// use memory_model::Budget;
+/// let doc = ingest_core::finish_document(
+///     "Mi skill", "https://example.com/repo", "synthesized", "Cuerpo.", &Budget::default(),
+/// ).unwrap();
+/// assert!(doc.starts_with("---\ntype: skill\n"));
+/// assert!(doc.contains("  - synthesized"));
+/// ```
+pub fn finish_document(
+    title: &str,
+    source_url: &str,
+    mode_tag: &str,
+    body: &str,
+    budget: &Budget,
+) -> Result<String, String> {
+    let header = format!(
+        "---\ntype: skill\ntitle: {}\ntags:\n  - skill\n  - {}\nsource: {}\n---\n\n",
+        sanitize_scalar(title),
+        slugify(mode_tag),
+        sanitize_scalar(source_url),
+    );
+    // Los `[[...]]` de contenido importado serían enlaces del grafo
+    // (o errores de validación): se neutralizan siempre.
+    let mut body = body.trim().replace("[[", "[ [");
+    let marca = "\n\n*[contenido truncado por presupuesto]*";
+    let presupuesto_cuerpo = budget
+        .max_document_bytes
+        .saturating_sub(header.len() + marca.len() + 1);
+    if body.len() > presupuesto_cuerpo {
+        truncate_on_char_boundary(&mut body, presupuesto_cuerpo);
+        body.push_str(marca);
+    }
+    let doc = format!("{header}{body}\n");
+    okf_core::parse_document(&doc, budget)
+        .map_err(|e| format!("el documento generado no es OKF válido: {e}"))?;
+    Ok(doc)
+}
+
+/// El prompt de síntesis que se envía al proveedor LLM del servidor.
+/// Pide un documento ORIGINAL (nunca copiar frases literales) — es lo
+/// que permite ingerir material de terceros sin guardarlo verbatim.
+pub fn synthesis_prompt(title: &str, source_url: &str, material: &str) -> String {
+    format!(
+        "Eres el paso de síntesis de una memoria de conocimiento para agentes.\n\
+         A partir del MATERIAL (archivos de una fuente externa), escribe un documento\n\
+         Markdown ORIGINAL que capture la skill descrita: qué hace, cuándo usarla,\n\
+         pasos o ideas clave, y advertencias. Reglas estrictas:\n\
+         - NO copies frases literales del material: redacta con tus palabras.\n\
+         - NO incluyas frontmatter YAML ni encierres la respuesta en un bloque ```.\n\
+         - NO uses la sintaxis [[...]].\n\
+         - Sé compacto: el documento es una nota de referencia, no una réplica.\n\
+         - Responde en el idioma predominante del material.\n\n\
+         Título: {title}\nFuente: {source_url}\n\nMATERIAL:\n{material}"
+    )
+}
+
+// -------------------------------------------------------------------
+// Planificación
+// -------------------------------------------------------------------
+
+/// Construye el plan de ingesta a partir de los archivos descargados.
+///
+/// Garantías:
+/// - nunca más de `budget.max_bulk_commits` unidades (el resto queda
+///   en `skipped` con motivo);
+/// - ids únicos: un slug repetido conserva la primera unidad;
+/// - orden determinista (por `concept_id`).
+pub fn plan_ingest(
+    source_url: &str,
+    files: &[SourceFile],
+    requested: SkillFormat,
+    path_prefix: &str,
+    budget: &Budget,
+) -> Result<IngestPlan, IngestError> {
+    if files.is_empty() {
+        return Err(IngestError::EmptySource);
+    }
+    let format = resolve_format(requested, files, budget);
+    let mut skipped: Vec<(String, String)> = Vec::new();
+    let mut units = match format {
+        ResolvedFormat::AgenticSkills => {
+            agentic_units(source_url, files, path_prefix, budget, &mut skipped)
+        }
+        ResolvedFormat::Shadcn => shadcn_units(source_url, files, path_prefix, budget, &mut skipped),
+        ResolvedFormat::Okf => okf_units(files, path_prefix, budget, &mut skipped),
+        ResolvedFormat::Raw => raw_units(source_url, files, path_prefix, budget, &mut skipped),
+        ResolvedFormat::Generic => {
+            generic_units(source_url, files, path_prefix, budget, &mut skipped)
+        }
+    };
+
+    units.sort_by(|a, b| a.concept_id.as_str().cmp(b.concept_id.as_str()));
+    let mut seen = std::collections::BTreeSet::new();
+    units.retain(|u| {
+        if seen.insert(u.concept_id.clone()) {
+            true
+        } else {
+            skipped.push((
+                u.concept_id.as_str().to_string(),
+                "slug duplicado: se conserva la primera unidad".to_string(),
+            ));
+            false
+        }
+    });
+    if units.len() > budget.max_bulk_commits {
+        for extra in units.drain(budget.max_bulk_commits..) {
+            skipped.push((
+                extra.concept_id.as_str().to_string(),
+                format!("presupuesto de lote agotado (máx. {})", budget.max_bulk_commits),
+            ));
+        }
+    }
+    if units.is_empty() && skipped.is_empty() {
+        return Err(IngestError::EmptySource);
+    }
+    Ok(IngestPlan { format, units, skipped })
+}
+
+fn make_concept_id(
+    path_prefix: &str,
+    slug: &str,
+    skipped: &mut Vec<(String, String)>,
+) -> Option<ConceptId> {
+    let full = format!("{path_prefix}/{slug}");
+    match ConceptId::parse(&full) {
+        Ok(id) => Some(id),
+        Err(e) => {
+            skipped.push((full, format!("id inválido: {e}")));
+            None
+        }
+    }
+}
+
+/// Extrae un campo escalar del frontmatter de forma laxa (sin exigir
+/// que el documento entero sea OKF): línea `key: valor` entre los
+/// delimitadores `---`.
+fn loose_fm_field(content: &str, key: &str) -> Option<String> {
+    let rest = content.strip_prefix("---")?;
+    let rest = rest.strip_prefix("\r\n").or_else(|| rest.strip_prefix('\n'))?;
+    for line in rest.lines() {
+        if line.trim_end() == "---" {
+            break;
+        }
+        if let Some(value) = line.strip_prefix(key).and_then(|r| r.strip_prefix(':')) {
+            let v = value.trim().trim_matches('"').trim_matches('\'').trim();
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Cuerpo de un markdown sin su frontmatter (si lo tiene).
+fn body_without_frontmatter(content: &str) -> &str {
+    let Some(rest) = content.strip_prefix("---") else { return content };
+    let Some(rest) = rest.strip_prefix("\r\n").or_else(|| rest.strip_prefix('\n')) else {
+        return content;
+    };
+    let mut offset = 0usize;
+    for line in rest.split_inclusive('\n') {
+        if line.trim_end_matches(['\n', '\r']) == "---" {
+            return &rest[offset + line.len()..];
+        }
+        offset += line.len();
+    }
+    content
+}
+
+fn first_heading(body: &str) -> Option<&str> {
+    body.lines()
+        .map(str::trim)
+        .find(|l| l.starts_with('#'))
+        .map(|l| l.trim_start_matches('#').trim())
+        .filter(|t| !t.is_empty())
+}
+
+fn build_material(unit_files: &[&SourceFile]) -> String {
+    let mut material = String::new();
+    for f in unit_files {
+        material.push_str(&format!("### Archivo: {}\n\n{}\n\n", f.path, f.content));
+        if material.len() > MATERIAL_MAX_BYTES {
+            truncate_on_char_boundary(&mut material, MATERIAL_MAX_BYTES);
+            material.push_str("\n[material truncado por presupuesto]\n");
+            break;
+        }
+    }
+    material
+}
+
+fn agentic_units(
+    source_url: &str,
+    files: &[SourceFile],
+    path_prefix: &str,
+    budget: &Budget,
+    skipped: &mut Vec<(String, String)>,
+) -> Vec<PlannedUnit> {
+    // Directorios que contienen un SKILL.md, del más profundo al más
+    // superficial para que cada archivo se asigne a su skill más
+    // cercana ("" = SKILL.md en la raíz de la fuente).
+    let mut dirs: Vec<String> = files
+        .iter()
+        .filter(|f| is_skill_md(&f.path))
+        .map(|f| f.path.strip_suffix("SKILL.md").unwrap_or("").trim_end_matches('/').to_string())
+        .collect();
+    dirs.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(b)));
+
+    let mut units = Vec::new();
+    for dir in &dirs {
+        let pertenece = |f: &&SourceFile| {
+            let candidato = dirs
+                .iter()
+                .find(|d| d.is_empty() || f.path.starts_with(&format!("{d}/")));
+            candidato.map(|d| d == dir).unwrap_or(false)
+        };
+        let mut unit_files: Vec<&SourceFile> = files.iter().filter(pertenece).collect();
+        // SKILL.md primero, el resto por ruta.
+        unit_files.sort_by(|a, b| {
+            (!is_skill_md(&a.path), &a.path).cmp(&(!is_skill_md(&b.path), &b.path))
+        });
+        let Some(skill_md) = unit_files.iter().find(|f| is_skill_md(&f.path)) else { continue };
+
+        let name = loose_fm_field(&skill_md.content, "name")
+            .or_else(|| loose_fm_field(&skill_md.content, "title"));
+        let slug = if dir.is_empty() {
+            slugify(name.as_deref().unwrap_or_else(|| last_segment(source_url)))
+        } else {
+            slugify(last_segment(dir))
+        };
+        let title = name.unwrap_or_else(|| slug.clone());
+        let Some(concept_id) = make_concept_id(path_prefix, &slug, skipped) else { continue };
+
+        let material = build_material(&unit_files);
+        // Camino determinista: el cuerpo del SKILL.md ÍNTEGRO, más el
+        // contenido de sus archivos auxiliares en bloques de código —
+        // la skill se importa completa, no un resumen de ella. Si el
+        // total supera el presupuesto, `finish_document` trunca con
+        // marca visible.
+        let mut det_body = body_without_frontmatter(&skill_md.content).trim().to_string();
+        let auxiliares: Vec<&&SourceFile> =
+            unit_files.iter().filter(|f| !is_skill_md(&f.path)).collect();
+        if !auxiliares.is_empty() {
+            det_body.push_str("\n\n## Archivos auxiliares de la skill\n");
+            for a in &auxiliares {
+                det_body.push_str(&format!("\n### `{}`\n\n````\n{}\n````\n", a.path, a.content.trim_end()));
+            }
+        }
+        match finish_document(&title, source_url, "verbatim-import", &det_body, budget) {
+            Ok(deterministic) => units.push(PlannedUnit {
+                concept_id,
+                title,
+                action: PlannedAction::Convert { deterministic, material },
+            }),
+            Err(e) => skipped.push((skill_md.path.clone(), e)),
+        }
+    }
+    units
+}
+
+fn shadcn_units(
+    source_url: &str,
+    files: &[SourceFile],
+    path_prefix: &str,
+    budget: &Budget,
+    skipped: &mut Vec<(String, String)>,
+) -> Vec<PlannedUnit> {
+    let es_componente = |p: &str| {
+        p.contains("components/ui/")
+            && [".tsx", ".ts", ".jsx", ".js"].iter().any(|ext| p.ends_with(ext))
+    };
+    let mut units = Vec::new();
+    for f in files.iter().filter(|f| es_componente(&f.path)) {
+        let slug = slugify(file_stem(&f.path));
+        let title = format!("Componente {}", file_stem(&f.path));
+        let Some(concept_id) = make_concept_id(path_prefix, &slug, skipped) else { continue };
+        let material = build_material(&[f]);
+        let lang = if f.path.ends_with(".tsx") || f.path.ends_with(".ts") { "tsx" } else { "jsx" };
+        let det_body = format!("```{lang}\n{}\n```", f.content.trim_end());
+        match finish_document(&title, source_url, "verbatim-import", &det_body, budget) {
+            Ok(deterministic) => units.push(PlannedUnit {
+                concept_id,
+                title,
+                action: PlannedAction::Convert { deterministic, material },
+            }),
+            Err(e) => skipped.push((f.path.clone(), e)),
+        }
+    }
+    units
+}
+
+fn okf_units(
+    files: &[SourceFile],
+    path_prefix: &str,
+    budget: &Budget,
+    skipped: &mut Vec<(String, String)>,
+) -> Vec<PlannedUnit> {
+    let mut units = Vec::new();
+    for f in files.iter().filter(|f| is_markdown(&f.path)) {
+        match okf_core::parse_document(&f.content, budget) {
+            Ok(doc) => {
+                let slug = slug_path(&f.path);
+                let Some(concept_id) = make_concept_id(path_prefix, &slug, skipped) else {
+                    continue;
+                };
+                let title = doc.title.unwrap_or_else(|| file_stem(&f.path).to_string());
+                units.push(PlannedUnit {
+                    concept_id,
+                    title,
+                    action: PlannedAction::Commit { markdown: f.content.clone() },
+                });
+            }
+            Err(e) => skipped.push((f.path.clone(), format!("no es OKF válido: {e}"))),
+        }
+    }
+    units
+}
+
+fn raw_units(
+    source_url: &str,
+    files: &[SourceFile],
+    path_prefix: &str,
+    budget: &Budget,
+    skipped: &mut Vec<(String, String)>,
+) -> Vec<PlannedUnit> {
+    let mut units = Vec::new();
+    for f in files.iter().filter(|f| is_markdown(&f.path)) {
+        let slug = slug_path(&f.path);
+        let Some(concept_id) = make_concept_id(path_prefix, &slug, skipped) else { continue };
+        // Si ya es OKF válido va verbatim de verdad (bytes exactos);
+        // si no, se envuelve con frontmatter generado.
+        if okf_core::parse_document(&f.content, budget).is_ok() {
+            let title = file_stem(&f.path).to_string();
+            units.push(PlannedUnit {
+                concept_id,
+                title,
+                action: PlannedAction::Commit { markdown: f.content.clone() },
+            });
+            continue;
+        }
+        let body = body_without_frontmatter(&f.content);
+        let title = loose_fm_field(&f.content, "title")
+            .or_else(|| loose_fm_field(&f.content, "name"))
+            .or_else(|| first_heading(body).map(str::to_string))
+            .unwrap_or_else(|| file_stem(&f.path).to_string());
+        match finish_document(&title, source_url, "verbatim-import", body, budget) {
+            Ok(markdown) => units.push(PlannedUnit {
+                concept_id,
+                title,
+                action: PlannedAction::Commit { markdown },
+            }),
+            Err(e) => skipped.push((f.path.clone(), e)),
+        }
+    }
+    units
+}
+
+fn generic_units(
+    source_url: &str,
+    files: &[SourceFile],
+    path_prefix: &str,
+    budget: &Budget,
+    skipped: &mut Vec<(String, String)>,
+) -> Vec<PlannedUnit> {
+    let mds: Vec<&SourceFile> = files.iter().filter(|f| is_markdown(&f.path)).collect();
+    let mut units = Vec::new();
+    if mds.is_empty() {
+        // Sin markdown: toda la fuente es una única unidad.
+        let all: Vec<&SourceFile> = files.iter().collect();
+        let slug = slugify(last_segment(source_url));
+        let Some(concept_id) = make_concept_id(path_prefix, &slug, skipped) else {
+            return units;
+        };
+        let material = build_material(&all);
+        let det_body = format!("````\n{}\n````", material.trim_end());
+        let title = last_segment(source_url).to_string();
+        match finish_document(&title, source_url, "verbatim-import", &det_body, budget) {
+            Ok(deterministic) => units.push(PlannedUnit {
+                concept_id,
+                title,
+                action: PlannedAction::Convert { deterministic, material },
+            }),
+            Err(e) => skipped.push((source_url.to_string(), e)),
+        }
+        return units;
+    }
+    for f in mds {
+        let slug = slug_path(&f.path);
+        let Some(concept_id) = make_concept_id(path_prefix, &slug, skipped) else { continue };
+        let body = body_without_frontmatter(&f.content);
+        let title = loose_fm_field(&f.content, "title")
+            .or_else(|| first_heading(body).map(str::to_string))
+            .unwrap_or_else(|| file_stem(&f.path).to_string());
+        let material = build_material(&[f]);
+        match finish_document(&title, source_url, "verbatim-import", body, budget) {
+            Ok(deterministic) => units.push(PlannedUnit {
+                concept_id,
+                title,
+                action: PlannedAction::Convert { deterministic, material },
+            }),
+            Err(e) => skipped.push((f.path.clone(), e)),
+        }
+    }
+    units
+}
+
+// -------------------------------------------------------------------
+// Tests
+// -------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn f(path: &str, content: &str) -> SourceFile {
+        SourceFile { path: path.to_string(), content: content.to_string() }
+    }
+
+    fn skill_md(name: &str) -> String {
+        format!("---\nname: {name}\ndescription: hace cosas\n---\n\n# {name}\n\nPasos.\n")
+    }
+
+    #[test]
+    fn detecta_agentic_skills_por_skill_md() {
+        let files = [f("skills/rust-kernel/SKILL.md", &skill_md("Rust Kernel"))];
+        assert_eq!(
+            resolve_format(SkillFormat::Auto, &files, &Budget::default()),
+            ResolvedFormat::AgenticSkills
+        );
+    }
+
+    #[test]
+    fn detecta_shadcn_por_components_ui() {
+        let files = [f("registry/components/ui/button.tsx", "export const Button = 1;")];
+        assert_eq!(
+            resolve_format(SkillFormat::Auto, &files, &Budget::default()),
+            ResolvedFormat::Shadcn
+        );
+    }
+
+    #[test]
+    fn detecta_okf_cuando_todo_el_markdown_es_okf() {
+        let files = [f("notas/a.md", "---\ntype: note\ntitle: A\n---\ncuerpo\n")];
+        assert_eq!(
+            resolve_format(SkillFormat::Auto, &files, &Budget::default()),
+            ResolvedFormat::Okf
+        );
+    }
+
+    #[test]
+    fn markdown_sin_convencion_cae_en_generic() {
+        let files = [f("README.md", "# Hola\n\ntexto\n")];
+        assert_eq!(
+            resolve_format(SkillFormat::Auto, &files, &Budget::default()),
+            ResolvedFormat::Generic
+        );
+    }
+
+    #[test]
+    fn plan_agentic_crea_una_unidad_por_skill() {
+        let files = [
+            f("skills/rust-kernel/SKILL.md", &skill_md("Rust Kernel")),
+            f("skills/rust-kernel/scripts/run.sh", "echo hola"),
+            f("skills/lint-hunter/SKILL.md", &skill_md("Lint Hunter")),
+        ];
+        let plan = plan_ingest(
+            "https://github.com/udapy/rust-agentic-skills",
+            &files,
+            SkillFormat::Auto,
+            "skills/programming",
+            &Budget::default(),
+        )
+        .unwrap();
+        assert_eq!(plan.format, ResolvedFormat::AgenticSkills);
+        let ids: Vec<&str> = plan.units.iter().map(|u| u.concept_id.as_str()).collect();
+        assert_eq!(ids, ["skills/programming/lint-hunter", "skills/programming/rust-kernel"]);
+        for u in &plan.units {
+            match &u.action {
+                PlannedAction::Convert { deterministic, material } => {
+                    assert!(material.contains("### Archivo:"));
+                    assert!(deterministic.contains("verbatim-import"));
+                    okf_core::parse_document(deterministic, &Budget::default()).unwrap();
+                }
+                otro => panic!("esperaba conversión, hay {otro:?}"),
+            }
+        }
+        // El script auxiliar viaja ÍNTEGRO en ambos caminos.
+        let rust_kernel = plan
+            .units
+            .iter()
+            .find(|u| u.concept_id.as_str().ends_with("rust-kernel"))
+            .unwrap();
+        if let PlannedAction::Convert { deterministic, material } = &rust_kernel.action {
+            assert!(material.contains("scripts/run.sh"));
+            assert!(deterministic.contains("scripts/run.sh"));
+            assert!(deterministic.contains("echo hola"));
+        }
+    }
+
+    #[test]
+    fn plan_okf_commitea_verbatim() {
+        let raw = "---\ntype: note\ntitle: A\n---\ncuerpo con [[people/alice]]\n";
+        let files = [f("notas/a.md", raw)];
+        let plan = plan_ingest(
+            "https://example.com/x",
+            &files,
+            SkillFormat::Auto,
+            "importado",
+            &Budget::default(),
+        )
+        .unwrap();
+        assert_eq!(plan.format, ResolvedFormat::Okf);
+        assert_eq!(plan.units.len(), 1);
+        assert_eq!(plan.units[0].concept_id.as_str(), "importado/notas/a");
+        assert_eq!(
+            plan.units[0].action,
+            PlannedAction::Commit { markdown: raw.to_string() }
+        );
+    }
+
+    #[test]
+    fn plan_raw_envuelve_markdown_ajeno() {
+        let files = [f("docs/guia.md", "# Guía rápida\n\nUsa [[esto]] con cuidado.\n")];
+        let plan = plan_ingest(
+            "https://example.com/x",
+            &files,
+            SkillFormat::Raw,
+            "importado",
+            &Budget::default(),
+        )
+        .unwrap();
+        assert_eq!(plan.units.len(), 1);
+        let PlannedAction::Commit { markdown } = &plan.units[0].action else {
+            panic!("esperaba Commit");
+        };
+        assert!(markdown.contains("title: Guía rápida"));
+        assert!(markdown.contains("verbatim-import"));
+        // El [[...]] queda neutralizado, no crea enlaces.
+        let doc = okf_core::parse_document(markdown, &Budget::default()).unwrap();
+        assert!(doc.links.is_empty());
+    }
+
+    #[test]
+    fn plan_respeta_el_presupuesto_de_lote() {
+        let budget = Budget { max_bulk_commits: 2, ..Budget::default() };
+        let files: Vec<SourceFile> = (0..5)
+            .map(|i| f(&format!("skills/s{i}/SKILL.md"), &skill_md(&format!("S{i}"))))
+            .collect();
+        let plan =
+            plan_ingest("https://example.com/x", &files, SkillFormat::Auto, "skills", &budget)
+                .unwrap();
+        assert_eq!(plan.units.len(), 2);
+        assert_eq!(plan.skipped.len(), 3);
+    }
+
+    #[test]
+    fn slug_duplicado_se_descarta_con_motivo() {
+        let files = [
+            f("a/SKILL.md", &skill_md("Igual")),
+            f("b/SKILL.md", &skill_md("Igual")),
+        ];
+        // Los dirs difieren (a, b) así que no colisionan; forzamos la
+        // colisión con dos rutas que sluggean igual.
+        let files2 = [
+            f("skills/Foo Bar/SKILL.md", &skill_md("X")),
+            f("skills/foo-bar/SKILL.md", &skill_md("Y")),
+        ];
+        let plan = plan_ingest(
+            "https://example.com/x",
+            &files2,
+            SkillFormat::Auto,
+            "skills",
+            &Budget::default(),
+        )
+        .unwrap();
+        assert_eq!(plan.units.len(), 1);
+        assert!(plan.skipped.iter().any(|(_, r)| r.contains("duplicado")));
+        let _ = files;
+    }
+
+    #[test]
+    fn finish_document_trunca_cuerpos_gigantes() {
+        let budget = Budget { max_document_bytes: 600, ..Budget::default() };
+        let body = "x".repeat(2000);
+        let doc = finish_document("t", "https://e.com", "synthesized", &body, &budget).unwrap();
+        assert!(doc.len() <= 600);
+        assert!(doc.contains("truncado por presupuesto"));
+    }
+
+    #[test]
+    fn titulos_conflictivos_se_sanean() {
+        let doc = finish_document(
+            "  [raro] \"con\" #cosas\nmultilinea  ",
+            "https://e.com",
+            "synthesized",
+            "cuerpo",
+            &Budget::default(),
+        )
+        .unwrap();
+        okf_core::parse_document(&doc, &Budget::default()).unwrap();
+        assert!(doc.contains("title: raro] con cosas multilinea"));
+    }
+}

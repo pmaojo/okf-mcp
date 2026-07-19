@@ -14,7 +14,7 @@ cd "$(dirname "$0")/.."
 # calidad vive en sus propios tests de contrato.
 nucleo="-p memory-model -p hash-core -p json-mini -p okf-core \
  -p graph-core -p conflict-core -p store-core -p memory-store \
- -p memory-tools -p mcp-core"
+ -p memory-tools -p mcp-core -p ingest-core"
 
 # shellcheck disable=SC2086  # $nucleo debe expandirse en argumentos
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps $nucleo

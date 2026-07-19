@@ -17,6 +17,7 @@
 #![warn(missing_docs)]
 
 use graph_core::NeighborSource;
+use ingest_core::{IngestError, PlannedAction, SkillFormat, SourceFetcher, Synthesizer};
 use json_mini::{arr, n, obj, s, Value};
 use mcp_core::{ToolError, ToolHandler, ToolSpec, UiResource};
 use memory_model::{Budget, ConceptId, ContentId, Principal};
@@ -28,6 +29,8 @@ pub struct MemoryTools<R> {
     repo: R,
     actor: Principal,
     budget: Budget,
+    fetcher: Option<Box<dyn SourceFetcher>>,
+    synthesizer: Option<Box<dyn Synthesizer>>,
 }
 
 impl<R> MemoryTools<R>
@@ -35,9 +38,26 @@ where
     R: MemoryRepository + StoreMaintenance + NeighborSource<Error = Infallible>,
 {
     /// Envuelve un repositorio con el actor y el presupuesto que
-    /// gobernarán TODAS las llamadas.
+    /// gobernarán TODAS las llamadas. Sin capacidad de ingesta: la
+    /// herramienta `skill_ingest` solo se anuncia tras
+    /// [`MemoryTools::with_ingest`].
     pub fn new(repo: R, actor: Principal, budget: Budget) -> Self {
-        MemoryTools { repo, actor, budget }
+        MemoryTools { repo, actor, budget, fetcher: None, synthesizer: None }
+    }
+
+    /// Activa `skill_ingest` con un descargador de fuentes y, si hay
+    /// proveedor LLM configurado, un sintetizador. El sintetizador
+    /// solo se usa cuando el cliente pide `synthesize: true`; por
+    /// defecto la conversión es determinista (contenido original
+    /// íntegro bajo cabecera OKF, etiquetado `verbatim-import`).
+    pub fn with_ingest(
+        mut self,
+        fetcher: Box<dyn SourceFetcher>,
+        synthesizer: Option<Box<dyn Synthesizer>>,
+    ) -> Self {
+        self.fetcher = Some(fetcher);
+        self.synthesizer = synthesizer;
+        self
     }
 
     // ---- helpers de argumentos --------------------------------------
@@ -91,6 +111,20 @@ where
             ]),
         };
         ToolError::Failed(json_mini::to_string(&payload))
+    }
+
+    /// Traduce errores de ingesta a fallos legibles por el MODELO.
+    fn ingest_error(err: IngestError) -> ToolError {
+        let kind = match &err {
+            IngestError::InvalidSource(_) => "invalid_source",
+            IngestError::Fetch(_) => "fetch_failed",
+            IngestError::Synthesis(_) => "synthesis_failed",
+            IngestError::EmptySource => "source_empty",
+        };
+        ToolError::Failed(json_mini::to_string(&obj([
+            ("kind", s(kind)),
+            ("detail", s(&err.to_string())),
+        ])))
     }
 
     // ---- herramientas ------------------------------------------------
@@ -490,6 +524,180 @@ where
         ]))
     }
 
+    fn skill_ingest(&mut self, args: &Value) -> Result<Value, ToolError> {
+        let source = Self::require_str(args, "source")?;
+        let path_prefix = Self::require_str(args, "path_prefix")?;
+        ConceptId::parse(&path_prefix).map_err(|e| {
+            ToolError::InvalidArguments(format!("path_prefix inválido: {e}"))
+        })?;
+        let format = match Self::arg_str(args, "format") {
+            None => SkillFormat::Auto,
+            Some(f) => SkillFormat::parse(&f).ok_or_else(|| {
+                ToolError::InvalidArguments(format!(
+                    "format desconocido {f:?} (usa auto | agentic-skills | shadcn | okf | raw)"
+                ))
+            })?,
+        };
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+        // La síntesis es OPT-IN: por defecto el contenido no-OKF se
+        // convierte de forma determinista (cabecera generada + cuerpo
+        // original íntegro). El contenido de una skill es la skill:
+        // resumirla con un LLM puede perder pasos o alucinar, así que
+        // solo se hace si el cliente lo pide explícitamente.
+        let synthesize = args.get("synthesize").and_then(|v| v.as_bool()).unwrap_or(false);
+        if synthesize && self.synthesizer.is_none() {
+            return Err(ToolError::Failed(json_mini::to_string(&obj([
+                ("kind", s("synthesis_unavailable")),
+                ("detail", s("este despliegue no tiene proveedor de síntesis configurado (falta GEMINI_API_KEY)")),
+            ]))));
+        }
+
+        let fetcher = self.fetcher.as_ref().ok_or_else(|| {
+            ToolError::Failed(json_mini::to_string(&obj([
+                ("kind", s("ingest_unavailable")),
+                ("detail", s("este despliegue no tiene descargador de fuentes configurado")),
+            ])))
+        })?;
+
+        let files = fetcher.fetch(&source).map_err(Self::ingest_error)?;
+        let plan = ingest_core::plan_ingest(&source, &files, format, &path_prefix, &self.budget)
+            .map_err(Self::ingest_error)?;
+        let format_str = plan.format.as_str();
+        let mut skipped: Vec<Value> = plan
+            .skipped
+            .iter()
+            .map(|(item, reason)| obj([("item", s(item)), ("reason", s(reason))]))
+            .collect();
+
+        if dry_run {
+            let units: Vec<Value> = plan
+                .units
+                .iter()
+                .map(|u| {
+                    let action = match &u.action {
+                        PlannedAction::Commit { .. } => "commit",
+                        PlannedAction::Convert { .. } => {
+                            if synthesize {
+                                "synthesize"
+                            } else {
+                                "convert-verbatim"
+                            }
+                        }
+                    };
+                    obj([
+                        ("concept_id", s(u.concept_id.as_str())),
+                        ("title", s(&u.title)),
+                        ("action", s(action)),
+                    ])
+                })
+                .collect();
+            return Ok(obj([
+                ("source_url", s(&source)),
+                ("format", s(format_str)),
+                ("dry_run", Value::Bool(true)),
+                ("units", arr(units)),
+                ("skipped", arr(skipped)),
+            ]));
+        }
+
+        // Materializar cada unidad: OKF verbatim, conversión
+        // determinista (por defecto), o síntesis LLM si el cliente la
+        // pidió. Un fallo de síntesis NO degrada en silencio al
+        // documento determinista: la unidad se descarta con su motivo.
+        let mut requests: Vec<CommitRequest> = Vec::new();
+        let mut modes: Vec<&'static str> = Vec::new();
+        for u in plan.units {
+            let (markdown, mode) = match u.action {
+                PlannedAction::Commit { markdown } => (markdown, "verbatim"),
+                PlannedAction::Convert { deterministic, material } => {
+                    if !synthesize {
+                        (deterministic, "verbatim")
+                    } else {
+                        let sy = self.synthesizer.as_ref().expect("comprobado arriba");
+                        let prompt = ingest_core::synthesis_prompt(&u.title, &source, &material);
+                        let doc = sy.synthesize(&prompt).and_then(|body| {
+                            ingest_core::finish_document(
+                                &u.title,
+                                &source,
+                                "synthesized",
+                                &body,
+                                &self.budget,
+                            )
+                            .map_err(IngestError::Synthesis)
+                        });
+                        match doc {
+                            Ok(d) => (d, "synthesized"),
+                            Err(e) => {
+                                skipped.push(obj([
+                                    ("item", s(u.concept_id.as_str())),
+                                    ("reason", s(&e.to_string())),
+                                ]));
+                                continue;
+                            }
+                        }
+                    }
+                }
+            };
+            requests.push(CommitRequest {
+                concept_id: u.concept_id,
+                expected: None,
+                markdown,
+                reason: format!("skill_ingest desde {source}"),
+            });
+            modes.push(mode);
+        }
+
+        let ids: Vec<ConceptId> = requests.iter().map(|r| r.concept_id.clone()).collect();
+        let outcome = self
+            .repo
+            .commit_bulk(requests, false, &self.actor, &self.budget)
+            .map_err(Self::domain_error)?;
+
+        let mut concept_ids: Vec<Value> = Vec::new();
+        let mut items: Vec<Value> = Vec::new();
+        for ((id, mode), item) in ids.iter().zip(modes).zip(outcome.items) {
+            match item {
+                store_core::BulkItem::Done(out) => {
+                    concept_ids.push(s(id.as_str()));
+                    items.push(obj([
+                        ("concept_id", s(id.as_str())),
+                        ("mode", s(mode)),
+                        ("hash", s(&out.content_id.to_hex())),
+                        ("version", n(out.version as f64)),
+                        ("created", Value::Bool(out.created)),
+                    ]));
+                }
+                store_core::BulkItem::Failed(StoreError::Conflict(_)) => {
+                    skipped.push(obj([
+                        ("item", s(id.as_str())),
+                        (
+                            "reason",
+                            s("ya existe con otro contenido: usa memory_commit con expected_hash para actualizarlo"),
+                        ),
+                    ]));
+                }
+                store_core::BulkItem::Failed(e) => {
+                    skipped.push(obj([("item", s(id.as_str())), ("reason", s(&e.to_string()))]));
+                }
+                store_core::BulkItem::Skipped => {
+                    skipped.push(obj([
+                        ("item", s(id.as_str())),
+                        ("reason", s("omitido por el lote")),
+                    ]));
+                }
+            }
+        }
+
+        Ok(obj([
+            ("source_url", s(&source)),
+            ("format", s(format_str)),
+            ("ingested", n(concept_ids.len() as f64)),
+            ("concept_ids", arr(concept_ids)),
+            ("items", arr(items)),
+            ("skipped", arr(skipped)),
+        ]))
+    }
+
     fn memory_validate(&mut self, args: &Value) -> Result<Value, ToolError> {
         let path_prefix = Self::arg_str(args, "path_prefix");
         let report = self.repo.validate(path_prefix.as_deref(), &self.budget)
@@ -606,7 +814,7 @@ where
     R: MemoryRepository + StoreMaintenance + NeighborSource<Error = Infallible>,
 {
     fn tools(&self) -> Vec<ToolSpec> {
-        vec![
+        let mut specs = vec![
             ToolSpec {
                 name: "memory_search",
                 description: "Busca conceptos en la memoria de manera híbrida: primero coincidencias exactas por subcadena, luego similitud semántica. Devuelve candidatos compactos con su hash y URI; usa memory_resolve para leer el contenido.",
@@ -764,7 +972,28 @@ where
                 input_schema: schema([], []),
                 ui_resource_uri: None,
             },
-        ]
+        ];
+        // `skill_ingest` solo se anuncia si el despliegue configuró un
+        // descargador de fuentes (adaptador `ingest-http`): anunciar
+        // una herramienta que siempre falla no ayuda al modelo.
+        if self.fetcher.is_some() {
+            specs.push(ToolSpec {
+                name: "skill_ingest",
+                description: "Ingiere skills desde una fuente externa (repo de GitHub, subcarpeta o archivo; también el atajo 'owner/repo') SIN pasar el contenido por tu contexto: el servidor descarga, detecta el formato (SKILL.md, shadcn, OKF, markdown suelto) y commitea un concepto por skill conservando el contenido original íntegro bajo una cabecera OKF. Devuelve solo el resumen del resultado.",
+                input_schema: schema(
+                    [
+                        ("source", "string", "URL de repo, subcarpeta o archivo (GitHub u otra), o el atajo 'owner/repo'"),
+                        ("path_prefix", "string", "prefijo lógico destino, p. ej. 'skills/programming'"),
+                        ("format", "string", "auto | agentic-skills | shadcn | okf | raw (por defecto auto)"),
+                        ("synthesize", "boolean", "si es true, en vez de conservar el contenido no-OKF íntegro el servidor genera un resumen original con su LLM (para fuentes cuya licencia no permita copiar el texto)"),
+                        ("dry_run", "boolean", "si es true, devuelve el plan (unidades y acciones) sin guardar nada"),
+                    ],
+                    ["source", "path_prefix"],
+                ),
+                ui_resource_uri: None,
+            });
+        }
+        specs
     }
 
     fn ui_resources(&self) -> Vec<UiResource> {
@@ -796,6 +1025,7 @@ where
             "memory_embed" => self.memory_embed(arguments),
             "memory_patch" => self.memory_patch(arguments),
             "memory_bulk_commit" => self.memory_bulk_commit(arguments),
+            "skill_ingest" => self.skill_ingest(arguments),
             "memory_validate" => self.memory_validate(arguments),
             "memory_status" => self.memory_status(arguments),
             "memory_stats" => self.memory_stats(arguments),
