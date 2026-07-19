@@ -264,9 +264,10 @@ impl StoreMaintenance for SupabaseStore {
             Some(k) => k.clone(),
             None => return Ok(EmbedOutcome::default()),
         };
-        // Clonamos el pool antes de los bloques async que moverían self
-        let pool = self.pool.clone();
 
+        // Clonamos el pool antes de CADA bloque async; `Pool<Postgres>` no
+        // es Copy, y el macro block_on! lo mueve al closure `async move`,
+        // dejándolo inaccesible para usos posteriores.
         let rows = crate::block_on! {
             pg_query(
                 "SELECT h.concept_id, b.raw, h.content_id
@@ -281,7 +282,7 @@ impl StoreMaintenance for SupabaseStore {
             )
             .bind(path_prefix)
             .bind(max as i64)
-            .fetch_all(&pool)
+            .fetch_all(&self.pool.clone())
             .await
         }.map_err(|e| StoreError::Backend(e.to_string()))?;
 
@@ -294,12 +295,13 @@ impl StoreMaintenance for SupabaseStore {
             let raw: String = row.get("raw");
             let content_hex: String = row.get("content_id");
 
-            // Clonamos client y gemini_key antes de cada ciclo para evitar
+            // Clonamos pool, client y gemini_key en cada ciclo para evitar
             // que el async move los consuma en la primera iteración
+            let p = self.pool.clone();
             let c = client.clone();
             let k = gemini_key.clone();
             let res = crate::block_on! {
-                crate::index_embedding(&pool, &c, &k, &concept_str, &content_hex, &raw).await
+                crate::index_embedding(&p, &c, &k, &concept_str, &content_hex, &raw).await
             };
             match res {
                 Ok(_) => outcome.embedded.push(concept),
@@ -317,7 +319,7 @@ impl StoreMaintenance for SupabaseStore {
                    AND (e.concept_id IS NULL OR e.content_id IS NULL OR e.content_id <> h.content_id)",
             )
             .bind(path_prefix)
-            .fetch_one(&pool)
+            .fetch_one(&self.pool.clone())
             .await
         }.map_err(|e| StoreError::Backend(e.to_string()))?;
 
