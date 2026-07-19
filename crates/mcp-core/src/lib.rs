@@ -19,7 +19,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-use json_mini::{arr, obj, s, Value};
+use json_mini::{arr, json, obj, s, Value};
 
 /// Versión del protocolo que implementamos.
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
@@ -226,7 +226,7 @@ impl<H: ToolHandler> McpServer<H> {
     fn handle_request(&mut self, id: Value, method: &str, params: &Value) -> Value {
         match method {
             "initialize" => self.on_initialize(id, params),
-            "ping" => ok_response(id, obj([])),
+            "ping" => ok_response(id, json!({})),
             "tools/list" => self.on_tools_list(id),
             "tools/call" => self.on_tools_call(id, params),
             "resources/list" => self.on_resources_list(id),
@@ -238,30 +238,29 @@ impl<H: ToolHandler> McpServer<H> {
     fn on_initialize(&mut self, id: Value, params: &Value) -> Value {
         // Negociación de versión: si el cliente propone una que
         // conocemos, la aceptamos; si no, contestamos con la nuestra
-        // (el cliente decide entonces si puede seguir).
-        let requested = params.get("protocolVersion").and_then(|v| v.as_str());
-        let version = match requested {
-            Some(v) if v == PROTOCOL_VERSION || v == "2025-03-26" || v == "2024-11-05" => v,
+        let requested_version = params
+            .get("protocolVersion")
+            .and_then(|v| v.as_str())
+            .unwrap_or(PROTOCOL_VERSION);
+        let version = match requested_version {
+            "2024-11-05" | "2025-06-18" => requested_version,
             _ => PROTOCOL_VERSION,
         };
         self.lifecycle = Lifecycle::Initializing;
 
         ok_response(
             id,
-            obj([
-                ("protocolVersion", s(version)),
-                (
-                    "capabilities",
-                    obj([("tools", obj([])), ("resources", obj([]))]),
-                ),
-                (
-                    "serverInfo",
-                    obj([
-                        ("name", s(self.server_name)),
-                        ("version", s(self.server_version)),
-                    ]),
-                ),
-            ]),
+            json!({
+                "protocolVersion" => version,
+                "capabilities" => {
+                    "tools" => {},
+                    "resources" => {}
+                },
+                "serverInfo" => {
+                    "name" => (self.server_name),
+                    "version" => (self.server_version)
+                }
+            }),
         )
     }
 

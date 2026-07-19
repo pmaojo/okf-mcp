@@ -215,7 +215,70 @@ adaptador.
   documentado como deuda arquitectónica en el código. SOLID también
   es saber QUÉ regla estás doblando y anotar el precio.
 
-### Ejercicios
+### Ergonomía extrema: la macro declarativa `json!`
+
+Fabricar estructuras JSON a base de combinaciones manuales como `obj([("a", s("val"))])` es seguro y determinista, pero genera un código sumamente verboso y difícil de leer a medida que el protocolo crece. 
+
+Para resolverlo sin perder la restricción `std`-only (sin depender de `serde_json`), implementamos una macro declarativa `json!` en nuestro crate `json-mini` que permite instanciar cualquier estructura de forma inline y limpia.
+
+#### El trait `IntoValue`
+
+Para que la macro pueda recibir tanto literales de Rust como variables locales u operaciones, definimos un trait de ayuda `IntoValue`:
+
+```rust
+pub trait IntoValue {
+    fn into_value(self) -> Value;
+}
+```
+
+Implementamos este trait para los tipos comunes de la biblioteca estándar (`String`, `&str`, `bool`, enteros, decimales y `Option<T>`). Así, cualquier valor que pasemos a la macro se auto-convierte en su correspondiente variante de `Value` en tiempo de compilación.
+
+#### El diseño sintáctico de la macro
+
+Rust impone restricciones severas sobre qué fichas (*tokens*) pueden seguir a una expresión (`expr`) en las macros declarativas para evitar ambigüedades en el compilador. Si usáramos `:` como separador clave-valor en objetos anidados, el compilador daría un error al no saber dónde termina la expresión.
+
+Para lograr una macro robusta y simple, diseñamos la macro usando el operador `=>` para asociar las claves con sus valores. Esto elimina la ambigüedad sintáctica por completo:
+
+```rust
+#[macro_export]
+macro_rules! json {
+    (null) => { $crate::Value::Null };
+    (true) => { $crate::Value::Bool(true) };
+    (false) => { $crate::Value::Bool(false) };
+    ([ $($val:tt),* $(,)? ]) => {
+        $crate::Value::Array(std::vec![ $( $crate::json!($val) ),* ])
+    };
+    ({ $($k:expr => $v:tt),* $(,)? }) => {
+        $crate::obj([ $( ($k, $crate::json!($v)) ),* ])
+    };
+    ($val:expr) => {
+        $crate::IntoValue::into_value($val)
+    };
+}
+```
+
+#### Uso práctico de la macro
+
+Gracias a este diseño, podemos declarar objetos JSON con anidamiento recursivo de forma natural:
+
+```rust
+let id = 123;
+let payload = json!({
+    "jsonrpc" => "2.0",
+    "id" => id,
+    "result" => {
+        "tools" => ["memory_search", "memory_resolve"]
+    }
+});
+```
+
+> 💡 **Nota de Rust avanzada (Token Trees `tt`):** 
+> En la regla del objeto, la macro espera que el valor sea un árbol de fichas único (`$v:tt`). Esto permite que arrays (`[...]`) y subobjetos (`{...}`) anidados se expandan recursivamente de forma transparente. 
+> Sin embargo, si deseas pasar una expresión de múltiples fichas separadas (como un acceso a un miembro `self.server_name` o una operación `x + 1`), debes envolverla obligatoriamente entre paréntesis para que el compilador la trate como un único grupo de fichas: `"name" => (self.server_name)`.
+
+---
+
+## Ejercicios
 
 1. **Guiado.** Añade `Value::pointer("/params/name")` al estilo
    JSON Pointer (RFC 6901, sin `~` escapes). Escribe primero los

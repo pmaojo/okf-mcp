@@ -496,9 +496,157 @@ fn write_string(out: &mut String, s: &str) {
     out.push('"');
 }
 
+/// Trait para convertir tipos nativos de Rust en [`Value`] dentro de la macro [`json`].
+pub trait IntoValue {
+    /// Convierte el valor a [`Value`].
+    fn into_value(self) -> Value;
+}
+
+impl IntoValue for Value {
+    fn into_value(self) -> Value {
+        self
+    }
+}
+
+impl IntoValue for String {
+    fn into_value(self) -> Value {
+        Value::String(self)
+    }
+}
+
+impl IntoValue for &str {
+    fn into_value(self) -> Value {
+        Value::String(self.to_string())
+    }
+}
+
+impl IntoValue for &String {
+    fn into_value(self) -> Value {
+        Value::String((*self).clone())
+    }
+}
+
+impl IntoValue for bool {
+    fn into_value(self) -> Value {
+        Value::Bool(self)
+    }
+}
+
+macro_rules! impl_into_value_for_number {
+    ($($t:ty)*) => {
+        $(
+            impl IntoValue for $t {
+                fn into_value(self) -> Value {
+                    Value::Number(self as f64)
+                }
+            }
+        )*
+    };
+}
+
+impl_into_value_for_number!(f64 f32 i8 i16 i32 i64 isize u8 u16 u32 u64 usize);
+
+impl<T: IntoValue> IntoValue for Option<T> {
+    fn into_value(self) -> Value {
+        match self {
+            Some(v) => v.into_value(),
+            None => Value::Null,
+        }
+    }
+}
+
+/// Macro declarativa ergonómica para construir un [`Value`] de forma similar a `serde_json::json!`.
+///
+/// Permite definir objetos y arrays JSON de forma natural e inline, ahorrando la
+/// necesidad de invocar combinaciones verbosas de `obj` y `arr`.
+///
+/// Para evitar ambigüedades en el compilador de Rust con expresiones complejas,
+/// se utiliza el operador `=>` en lugar de `:` para las parejas clave-valor de los objetos.
+///
+/// # Ejemplos
+///
+/// ```
+/// use json_mini::json;
+///
+/// let id = 1;
+/// let v = json!({
+///     "jsonrpc" => "2.0",
+///     "id" => id,
+///     "result" => {
+///         "tools" => ["memory_search", "memory_resolve"]
+///     }
+/// });
+/// assert_eq!(v.get("id").and_then(|x| x.as_u64()), Some(1));
+/// ```
+#[macro_export]
+macro_rules! json {
+    // Null
+    (null) => {
+        $crate::Value::Null
+    };
+
+    // Booleans
+    (true) => {
+        $crate::Value::Bool(true)
+    };
+    (false) => {
+        $crate::Value::Bool(false)
+    };
+
+    // Array vacío
+    ([ ]) => {
+        $crate::Value::Array(std::vec![])
+    };
+
+    // Array con elementos
+    ([ $($val:tt),* $(,)? ]) => {
+        $crate::Value::Array(std::vec![ $( $crate::json!($val) ),* ])
+    };
+
+    // Objeto vacío
+    ({ }) => {
+        $crate::Value::Object(std::collections::BTreeMap::new())
+    };
+
+    // Objeto con elementos
+    ({ $($k:expr => $v:tt),* $(,)? }) => {
+        $crate::obj([ $( ($k, $crate::json!($v)) ),* ])
+    };
+
+    // Expresión genérica (variables, llamadas, operaciones)
+    ($val:expr) => {
+        $crate::IntoValue::into_value($val)
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn macro_json_construye_correctamente() {
+        let x = 123;
+        let v = json!({
+            "a" => null,
+            "b" => true,
+            "c" => false,
+            "d" => x,
+            "e" => "hello",
+            "f" => [1, 2, { "sub" => "val" }],
+            "g" => { "h" => 4.5 }
+        });
+        assert_eq!(v.get("a"), Some(&Value::Null));
+        assert_eq!(v.get("b"), Some(&Value::Bool(true)));
+        assert_eq!(v.get("c"), Some(&Value::Bool(false)));
+        assert_eq!(v.get("d").and_then(|y| y.as_u64()), Some(123));
+        assert_eq!(v.get("e").and_then(|y| y.as_str()), Some("hello"));
+        let arr = v.get("f").and_then(|y| y.as_array()).unwrap();
+        assert_eq!(arr[0].as_u64(), Some(1));
+        assert_eq!(arr[1].as_u64(), Some(2));
+        assert_eq!(arr[2].get("sub").and_then(|y| y.as_str()), Some("val"));
+        let obj = v.get("g").and_then(|y| y.as_object()).unwrap();
+        assert_eq!(obj.get("h").and_then(|y| y.as_f64()), Some(4.5));
+    }
 
     #[test]
     fn ida_y_vuelta_basica() {
