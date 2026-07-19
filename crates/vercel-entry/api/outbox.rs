@@ -49,8 +49,7 @@ async fn outbox_handler(headers: HeaderMap) -> Response {
                 .into_response();
         }
     };
-    let github_token = std::env::var("GITHUB_TOKEN").ok();
-    let github_repo = std::env::var("GITHUB_REPO").ok();
+    let (github_token, github_repo) = outbox_worker::github_sync_credentials();
     let gemini_key = std::env::var("GEMINI_API_KEY").ok();
 
     let pool = db::get_db_pool(&db_url).await;

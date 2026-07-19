@@ -18,11 +18,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Iniciando worker de Outbox...");
 
     let db_url = env::var("POSTGRES_URL").expect("POSTGRES_URL must be set");
-    let github_token = env::var("GITHUB_TOKEN").ok();
-    let github_repo = env::var("GITHUB_REPO").ok(); // formato: "usuario/repositorio"
+    let (github_token, github_repo) = outbox_worker::github_sync_credentials();
     let gemini_key = env::var("GEMINI_API_KEY").ok();
 
-    if github_token.is_none() || github_repo.is_none() {
+    if env::var("OKF_STORE").as_deref() == Ok("github") {
+        println!("OKF_STORE=github: el paso A del batch (Contents API) se salta — IndexedStore ya escribió en GitHub de forma síncrona vía git-data API.");
+    } else if github_token.is_none() || github_repo.is_none() {
         println!("ADVERTENCIA: GITHUB_TOKEN o GITHUB_REPO no configurados. Se saltará la sincronización con Git.");
     }
     if gemini_key.is_none() {

@@ -38,6 +38,25 @@ pub fn schema_sql() -> &'static str {
     include_str!("../../../crates/supabase-store/schema.sql")
 }
 
+/// Credenciales de GitHub para el paso A de [`process_batch`], o
+/// `(None, None)` si `OKF_STORE=github`.
+///
+/// En modo `IndexedStore` (`OKF_STORE=github`), GitHub ya es la
+/// fuente de verdad: cada commit/delete se escribe ahí de forma
+/// síncrona (git-data API) ANTES de que `IndexedStore` intente el
+/// espejo best-effort a Supabase — y ese espejo es justamente quien
+/// encola el evento del outbox que `process_batch` procesaría aquí.
+/// Sin este corte, el paso A repetiría esa misma escritura vía la API
+/// de Contents, duplicando cada commit/delete en el repo. El resto
+/// del batch (paso B: embeddings) sigue funcionando igual — sirve de
+/// red de reintento si el embedding inline del commit falló.
+pub fn github_sync_credentials() -> (Option<String>, Option<String>) {
+    if std::env::var("OKF_STORE").as_deref() == Ok("github") {
+        return (None, None);
+    }
+    (std::env::var("GITHUB_TOKEN").ok(), std::env::var("GITHUB_REPO").ok())
+}
+
 /// Procesa un lote de hasta 10 eventos `pending` del outbox. Devuelve
 /// cuántos tomó (no necesariamente cuántos tuvieron éxito: los
 /// fallidos vuelven a `pending`, o a `failed` a partir del quinto

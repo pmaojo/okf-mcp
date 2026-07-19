@@ -1,12 +1,27 @@
 //! Sincronización de un concepto commiteado con GitHub: sube el
-//! Markdown a `docs/{concept_id}.md` vía la API de Contents. Aislado
-//! de `lib.rs` porque es la ÚNICA parte de `process_batch` que habla
-//! con GitHub — generar embeddings (Gemini) es una preocupación
-//! totalmente distinta, ver [`crate::embeddings`].
+//! Markdown a `{GITHUB_PATH}/{concept_id}.md` vía la API de Contents
+//! (misma ruta que usa `github_store::GithubStore` para leer, ver
+//! [`concept_path`]). Aislado de `lib.rs` porque es la ÚNICA parte de
+//! `process_batch` que habla con GitHub — generar embeddings (Gemini)
+//! es una preocupación totalmente distinta, ver [`crate::embeddings`].
 
 use base64::prelude::*;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Serialize};
+
+/// Misma convención de ruta que `github_store::GithubStore::doc_path`
+/// (mismo default `GITHUB_PATH=memoria`): si las dos difirieran, esta
+/// escritura y la reconciliación de lectura mirarían carpetas
+/// distintas y la reconciliación acabaría interpretando cada commit
+/// de aquí como un borrado (el archivo "no está" donde ella mira).
+fn concept_path(concept_id: &str) -> String {
+    let base_path = std::env::var("GITHUB_PATH").unwrap_or_else(|_| "memoria".into());
+    if base_path.is_empty() {
+        format!("{concept_id}.md")
+    } else {
+        format!("{base_path}/{concept_id}.md")
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct GithubContentResponse {
@@ -28,7 +43,7 @@ pub async fn sync_to_github(
     markdown: &str,
     reason: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let path = format!("docs/{concept_id}.md");
+    let path = concept_path(concept_id);
     let url = format!("https://api.github.com/repos/{repo}/contents/{path}");
 
     let mut headers = HeaderMap::new();
@@ -105,7 +120,7 @@ struct GithubDeleteRequest {
     sha: String,
 }
 
-/// Elimina un concepto de GitHub en la ruta `docs/{concept_id}.md` utilizando la API de Contents.
+/// Elimina un concepto de GitHub en la ruta `{GITHUB_PATH}/{concept_id}.md` utilizando la API de Contents.
 /// Realiza un flujo CAS (Compare-And-Swap) releyendo el SHA en caso de conflicto por concurrencia.
 pub async fn delete_from_github(
     client: &reqwest::Client,
@@ -114,7 +129,7 @@ pub async fn delete_from_github(
     concept_id: &str,
     reason: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let path = format!("docs/{concept_id}.md");
+    let path = concept_path(concept_id);
     let url = format!("https://api.github.com/repos/{repo}/contents/{path}");
 
     let mut headers = HeaderMap::new();
