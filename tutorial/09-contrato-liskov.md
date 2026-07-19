@@ -4,11 +4,11 @@ Crate: [`crates/store-core/src/contract.rs`](../crates/store-core/src/contract.r
 
 ## 1. El problema
 
-El capítulo 7 prometió algo concreto: `InMemoryStore` (hito 1) y el
-futuro adaptador de Supabase (hito 2) deben ser **indistinguibles**
+El capítulo 7 prometió algo concreto: `InMemoryStore` (hito 1) y los
+futuros adaptadores de Supabase y GitHub (hito 2) deben ser **indistinguibles**
 para quien use `MemoryRepository`. Pero una promesa en un comentario
 no es una promesa: es una esperanza. El día que alguien implemente
-`SupabaseStore`, ¿quién comprueba que de verdad se comporta igual?
+`SupabaseStore` o `GithubStore`, ¿quién comprueba que de verdad se comporta igual?
 ¿Que un conflicto CAS produce el mismo `StoreError::Conflict` con
 los mismos hashes? ¿Que un commit inválido no deja rastro?
 
@@ -93,9 +93,9 @@ fn in_memory_cumple_el_contrato() {
 }
 ```
 
-El día que exista `supabase_adapter::SupabaseStore`, su test de
-integración será literalmente esta misma línea con el nombre
-cambiado — apuntando a una base de datos real de pruebas.
+El día que existan `supabase_store::SupabaseStore` y `github_store::GithubStore`, sus tests de
+integración serán literalmente esta misma línea con el nombre
+cambiado — apuntando a una base de datos real de pruebas o a un servidor Axum falso local (`fake_github`).
 
 ## 3.5. Conceptos de Rust en este capítulo
 

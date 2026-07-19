@@ -24,10 +24,13 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
-use mcp_core::McpServer;
+use graph_core::NeighborSource;
+use mcp_core::{McpServer, ToolHandler};
 use mcp_http::{route, HttpRequest};
 use memory_tools::MemoryTools;
 use memory_model::{Budget, Principal};
+use std::convert::Infallible;
+use store_core::{MemoryRepository, StoreMaintenance};
 use supabase_store::SupabaseStore;
 use tower::ServiceBuilder;
 use tower_http::cors::{AllowHeaders, AllowOrigin, CorsLayer};
@@ -146,23 +149,55 @@ async fn mcp_handler(method: Method, headers: HeaderMap, body: Bytes) -> Respons
         }
     };
 
-    // 2. Obtener pool de base de datos e instanciar servicios de forma efímera
-    let db_url = std::env::var("POSTGRES_URL").expect("POSTGRES_URL must be set");
-    let pool = db::get_db_pool(&db_url).await;
-    let gemini_api_key = std::env::var("GEMINI_API_KEY").ok().filter(|k| !k.is_empty());
-    let store = SupabaseStore::new(pool, gemini_api_key.clone());
-    // `skill_ingest`: descarga server-side desde GitHub; por defecto
-    // conserva el contenido original íntegro bajo cabecera OKF, y con
-    // GEMINI_API_KEY disponible el cliente puede pedir
-    // `synthesize: true` para guardar un resumen original en su lugar.
-    let synthesizer = gemini_api_key
-        .map(|key| Box::new(ingest_http::GeminiSynthesizer::new(key)) as Box<dyn ingest_core::Synthesizer>);
-    let tools = MemoryTools::new(store, actor, budget)
-        .with_ingest(Box::new(ingest_http::GithubFetcher::from_env()), synthesizer);
+    // 2. Seleccionar backend e instanciar servicios
+    let store_kind = std::env::var("OKF_STORE").unwrap_or_else(|_| "supabase".into());
+    match store_kind.as_str() {
+        "github" => {
+            let store = match github_store::GithubStore::from_env() {
+                Ok(s) => s,
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        [("content-type", "text/plain")],
+                        format!("github-store init error: {e}"),
+                    )
+                        .into_response();
+                }
+            };
+            let tools = MemoryTools::new(store, actor, budget);
+            handle_mcp(&http_req, &budget, &origins, tools)
+        }
+        _ => {
+            let db_url = std::env::var("POSTGRES_URL").expect("POSTGRES_URL must be set");
+            let pool = db::get_db_pool(&db_url).await;
+            let gemini_api_key = std::env::var("GEMINI_API_KEY").ok().filter(|k| !k.is_empty());
+            let store = SupabaseStore::new(pool, gemini_api_key.clone());
+            // `skill_ingest`: descarga server-side desde GitHub; por defecto
+            // conserva el contenido original íntegro bajo cabecera OKF, y con
+            // GEMINI_API_KEY disponible el cliente puede pedir
+            // `synthesize: true` para guardar un resumen original en su lugar.
+            let synthesizer = gemini_api_key
+                .map(|key| Box::new(ingest_http::GeminiSynthesizer::new(key)) as Box<dyn ingest_core::Synthesizer>);
+            let tools = MemoryTools::new(store, actor, budget)
+                .with_ingest(Box::new(ingest_http::GithubFetcher::from_env()), synthesizer);
+            handle_mcp(&http_req, &budget, &origins, tools)
+        }
+    }
+}
+
+/// Ejecuta la petición MCP contra un `MemoryTools<R>` genérico.
+fn handle_mcp<R>(
+    http_req: &HttpRequest,
+    budget: &Budget,
+    origins: &[String],
+    tools: MemoryTools<R>,
+) -> Response
+where
+    R: MemoryRepository + StoreMaintenance + NeighborSource<Error = Infallible>,
+    MemoryTools<R>: ToolHandler,
+{
     let mut server = McpServer::new("okf-memory-vercel", env!("CARGO_PKG_VERSION"), tools);
-
-    let resp = route(&http_req, &budget, &origins, &mut server);
-
+    let resp = route(http_req, budget, origins, &mut server);
     let status = StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     (status, [("content-type", resp.content_type)], resp.body).into_response()
 }

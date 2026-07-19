@@ -1071,11 +1071,14 @@ dependencies = [
 name = "mcp-stdio"
 version = "0.1.0"
 dependencies = [
+ "github-store",
+ "graph-core",
  "json-mini",
  "mcp-core",
  "memory-model",
  "memory-store",
  "memory-tools",
+ "store-core",
 ]
 
 [[package]]
@@ -2436,6 +2439,8 @@ name = "vercel-entry"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "github-store",
+ "graph-core",
  "ingest-core",
  "ingest-http",
  "jsonwebtoken",
@@ -2449,6 +2454,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "store-core",
  "supabase-store",
  "tokio",
  "tower",

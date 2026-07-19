@@ -1,5 +1,5 @@
 //! Lógica compartida del worker de Outbox: procesar un lote de eventos
-//! pendientes contra GitHub ([`github_sync`]) y Gemini ([`embeddings`]).
+//! pendientes contra GitHub (vía el submódulo `github_sync`) y Gemini (generando embeddings).
 //!
 //! Sin el bucle `loop` — vive fuera, en cada binario que llama a
 //! [`process_batch`]: `main.rs` (daemon persistente, para desplegar
