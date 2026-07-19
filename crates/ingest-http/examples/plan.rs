@@ -26,23 +26,33 @@ fn main() {
         println!("  - {} ({} bytes)", f.path, f.content.len());
     }
 
-    let plan = match plan_ingest(&source, &files, SkillFormat::Auto, &prefix, &Budget::default()) {
+    let license = fetcher.license_spdx_id(&source).unwrap_or(None);
+    let plan = match plan_ingest(
+        &source,
+        &files,
+        SkillFormat::Auto,
+        &prefix,
+        &Budget::default(),
+        license.as_deref(),
+    ) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("plan falló: {e}");
             std::process::exit(1);
         }
     };
-    println!("\nformato detectado: {}", plan.format.as_str());
+    println!("\nlicencia detectada: {}", license.as_deref().unwrap_or("(ninguna)"));
+    println!("formato detectado: {}", plan.format.as_str());
     println!("unidades: {}", plan.units.len());
     for u in &plan.units {
         let (accion, bytes) = match &u.action {
             PlannedAction::Commit { markdown } => ("commit-okf", markdown.len()),
-            PlannedAction::Convert { deterministic, .. } => {
-                ("convert-verbatim", deterministic.len())
-            }
+            PlannedAction::Convert { deterministic } => ("convert-verbatim", deterministic.len()),
         };
         println!("  - {} [{}] «{}» ({} bytes)", u.concept_id, accion, u.title, bytes);
+        for w in &u.warnings {
+            println!("      ⚠ {w}");
+        }
     }
     if !plan.skipped.is_empty() {
         println!("descartados: {}", plan.skipped.len());
