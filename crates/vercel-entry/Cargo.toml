@@ -41,6 +41,9 @@ jsonwebtoken = "9"
 reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
 
 [[bin]]
 name = "mcp"
@@ -49,3 +52,7 @@ path = "api/mcp.rs"
 [[bin]]
 name = "outbox"
 path = "api/outbox.rs"
+
+[[bin]]
+name = "github-webhook"
+path = "api/github-webhook.rs"
