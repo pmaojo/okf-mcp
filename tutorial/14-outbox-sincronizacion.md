@@ -138,6 +138,12 @@ ida-y-vuelta por texto.
 > proveedor+modelo se generó cada vector — sin eso, mezclar por accidente un
 > vector de un proveedor con el de otro en el mismo `ORDER BY ... <=>` no daría
 > error, daría un ranking sin ningún significado.
+>
+> La propia síntesis de `skill_ingest` que originó esta historia ya no existe:
+> se evaluó y se descartó (reescribir con un LLM no resuelve nada de licencia,
+> y cuesta cuota en cada ingesta), así que hoy esa herramienta es puramente
+> determinista — el único LLM que sigue en pie en este proyecto es el de
+> embeddings, con el fallback que se acaba de describir.
 
 ## 3.5. Conceptos de Rust en este capítulo
 

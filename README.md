@@ -54,7 +54,7 @@ La referencia de API generada con `cargo doc` se publica en
 │ supabase-store    SupabaseStore implementa MemoryRepository        │
 │ outbox-worker     procesa outbox, GitHub y embeddings              │
 │ gemini-embeddings  embeddings, fallback multi-proveedor            │
-│ ingest-http        fetch de GitHub + síntesis con fallback         │
+│ ingest-http        descarga de GitHub + detección de licencia      │
 │ github-store      PROTOTIPO: GitHub como fuente de verdad          │
 └────────────────────────────────────────────────────────────────────┘
 ```
@@ -86,9 +86,10 @@ Gemini.
     la API de embeddings de Gemini, Mistral o Cohere (fallback
     multi-proveedor con etiquetado de modelo, ver más abajo).
   - `ingest-http`: `tokio`, `reqwest`, `serde` y `serde_json` para
-    descargar fuentes de GitHub y sintetizar (fallback multi-proveedor:
-    Gemini, Groq, OpenRouter, Cerebras, Mistral, Cohere) en la
-    herramienta `skill_ingest`.
+    descargar fuentes de GitHub y consultar su licencia (campo
+    `license.spdx_id` de la API de repos) para la herramienta
+    `skill_ingest` — sin cliente LLM: esa herramienta no sintetiza
+    contenido con ningún modelo.
 - `json-mini` aparece como *dev-dependency* en algunos crates solo para
   parsear aserciones de tests.
 
@@ -170,10 +171,10 @@ en desarrollo, nunca en producción.
 ### `skill_ingest`
 
 Ingiere skills desde una fuente externa **sin que el contenido pase por
-el contexto del modelo cliente**: el servidor descarga, detecta el
-formato, empaqueta y commitea; al cliente solo le llega el resumen del
-resultado. Es el mismo principio que `memory_embed` — delegar el
-trabajo pesado al servidor.
+el contexto del modelo cliente, ni por ningún LLM del servidor**: el
+servidor descarga, detecta el formato, empaqueta y commitea; al
+cliente solo le llega el resumen del resultado. Es el mismo principio
+que `memory_embed` — delegar el trabajo pesado al servidor.
 
 ```json
 {"name":"skill_ingest","arguments":{
@@ -189,19 +190,16 @@ trabajo pesado al servidor.
   (convención `SKILL.md` por subdirectorio, la de `npx skills add`),
   `shadcn` (`components/ui/*.tsx`), `okf` (ya es OKF → commit con los
   bytes exactos) o `raw` (envolver markdown tal cual).
-- `synthesize` (opcional): por defecto la conversión es
-  **determinista** — se genera solo la cabecera OKF (`type: skill`,
-  `title`, `tags`, `source`) y el contenido original se conserva
-  íntegro, etiquetado `verbatim-import`. Con `synthesize: true` el
-  servidor genera un resumen original (etiquetado `synthesized`) en
-  lugar del texto de terceros, con el primer proveedor LLM disponible
-  (ver más abajo) — útil si la licencia de la fuente no permite
-  copiarlo. **Recomendación de uso:** deja el valor por defecto
-  (verbatim) cuando la licencia de la fuente sea permisiva y esté
-  confirmada (MIT, Apache, BSD); pide `synthesize: true` solo cuando la
-  licencia sea restrictiva o no quede clara.
-- `dry_run` (opcional): devuelve el plan (unidades, títulos, acciones)
-  sin escribir nada.
+- `dry_run` (opcional): devuelve el plan (unidades, títulos, acciones,
+  avisos) sin escribir nada.
+
+La conversión es SIEMPRE determinista: se genera solo la cabecera OKF
+(`type: skill`, `title`, `tags`, `source`, `license`) y el contenido
+original se conserva ÍNTEGRO, etiquetado `verbatim-import`. No existe
+un modo de síntesis con LLM — se evaluó y se descartó a propósito:
+reescribir con un modelo no resuelve nada de licencia (una reescritura
+sigue siendo obra derivada) y además cuesta cuota/tokens en cada
+ingesta. El contenido de una skill ES la skill.
 
 Un repo con varias skills (`skills/*/SKILL.md`) produce un concepto
 por skill en una sola llamada, con el mismo mecanismo interno que
@@ -217,26 +215,31 @@ locales son `std`-only y no la exponen. `GITHUB_TOKEN` (opcional)
 sube el límite de peticiones de la API de GitHub y permite repos
 privados.
 
-#### Proveedores de síntesis y respaldo automático
+#### Licencia y contenido sospechoso: señales deterministas, sin modelo
 
-`synthesize: true` no depende de un único proveedor: el servidor
-encadena los que estén configurados y, si uno falla (típicamente un
-HTTP 429 por cuota agotada), prueba el siguiente automáticamente
-(`ingest_http::FallbackSynthesizer`). Con una sola clave configurada no
-hay fallback, solo ese proveedor.
+La respuesta de `skill_ingest` incluye dos señales que **nunca
+bloquean nada**, calculadas sin llamar a ningún LLM (barato: solo texto
+y una consulta HTTP ya necesaria):
 
-| Variable | Proveedor | Modelo por defecto | Variable de modelo |
-| -------- | --------- | ------------------- | ------------------- |
-| `GEMINI_API_KEY` | Gemini (primero, mismo proveedor que los embeddings) | `gemini-3.5-flash` | `GEMINI_SYNTHESIS_MODEL` |
-| `GROQ_API_KEY` | Groq — free tier alto, muy rápido | `llama-3.3-70b-versatile` | `GROQ_SYNTHESIS_MODEL` |
-| `OPENROUTER_API_KEY` | OpenRouter — varios modelos gratis, ya hace fallback interno entre proveedores | `meta-llama/llama-3.3-70b-instruct:free` | `OPENROUTER_SYNTHESIS_MODEL` |
-| `CEREBRAS_API_KEY` | Cerebras — velocidad similar a Groq, free tier | `llama-3.3-70b` | `CEREBRAS_SYNTHESIS_MODEL` |
-| `MISTRAL_API_KEY` | Mistral — secundario, límites más bajos | `mistral-small-latest` | `MISTRAL_SYNTHESIS_MODEL` |
-| `COHERE_API_KEY` | Cohere (API de compatibilidad OpenAI) — secundario, límites más bajos | `command-r7b-12-2024` | `COHERE_SYNTHESIS_MODEL` |
+- **`license`**: identificador SPDX de la fuente (campo
+  `license.spdx_id` de la API de repos de GitHub — la misma llamada
+  que ya se hace para resolver la rama por defecto). `null` si GitHub
+  no lo detecta. Es puramente informativo: muchas fuentes de skills
+  (pensadas para `npx skills add` y similares) se publican
+  precisamente para copiarse, así que exigir una licencia confirmada
+  aquí sería fricción sin valor real.
+- **`warnings`** por unidad: heurísticos de texto (sin modelo, sin red)
+  sobre contenido potencialmente malicioso en lo que se va a ingerir
+  como instrucciones para un agente — frases de prompt injection
+  conocidas (`"ignore previous instructions"` y similares), un
+  `curl`/`wget` canalizado directo a un shell, o un bloque largo con
+  pinta de base64. Revísalos tú (o un subagente) antes de confiar en el
+  contenido; el servidor nunca decide por ti.
 
-El orden de la tabla es el orden de intento. Todas menos Gemini
-comparten un solo cliente (`ingest_http::ChatCompletionSynthesizer`)
-porque exponen el mismo endpoint de chat compatible con OpenAI.
+Owners de confianza (`SKILL_INGEST_TRUSTED_OWNERS`, por defecto solo
+`anthropics`) siguen pasando por el heurístico, pero sus avisos no
+viajan en la respuesta — sus repos de skills ya pasan por revisión
+propia, así que el mismo escrutinio ahí sería ruido.
 
 ## Desplegar en Vercel
 
@@ -258,25 +261,20 @@ porque exponen el mismo endpoint de chat compatible con OpenAI.
      corre en modo local/desarrollo abierto.
    - `OAUTH_ISSUER` y `SUPABASE_ANON_KEY`: habilitan el proxy OAuth y la
      pantalla de consentimiento hacia Supabase.
-   - `GEMINI_API_KEY` (opcional): primer proveedor tanto de búsqueda
-     semántica/embeddings como del modo `synthesize: true` de
-     `skill_ingest`; sin ella (o sin ningún proveedor configurado), la
-     búsqueda degrada a coincidencia textual.
+   - `GEMINI_API_KEY` (opcional): primer proveedor de búsqueda
+     semántica/embeddings; sin ella (o sin ningún proveedor
+     configurado), la búsqueda degrada a coincidencia textual. No la
+     usa `skill_ingest` — esa herramienta no llama a ningún LLM.
    - `MISTRAL_API_KEY`, `COHERE_API_KEY` (opcionales): respaldo
-     automático de embeddings si Gemini falla, Y TAMBIÉN respaldo de
-     la síntesis de `skill_ingest` — la misma clave de cada proveedor
-     sirve para ambos usos, no hace falta configurarla dos veces.
+     automático de embeddings si Gemini falla — ver la tabla de
+     proveedores de embeddings más abajo.
    - `GITHUB_TOKEN` (opcional): lo usa `skill_ingest` para subir el
      límite de peticiones de la API de GitHub y acceder a repos
      privados al descargar fuentes.
-   - `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `CEREBRAS_API_KEY`
-     (opcionales): respaldo automático SOLO de la síntesis de
-     `skill_ingest` si Gemini falla o no
-     está configurada — ver la tabla de proveedores más arriba.
-   - `GEMINI_SYNTHESIS_MODEL` (opcional): modelo de generación para la
-     síntesis de `skill_ingest` (por defecto `gemini-3.5-flash`). Cada
-     proveedor de respaldo tiene su propia variable de modelo (ver
-     tabla más arriba).
+   - `SKILL_INGEST_TRUSTED_OWNERS` (opcional): lista separada por comas
+     de owners cuyo escrutinio de contenido sospechoso en
+     `skill_ingest` se omite en la respuesta; por defecto solo
+     `anthropics`.
 4. Si usas la integración de Supabase en el marketplace de Vercel,
    mapea sus credenciales a los nombres anteriores. El código actual
    espera `POSTGRES_URL` para la conexión de base de datos.
@@ -385,31 +383,27 @@ el vector resultante.
 
 #### Fallback multi-proveedor de embeddings
 
-A diferencia del fallback de síntesis de `skill_ingest` (cualquier
-proveedor devuelve texto igualmente válido), los embeddings de
-proveedores distintos **no son comparables entre sí** aunque compartan
-dimensionalidad: cada modelo aprende su propio espacio vectorial, y
-comparar por coseno un vector de un proveedor contra el de otro no da
-un error, da un ranking sin ningún significado. Por eso el fallback de
-embeddings no es un simple "probar el siguiente" — cada vector se
-persiste junto al identificador exacto del proveedor+modelo que lo
-produjo (columna `embeddings.embedding_model`), y `search_semantic`
-**solo** compara vectores con el mismo `embedding_model` que la
-consulta. Un documento indexado con el proveedor de respaldo mientras
-Gemini estaba caído simplemente queda fuera del ranking semántico de
-una consulta embebida con otro proveedor (sigue siendo encontrable por
-coincidencia de texto) hasta que se re-indexe — degradación segura,
-nunca corrupción silenciosa.
+Los embeddings de proveedores distintos **no son comparables entre
+sí** aunque compartan dimensionalidad: cada modelo aprende su propio
+espacio vectorial, y comparar por coseno un vector de un proveedor
+contra el de otro no da un error, da un ranking sin ningún significado
+(por esta misma razón `skill_ingest` no sintetiza contenido con
+ningún LLM — ver la sección de `skill_ingest` más arriba). Por eso el
+fallback de embeddings no es un simple "probar el siguiente" — cada
+vector se persiste junto al identificador exacto del proveedor+modelo
+que lo produjo (columna `embeddings.embedding_model`), y
+`search_semantic` **solo** compara vectores con el mismo
+`embedding_model` que la consulta. Un documento indexado con el
+proveedor de respaldo mientras Gemini estaba caído simplemente queda
+fuera del ranking semántico de una consulta embebida con otro
+proveedor (sigue siendo encontrable por coincidencia de texto) hasta
+que se re-indexe — degradación segura, nunca corrupción silenciosa.
 
 | Variable | Proveedor | Modelo | Dimensiones |
 | -------- | --------- | ------ | ------------ |
 | `GEMINI_API_KEY` | Gemini (primero) | `gemini-embedding-001` (truncado) | 768 |
 | `MISTRAL_API_KEY` | Mistral (respaldo) | `mistral-embed` | 1024 |
 | `COHERE_API_KEY` | Cohere (respaldo) | `embed-english-v3.0` | 1024 |
-
-Groq y OpenRouter (los proveedores de respaldo de `skill_ingest`) no
-ofrecen API de embeddings, por eso el fallback de embeddings usa un
-conjunto de proveedores distinto.
 
 ### Webhook de GitHub (reconciliación instantánea)
 
