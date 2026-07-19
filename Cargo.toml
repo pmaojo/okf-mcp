@@ -19,6 +19,7 @@ members = [
     "crates/gemini-embeddings",
     "crates/ingest-core",
     "crates/ingest-http",
+    "crates/github-store",
 ]
 
 [workspace.package]

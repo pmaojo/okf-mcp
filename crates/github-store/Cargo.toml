@@ -1,0 +1,33 @@
+# ADAPTADOR: dependencias externas permitidas
+#
+# PROTOTIPO: GithubStore implementa MemoryRepository con un repositorio
+# de GitHub como fuente de verdad — los documentos son archivos
+# markdown y la historia de revisiones vive en trailers estructurados
+# de los mensajes de commit. Su puerta de calidad es la misma que la
+# de InMemoryStore y SupabaseStore: la suite de contrato de
+# `store_core::contract` (aquí contra una API de GitHub falsa en
+# memoria; el smoke contra la API real vive en `examples/`).
+[package]
+name = "github-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0" }
+base64 = "0.22"
+memory-model = { path = "../memory-model" }
+store-core = { path = "../store-core" }
+okf-core = { path = "../okf-core" }
+graph-core = { path = "../graph-core" }
+conflict-core = { path = "../conflict-core" }
+hash-core = { path = "../hash-core" }
+
+[dev-dependencies]
+axum = { version = "0.8" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
