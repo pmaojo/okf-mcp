@@ -183,3 +183,83 @@ fn spec_status_sin_tareas_da_progreso_cero() {
     assert_eq!(as_f64(status.get("tasks_total").unwrap()), 0.0);
     assert_eq!(as_f64(status.get("progress").unwrap()), 0.0);
 }
+
+fn set_status(tools: &mut MemoryTools<InMemoryStore>, concept_id: &str, new_status: &str) {
+    let doc = call(tools, "memory_resolve", &format!(r#"{{"concept_id":"{concept_id}"}}"#));
+    let hash = doc.get("document").unwrap().get("hash").unwrap().as_str().unwrap().to_string();
+    call(
+        tools,
+        "memory_patch",
+        &format!(
+            r#"{{"concept_id":"{concept_id}","expected_hash":"{hash}","remove_tags":["status-pending","status-in_progress"],"add_tags":["status-{new_status}"],"reason":"avance"}}"#
+        ),
+    );
+}
+
+#[test]
+fn depends_on_por_titulo_dentro_del_mismo_lote() {
+    let mut tools = tools();
+    call(
+        &mut tools,
+        "spec_propose",
+        r#"{"concept_id":"specs/migracion","title":"Migración","requirements":"r","design":"d"}"#,
+    );
+    call(
+        &mut tools,
+        "spec_tasks",
+        r#"{"spec_id":"specs/migracion","tasks":[
+            {"title":"Crear tabla"},
+            {"title":"Migrar datos", "depends_on":["Crear tabla"]}
+        ]}"#,
+    );
+
+    let doc = call(
+        &mut tools,
+        "memory_resolve",
+        r#"{"concept_id":"specs/migracion/tasks/02-migrar-datos"}"#,
+    );
+    let markdown = doc.get("document").unwrap().get("markdown").unwrap().as_str().unwrap();
+    assert!(markdown.contains("[[depends_on:specs/migracion/tasks/01-crear-tabla]]"));
+
+    // Con la dependencia sin terminar, "Migrar datos" no es "próxima".
+    let status = call(&mut tools, "spec_status", r#"{"spec_id":"specs/migracion"}"#);
+    let next: Vec<&str> = status
+        .get("next_pending")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(next, ["specs/migracion/tasks/01-crear-tabla"]);
+    assert_eq!(as_f64(status.get("waiting_on_dependencies").unwrap()), 1.0);
+
+    // Al completar "Crear tabla", "Migrar datos" pasa a ser próxima.
+    set_status(&mut tools, "specs/migracion/tasks/01-crear-tabla", "done");
+    let status2 = call(&mut tools, "spec_status", r#"{"spec_id":"specs/migracion"}"#);
+    let next2: Vec<&str> = status2
+        .get("next_pending")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(next2, ["specs/migracion/tasks/02-migrar-datos"]);
+    assert_eq!(as_f64(status2.get("waiting_on_dependencies").unwrap()), 0.0);
+}
+
+#[test]
+fn depends_on_referencia_invalida_se_rechaza() {
+    let mut tools = tools();
+    call(
+        &mut tools,
+        "spec_propose",
+        r#"{"concept_id":"specs/migracion","title":"Migración","requirements":"r","design":"d"}"#,
+    );
+    let args = json_mini::parse(
+        r#"{"spec_id":"specs/migracion","tasks":[{"title":"X","depends_on":["no existe ni es id valido !!"]}]}"#,
+    )
+    .unwrap();
+    assert!(tools.call("spec_tasks", &args).is_err());
+}

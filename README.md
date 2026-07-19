@@ -256,7 +256,8 @@ estado no vive en el contexto de una conversación — vive en el grafo.
 
 No hay tipos ni tablas nuevas: un `spec` es un concepto `type: spec` con
 secciones "Requisitos"/"Diseño"; una `task` es `type: task` enlazada de vuelta
-con `[[implements:<spec_id>]]`. El estado de ambos es un tag `status-*`
+con `[[implements:<spec_id>]]` y, opcionalmente, a otras tareas con
+`[[depends_on:<task_id>]]`. El estado de ambos es un tag `status-*`
 (`status-proposed`, `status-pending`, `status-in_progress`, `status-done`,
 `status-blocked`), así que avanzar una tarea es un `memory_patch` normal
 (`remove_tags`/`add_tags`) — no hace falta una cuarta herramienta para eso.
@@ -275,19 +276,28 @@ con `[[implements:<spec_id>]]`. El estado de ambos es un tag `status-*`
   "spec_id":"specs/busqueda-hibrida-real",
   "tasks":[
     {"title":"Normalizar distancia de coseno a 0-1"},
-    {"title":"Añadir peso configurable", "description":"Via budget o argumento de memory_search"}
+    {"title":"Añadir peso configurable", "description":"Via budget o argumento de memory_search",
+     "depends_on":["Normalizar distancia de coseno a 0-1"]}
   ]
 }}
 ```
+
+`depends_on` acepta el título de otra tarea de este MISMO lote (como arriba),
+o el `concept_id` de una tarea ya existente (dependencia cruzada con otro
+`spec_tasks` anterior, incluso de otro spec).
 
 ```json
 {"name":"spec_status","arguments":{"spec_id":"specs/busqueda-hibrida-real"}}
 ```
 
 `spec_status` devuelve el estado del propio spec, cuántas tareas hay por
-estado, el progreso (0-1) y la lista de tareas pendientes — todo en una sola
-llamada, calculado con `backlinks()` (ya existente) sin releer cada tarea una
-por una.
+estado, el progreso (0-1), y dos listas separadas calculadas con `backlinks()`
+(ya existente) sin releer cada tarea una por una:
+- **`next_pending`**: tareas pendientes que YA se pueden empezar — todas sus
+  `depends_on` están `done` (o no tienen ninguna).
+- **`waiting_on_dependencies`** (recuento): pendientes que aún esperan por
+  otra tarea. No aparecen en `next_pending` hasta que su dependencia se
+  marque `done`.
 
 ## Desplegar en Vercel
 
