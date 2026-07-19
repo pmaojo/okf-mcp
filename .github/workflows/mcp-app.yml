@@ -1,0 +1,68 @@
+# Compila la UI de mcp-app/ (las 13 herramientas memory_*) a un único
+# HTML autocontenido y verifica que la copia comiteada en
+# crates/memory-tools/assets/mcp-app.html — la que `include_str!`
+# empotra en el binario de Rust — no se haya quedado desincronizada.
+#
+# El build de Rust (rust.yml, y el de Vercel en producción) nunca
+# ejecuta pnpm: solo lee ese HTML ya generado. Este workflow es la
+# única puerta que garantiza que lo que hay en el repo es justo lo que
+# produce el código fuente de mcp-app/.
+name: mcp-app
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "mcp-app/**"
+      - "crates/memory-tools/assets/mcp-app.html"
+      - ".github/workflows/mcp-app.yml"
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - "mcp-app/**"
+      - "crates/memory-tools/assets/mcp-app.html"
+      - ".github/workflows/mcp-app.yml"
+
+defaults:
+  run:
+    working-directory: mcp-app
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: mcp-app/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Test
+        run: pnpm run test
+
+      - name: Build single-file UI + sync into the Rust crate
+        run: pnpm run build:sync
+
+      - name: Verify the checked-in asset matches this build
+        run: |
+          if ! git diff --quiet -- crates/memory-tools/assets/mcp-app.html; then
+            echo "::error::crates/memory-tools/assets/mcp-app.html is out of date."
+            echo "Run 'pnpm run build:sync' inside mcp-app/ and commit the result."
+            git diff --stat -- crates/memory-tools/assets/mcp-app.html
+            exit 1
+          fi
+        working-directory: .

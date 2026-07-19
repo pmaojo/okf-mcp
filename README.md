@@ -20,7 +20,7 @@ La referencia de API generada con `cargo doc` se publica en
 - ✅ **Hito 2:** transporte HTTP sin estado (`mcp-http`) + contrato ejecutable `MemoryRepository` + adaptador de Vercel (`vercel-entry`) + adaptador de base de datos PostgreSQL (`supabase-store`).
 - ✅ **Hito 3:** OAuth 2.1 (Resource Server, validación criptográfica de JWTs mediante firmas y JWKS).
 - ✅ **Hito 4:** Transactional Outbox (`outbox-worker` con procesamiento concurrente `SKIP LOCKED`, sincronización con GitHub y embeddings con `pgvector`).
-- ✅ **Hito 5:** MCP Apps (visualizaciones interactivas de grafo e historial mediante recursos `ui://`, opcional).
+- ✅ **Hito 5:** MCP Apps — UI React interactiva ([`mcp-app/`](mcp-app/), tema brutalista) para las 13 herramientas `memory_*`, servida como un único recurso `ui://` (opcional, ver más abajo).
 
 ## Arquitectura
 
@@ -170,6 +170,43 @@ en desarrollo, nunca en producción.
 | `spec_tasks` | descomponer un spec ya propuesto en tareas enlazadas y rastreables |
 | `spec_status` | progreso de un spec en una sola llamada (retomar trabajo, o que otro agente pregunte) |
 | `skill_ingest` | ingerir skills de un repo/carpeta/archivo externo del lado del servidor |
+
+## UI interactiva (`mcp-app/`)
+
+Las 13 herramientas `memory_*` (todas menos `spec_*` y `skill_ingest`)
+anuncian `ui_resource_uri: Some("ui://okf-memory/app")`: un cliente MCP
+Apps compatible (capítulo 15 del tutorial explica el protocolo) las
+renderiza en un iframe en vez del JSON crudo.
+
+Esa vista es una app React independiente en [`mcp-app/`](mcp-app/)
+(starter Vite + shadcn + `@modelcontextprotocol/ext-apps`, tema
+**brutalista**: negro/blanco, un acento amarillo eléctrico, cero
+radio de esquina, sombras duras, monoespaciada), con un componente por
+herramienta (`mcp-app/src/tools/<nombre>/`) enrutado en tiempo de
+ejecución por el `toolName` que inyecta el host — el mismo patrón de
+"micro-manifest" del starter. Dos piezas hacen el grafo de conceptos
+interactivo:
+
+- **[React Flow](https://reactflow.dev/ui)** (`@xyflow/react`) para
+  `memory_resolve` (vecindario) y `memory_backlinks` (enlaces
+  entrantes): layout radial determinista, click en un nodo vuelve a
+  llamar a la herramienta con ese `concept_id` y recentra el grafo.
+- **[Recharts](https://ui.shadcn.com/charts)** para `memory_stats`,
+  `memory_history` y `memory_validate` (conteos por tipo/tag, hubs,
+  revisiones por actor, salud del grafo).
+
+`pnpm build` en `mcp-app/` compila TODO — JS, CSS y los estilos de
+React Flow — en un único `dist/mcp-app.html` autocontenido
+(`vite-plugin-singlefile`); `pnpm run build:sync` además lo copia a
+[`crates/memory-tools/assets/mcp-app.html`](crates/memory-tools/assets/mcp-app.html),
+que es lo que `include_str!` empotra en el binario. El build de
+Vercel (sección siguiente) solo compila Rust — nunca ejecuta `pnpm` —
+así que ese HTML compilado **tiene que estar comiteado**;
+[`.github/workflows/mcp-app.yml`](.github/workflows/mcp-app.yml)
+reconstruye la UI en cada push/PR y falla si la copia en el repo no
+coincide con un build fresco, para que eso nunca quede desincronizado
+en `main`. Detalles de arquitectura del propio starter en
+[`mcp-app/docs/`](mcp-app/docs/).
 
 ### `skill_ingest`
 

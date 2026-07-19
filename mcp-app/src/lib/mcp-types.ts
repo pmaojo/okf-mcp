@@ -1,0 +1,151 @@
+/**
+ * TypeScript mirrors of the JSON shapes returned by the 13 `memory_*`
+ * tools in `crates/memory-tools/src/lib.rs`. Kept hand-written (no
+ * codegen) because the Rust side has no schema export yet — if a field
+ * name changes there, it must change here too.
+ */
+
+export interface SearchHit {
+  concept_id: string;
+  hash: string;
+  type: string;
+  title: string | null;
+  tags: string[];
+  uri: string;
+}
+
+export interface MemorySearchResult {
+  results: SearchHit[];
+  count: number;
+}
+
+/** Identical shape to memory_search's output. */
+export type MemoryListResult = MemorySearchResult;
+
+export interface NeighborhoodNode {
+  concept_id: string;
+  depth: number;
+  exists: boolean;
+  uri: string;
+  parent: string | null;
+}
+
+export interface ResolvedDocument {
+  concept_id: string;
+  hash: string;
+  version: number;
+  type: string;
+  title: string | null;
+  tags: string[];
+  markdown: string;
+}
+
+export interface MemoryResolveResult {
+  document: ResolvedDocument;
+  neighborhood: NeighborhoodNode[];
+  truncated: {
+    by_nodes: boolean;
+    by_depth: boolean;
+    by_bytes: boolean;
+  };
+}
+
+export interface CommitLikeResult {
+  concept_id: string;
+  hash: string;
+  version: number;
+  created: boolean;
+  no_change: boolean;
+  revision_seq: number | null;
+  dry_run?: boolean;
+}
+
+/** memory_commit and memory_patch share this exact response shape. */
+export type MemoryCommitResult = CommitLikeResult;
+export type MemoryPatchResult = CommitLikeResult;
+
+export interface MemoryDeleteResult {
+  concept_id: string;
+  hash: string;
+  version: number;
+  revision_seq: number;
+}
+
+export interface Backlink {
+  source: SearchHit;
+  rel: string | null;
+}
+
+export interface MemoryBacklinksResult {
+  backlinks: Backlink[];
+  count: number;
+}
+
+export interface MemoryEmbedResult {
+  embedded: string[];
+  failed: { concept_id: string; error: string }[];
+  remaining: number;
+}
+
+export type BulkCommitItem =
+  | {
+      status: "done";
+      hash: string;
+      version: number;
+      created: boolean;
+      no_change: boolean;
+    }
+  | {
+      status: "failed";
+      error:
+        | { kind: "revision_conflict"; expected_hash: string | null; current_hash: string | null }
+        | { kind: "error"; detail: string };
+    }
+  | { status: "skipped" };
+
+export interface MemoryBulkCommitResult {
+  applied: boolean;
+  items: BulkCommitItem[];
+}
+
+export interface MemoryValidateResult {
+  broken_links: { source: string; target: string }[];
+  broken_links_total: number;
+  deleted_referenced: { source: string; target: string }[];
+  deleted_referenced_total: number;
+  missing_embeddings: string[];
+  missing_embeddings_total: number;
+}
+
+export interface MemoryStatusResult {
+  documents: number;
+  deleted_documents: number;
+  missing_embeddings: number;
+  broken_links: number;
+  deleted_referenced: number;
+  outbox_pending: number;
+  outbox_failed: number;
+}
+
+export interface MemoryStatsResult {
+  documents: number;
+  deleted_documents: number;
+  by_type: { type: string; count: number }[];
+  by_tag: { tag: string; count: number }[];
+  top_linked: { concept_id: string; incoming_links: number }[];
+  orphans: string[];
+}
+
+export interface Revision {
+  seq: number;
+  base_hash: string | null;
+  result_hash: string;
+  actor: string;
+  client_id: string;
+  reason: string;
+}
+
+export interface MemoryHistoryResult {
+  concept_id: string;
+  revisions: Revision[];
+}
