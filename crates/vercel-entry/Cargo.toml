@@ -30,6 +30,7 @@ mcp-core = { path = "../mcp-core" }
 mcp-http = { path = "../mcp-http" }
 memory-tools = { path = "../memory-tools" }
 supabase-store = { path = "../supabase-store" }
+gemini-embeddings = { path = "../gemini-embeddings" }
 github-store = { path = "../github-store" }
 graph-core = { path = "../graph-core" }
 store-core = { path = "../store-core" }

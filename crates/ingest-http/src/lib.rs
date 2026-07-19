@@ -11,6 +11,16 @@
 //!   `gemini-embeddings` guarda el invariante de los embeddings —
 //!   mismo modelo y dimensionalidad en lectura y escritura — y la
 //!   generación de texto no forma parte de ese invariante).
+//! - [`ChatCompletionSynthesizer`] implementa `Synthesizer` sobre
+//!   cualquier proveedor con endpoint de chat compatible con la API
+//!   de OpenAI: Groq, OpenRouter, Cerebras, Mistral y la API de
+//!   compatibilidad de Cohere. No hay adaptador dedicado por
+//!   proveedor porque los cinco comparten el mismo contrato HTTP —
+//!   solo cambian URL, modelo por defecto y clave.
+//! - [`FallbackSynthesizer`] compone varios `Synthesizer` (p. ej.
+//!   Gemini + Groq + OpenRouter) y prueba el siguiente si el anterior
+//!   falla — así una cuota agotada (429) en un proveedor no bloquea
+//!   `synthesize: true` mientras quede otro configurado.
 //!
 //! Los puertos de `ingest-core` son síncronos (el núcleo no conoce
 //! `tokio`); aquí se puentea con el mismo `block_on` tolerante a
@@ -370,15 +380,15 @@ impl GeminiSynthesizer {
             .json(&body)
             .send()
             .await
-            .map_err(|e| IngestError::Synthesis(e.to_string()))?;
+            .map_err(|e| IngestError::Synthesis(format!("gemini: {e}")))?;
         let status = resp.status();
-        let raw = resp.text().await.map_err(|e| IngestError::Synthesis(e.to_string()))?;
+        let raw = resp.text().await.map_err(|e| IngestError::Synthesis(format!("gemini: {e}")))?;
         if !status.is_success() {
             let corto: String = raw.chars().take(300).collect();
-            return Err(IngestError::Synthesis(format!("HTTP {status}: {corto}")));
+            return Err(IngestError::Synthesis(format!("gemini: HTTP {status}: {corto}")));
         }
         let parsed: GenResponse = serde_json::from_str(&raw)
-            .map_err(|e| IngestError::Synthesis(format!("respuesta no deserializable: {e}")))?;
+            .map_err(|e| IngestError::Synthesis(format!("gemini: respuesta no deserializable: {e}")))?;
         let text: String = parsed
             .candidates
             .unwrap_or_default()
@@ -390,7 +400,7 @@ impl GeminiSynthesizer {
             .collect();
         if text.is_empty() {
             return Err(IngestError::Synthesis(
-                "la respuesta de generateContent no trae texto".to_string(),
+                "gemini: la respuesta de generateContent no trae texto".to_string(),
             ));
         }
         Ok(text)
@@ -403,9 +413,299 @@ impl Synthesizer for GeminiSynthesizer {
     }
 }
 
+// -------------------------------------------------------------------
+// ChatCompletionSynthesizer: proveedores OpenAI-compatibles
+// -------------------------------------------------------------------
+
+#[derive(serde::Serialize)]
+struct ChatMessage {
+    role: &'static str,
+    content: String,
+}
+
+#[derive(serde::Serialize)]
+struct ChatRequest {
+    model: String,
+    messages: Vec<ChatMessage>,
+}
+
+#[derive(Deserialize)]
+struct ChatChoiceMessage {
+    content: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ChatChoice {
+    message: Option<ChatChoiceMessage>,
+}
+
+#[derive(Deserialize)]
+struct ChatResponse {
+    choices: Option<Vec<ChatChoice>>,
+}
+
+/// `Synthesizer` sobre cualquier proveedor con endpoint de chat
+/// compatible con la API de `/chat/completions` de OpenAI. Un solo
+/// cliente cubre Groq, OpenRouter, Cerebras, Mistral y la API de
+/// compatibilidad de Cohere — solo cambian endpoint, modelo y clave.
+pub struct ChatCompletionSynthesizer {
+    client: reqwest::Client,
+    provider: &'static str,
+    endpoint: String,
+    api_key: String,
+    model: String,
+}
+
+impl ChatCompletionSynthesizer {
+    fn new(
+        provider: &'static str,
+        endpoint: &str,
+        api_key: String,
+        default_model: &str,
+        env_model_var: &str,
+    ) -> Self {
+        let model = std::env::var(env_model_var)
+            .ok()
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| default_model.to_string());
+        ChatCompletionSynthesizer {
+            client: reqwest::Client::new(),
+            provider,
+            endpoint: endpoint.to_string(),
+            api_key,
+            model,
+        }
+    }
+
+    /// Groq (`api.groq.com`): free tier alto, muy rápido. Modelo
+    /// sobreescribible con `GROQ_SYNTHESIS_MODEL`.
+    pub fn groq(api_key: String) -> Self {
+        Self::new(
+            "groq",
+            "https://api.groq.com/openai/v1/chat/completions",
+            api_key,
+            "llama-3.3-70b-versatile",
+            "GROQ_SYNTHESIS_MODEL",
+        )
+    }
+
+    /// OpenRouter (`openrouter.ai`): agrega varios modelos con
+    /// etiqueta gratis y ya hace fallback interno entre proveedores.
+    /// Modelo sobreescribible con `OPENROUTER_SYNTHESIS_MODEL`.
+    pub fn openrouter(api_key: String) -> Self {
+        Self::new(
+            "openrouter",
+            "https://openrouter.ai/api/v1/chat/completions",
+            api_key,
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "OPENROUTER_SYNTHESIS_MODEL",
+        )
+    }
+
+    /// Cerebras (`api.cerebras.ai`): velocidad similar a Groq, con
+    /// free tier. Modelo sobreescribible con `CEREBRAS_SYNTHESIS_MODEL`.
+    pub fn cerebras(api_key: String) -> Self {
+        Self::new(
+            "cerebras",
+            "https://api.cerebras.ai/v1/chat/completions",
+            api_key,
+            "llama-3.3-70b",
+            "CEREBRAS_SYNTHESIS_MODEL",
+        )
+    }
+
+    /// Mistral (`api.mistral.ai`): opción secundaria, límites de free
+    /// tier más bajos. Modelo sobreescribible con
+    /// `MISTRAL_SYNTHESIS_MODEL`.
+    pub fn mistral(api_key: String) -> Self {
+        Self::new(
+            "mistral",
+            "https://api.mistral.ai/v1/chat/completions",
+            api_key,
+            "mistral-small-latest",
+            "MISTRAL_SYNTHESIS_MODEL",
+        )
+    }
+
+    /// Cohere, vía su API de compatibilidad con OpenAI: opción
+    /// secundaria, límites de free tier más bajos. Modelo
+    /// sobreescribible con `COHERE_SYNTHESIS_MODEL`.
+    pub fn cohere(api_key: String) -> Self {
+        Self::new(
+            "cohere",
+            "https://api.cohere.com/compatibility/v1/chat/completions",
+            api_key,
+            "command-r7b-12-2024",
+            "COHERE_SYNTHESIS_MODEL",
+        )
+    }
+
+    async fn generate(&self, prompt: &str) -> Result<String, IngestError> {
+        let body = ChatRequest {
+            model: self.model.clone(),
+            messages: vec![ChatMessage { role: "user", content: prompt.to_string() }],
+        };
+        let err = |e: String| IngestError::Synthesis(format!("{}: {e}", self.provider));
+        let resp = self
+            .client
+            .post(&self.endpoint)
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| err(e.to_string()))?;
+        let status = resp.status();
+        let raw = resp.text().await.map_err(|e| err(e.to_string()))?;
+        if !status.is_success() {
+            let corto: String = raw.chars().take(300).collect();
+            return Err(err(format!("HTTP {status}: {corto}")));
+        }
+        let parsed: ChatResponse =
+            serde_json::from_str(&raw).map_err(|e| err(format!("respuesta no deserializable: {e}")))?;
+        let text = parsed
+            .choices
+            .unwrap_or_default()
+            .into_iter()
+            .find_map(|c| c.message.and_then(|m| m.content))
+            .unwrap_or_default();
+        if text.is_empty() {
+            return Err(err("la respuesta no trae texto".to_string()));
+        }
+        Ok(text)
+    }
+}
+
+impl Synthesizer for ChatCompletionSynthesizer {
+    fn synthesize(&self, prompt: &str) -> Result<String, IngestError> {
+        block_on(self.generate(prompt))
+    }
+}
+
+// -------------------------------------------------------------------
+// FallbackSynthesizer: encadena proveedores
+// -------------------------------------------------------------------
+
+/// `Synthesizer` que encadena varios proveedores: prueba cada uno en
+/// el orden dado y pasa al siguiente si el anterior falla (el caso que
+/// motivó esto: un 429 por cuota agotada en Gemini bloqueaba
+/// `synthesize: true` hasta que se restablecía la cuota). Si todos
+/// fallan, el error agrega el motivo de cada proveedor.
+pub struct FallbackSynthesizer {
+    providers: Vec<Box<dyn Synthesizer>>,
+}
+
+impl FallbackSynthesizer {
+    /// Encadena `providers` en el orden dado: el primero es el
+    /// preferido, el resto son respaldo automático. Construir con una
+    /// lista vacía es un error del llamador: siempre fallará con "no
+    /// hay proveedores configurados".
+    pub fn new(providers: Vec<Box<dyn Synthesizer>>) -> Self {
+        FallbackSynthesizer { providers }
+    }
+}
+
+impl Synthesizer for FallbackSynthesizer {
+    fn synthesize(&self, prompt: &str) -> Result<String, IngestError> {
+        let mut errors = Vec::new();
+        for provider in &self.providers {
+            match provider.synthesize(prompt) {
+                Ok(text) => return Ok(text),
+                Err(IngestError::Synthesis(msg)) => errors.push(msg),
+                Err(other) => errors.push(other.to_string()),
+            }
+        }
+        if errors.is_empty() {
+            return Err(IngestError::Synthesis(
+                "no hay proveedores de síntesis configurados".to_string(),
+            ));
+        }
+        Err(IngestError::Synthesis(format!(
+            "todos los proveedores de síntesis fallaron: {}",
+            errors.join(" | ")
+        )))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    /// `Synthesizer` de prueba: falla o acierta según se le pida, y
+    /// cuenta cuántas veces se le llamó (en un `Rc` compartido con el
+    /// test) para comprobar que el fallback no invoca proveedores de
+    /// más tras un éxito.
+    struct FakeProvider {
+        result: Result<&'static str, &'static str>,
+        calls: Rc<Cell<u32>>,
+    }
+
+    impl FakeProvider {
+        fn ok(text: &'static str) -> Self {
+            FakeProvider { result: Ok(text), calls: Rc::new(Cell::new(0)) }
+        }
+        fn fail(msg: &'static str) -> Self {
+            FakeProvider { result: Err(msg), calls: Rc::new(Cell::new(0)) }
+        }
+        fn calls_handle(&self) -> Rc<Cell<u32>> {
+            self.calls.clone()
+        }
+    }
+
+    impl Synthesizer for FakeProvider {
+        fn synthesize(&self, _prompt: &str) -> Result<String, IngestError> {
+            self.calls.set(self.calls.get() + 1);
+            self.result.map(str::to_string).map_err(|m| IngestError::Synthesis(m.to_string()))
+        }
+    }
+
+    #[test]
+    fn usa_el_primer_proveedor_que_funciona() {
+        let fallback =
+            FallbackSynthesizer::new(vec![Box::new(FakeProvider::ok("primero"))]);
+        assert_eq!(fallback.synthesize("x").unwrap(), "primero");
+    }
+
+    #[test]
+    fn cae_al_siguiente_proveedor_si_el_primero_falla() {
+        let fallback = FallbackSynthesizer::new(vec![
+            Box::new(FakeProvider::fail("gemini: HTTP 429: cuota agotada")),
+            Box::new(FakeProvider::ok("respaldo")),
+        ]);
+        assert_eq!(fallback.synthesize("x").unwrap(), "respaldo");
+    }
+
+    #[test]
+    fn no_llama_al_segundo_si_el_primero_acierta() {
+        let segundo = FakeProvider::ok("no debería usarse");
+        let calls_segundo = segundo.calls_handle();
+        let fallback = FallbackSynthesizer::new(vec![
+            Box::new(FakeProvider::ok("primero")),
+            Box::new(segundo),
+        ]);
+        assert_eq!(fallback.synthesize("x").unwrap(), "primero");
+        assert_eq!(calls_segundo.get(), 0);
+    }
+
+    #[test]
+    fn agrega_los_errores_si_todos_fallan() {
+        let fallback = FallbackSynthesizer::new(vec![
+            Box::new(FakeProvider::fail("gemini: HTTP 429")),
+            Box::new(FakeProvider::fail("groq: HTTP 429")),
+        ]);
+        let err = fallback.synthesize("x").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("gemini: HTTP 429"), "mensaje: {msg}");
+        assert!(msg.contains("groq: HTTP 429"), "mensaje: {msg}");
+    }
+
+    #[test]
+    fn sin_proveedores_falla_claro() {
+        let fallback = FallbackSynthesizer::new(vec![]);
+        let err = fallback.synthesize("x").unwrap_err();
+        assert!(err.to_string().contains("no hay proveedores"));
+    }
 
     #[test]
     fn atajo_owner_repo() {

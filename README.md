@@ -5,7 +5,8 @@ arquitectura hexagonal: el **motor de conocimiento** y los **puertos**
 están escritos con la biblioteca estándar de Rust, sin frameworks, sin
 `serde` y sin `tokio` en el núcleo. Las dependencias externas quedan
 aisladas en adaptadores de frontera e infraestructura como Vercel,
-Supabase, GitHub y Gemini.
+Supabase, GitHub y los proveedores de LLM/embeddings (Gemini como
+primario, con fallback multi-proveedor).
 
 Este repositorio es a la vez un proyecto real y un **tutorial muy
 didáctico** de Rust y de principios SOLID: ver [`tutorial/`](tutorial/).
@@ -52,8 +53,8 @@ La referencia de API generada con `cargo doc` se publica en
 ┌────────────────────────────────────────────────────────────────────┐
 │ supabase-store    SupabaseStore implementa MemoryRepository        │
 │ outbox-worker     procesa outbox, GitHub y embeddings              │
-│ gemini-embeddings cliente del proveedor de embeddings              │
-│ ingest-http       fetch de GitHub + síntesis Gemini (skill_ingest) │
+│ gemini-embeddings  embeddings, fallback multi-proveedor            │
+│ ingest-http        fetch de GitHub + síntesis con fallback         │
 │ github-store      PROTOTIPO: GitHub como fuente de verdad          │
 └────────────────────────────────────────────────────────────────────┘
 ```
@@ -82,10 +83,12 @@ Gemini.
     `serde_json`, `reqwest`, `base64` y `gemini-embeddings` para
     procesar eventos pendientes y sincronizar con servicios externos.
   - `gemini-embeddings`: `reqwest`, `serde` y `thiserror` para llamar a
-    la API de embeddings de Gemini.
+    la API de embeddings de Gemini, Mistral o Cohere (fallback
+    multi-proveedor con etiquetado de modelo, ver más abajo).
   - `ingest-http`: `tokio`, `reqwest`, `serde` y `serde_json` para
-    descargar fuentes de GitHub y sintetizar con Gemini
-    (`generateContent`) en la herramienta `skill_ingest`.
+    descargar fuentes de GitHub y sintetizar (fallback multi-proveedor:
+    Gemini, Groq, OpenRouter, Cerebras, Mistral, Cohere) en la
+    herramienta `skill_ingest`.
 - `json-mini` aparece como *dev-dependency* en algunos crates solo para
   parsear aserciones de tests.
 
@@ -190,9 +193,13 @@ trabajo pesado al servidor.
   **determinista** — se genera solo la cabecera OKF (`type: skill`,
   `title`, `tags`, `source`) y el contenido original se conserva
   íntegro, etiquetado `verbatim-import`. Con `synthesize: true` el
-  servidor genera con Gemini un resumen original (etiquetado
-  `synthesized`) en lugar del texto de terceros — útil si la licencia
-  de la fuente no permite copiarlo.
+  servidor genera un resumen original (etiquetado `synthesized`) en
+  lugar del texto de terceros, con el primer proveedor LLM disponible
+  (ver más abajo) — útil si la licencia de la fuente no permite
+  copiarlo. **Recomendación de uso:** deja el valor por defecto
+  (verbatim) cuando la licencia de la fuente sea permisiva y esté
+  confirmada (MIT, Apache, BSD); pide `synthesize: true` solo cuando la
+  licencia sea restrictiva o no quede clara.
 - `dry_run` (opcional): devuelve el plan (unidades, títulos, acciones)
   sin escribir nada.
 
@@ -208,8 +215,28 @@ La herramienta solo se anuncia en despliegues con el adaptador de
 descarga configurado (`vercel-entry`); `mcp-stdio` y `mcp-http`
 locales son `std`-only y no la exponen. `GITHUB_TOKEN` (opcional)
 sube el límite de peticiones de la API de GitHub y permite repos
-privados; `GEMINI_SYNTHESIS_MODEL` (opcional) cambia el modelo de
-síntesis sin redesplegar (por defecto `gemini-3.5-flash`).
+privados.
+
+#### Proveedores de síntesis y respaldo automático
+
+`synthesize: true` no depende de un único proveedor: el servidor
+encadena los que estén configurados y, si uno falla (típicamente un
+HTTP 429 por cuota agotada), prueba el siguiente automáticamente
+(`ingest_http::FallbackSynthesizer`). Con una sola clave configurada no
+hay fallback, solo ese proveedor.
+
+| Variable | Proveedor | Modelo por defecto | Variable de modelo |
+| -------- | --------- | ------------------- | ------------------- |
+| `GEMINI_API_KEY` | Gemini (primero, mismo proveedor que los embeddings) | `gemini-3.5-flash` | `GEMINI_SYNTHESIS_MODEL` |
+| `GROQ_API_KEY` | Groq — free tier alto, muy rápido | `llama-3.3-70b-versatile` | `GROQ_SYNTHESIS_MODEL` |
+| `OPENROUTER_API_KEY` | OpenRouter — varios modelos gratis, ya hace fallback interno entre proveedores | `meta-llama/llama-3.3-70b-instruct:free` | `OPENROUTER_SYNTHESIS_MODEL` |
+| `CEREBRAS_API_KEY` | Cerebras — velocidad similar a Groq, free tier | `llama-3.3-70b` | `CEREBRAS_SYNTHESIS_MODEL` |
+| `MISTRAL_API_KEY` | Mistral — secundario, límites más bajos | `mistral-small-latest` | `MISTRAL_SYNTHESIS_MODEL` |
+| `COHERE_API_KEY` | Cohere (API de compatibilidad OpenAI) — secundario, límites más bajos | `command-r7b-12-2024` | `COHERE_SYNTHESIS_MODEL` |
+
+El orden de la tabla es el orden de intento. Todas menos Gemini
+comparten un solo cliente (`ingest_http::ChatCompletionSynthesizer`)
+porque exponen el mismo endpoint de chat compatible con OpenAI.
 
 ## Desplegar en Vercel
 
@@ -231,14 +258,25 @@ síntesis sin redesplegar (por defecto `gemini-3.5-flash`).
      corre en modo local/desarrollo abierto.
    - `OAUTH_ISSUER` y `SUPABASE_ANON_KEY`: habilitan el proxy OAuth y la
      pantalla de consentimiento hacia Supabase.
-   - `GEMINI_API_KEY` (opcional): habilita búsqueda semántica y
-     embeddings; sin ella, la búsqueda degrada a coincidencia textual.
-     También habilita el modo `synthesize: true` de `skill_ingest`.
+   - `GEMINI_API_KEY` (opcional): primer proveedor tanto de búsqueda
+     semántica/embeddings como del modo `synthesize: true` de
+     `skill_ingest`; sin ella (o sin ningún proveedor configurado), la
+     búsqueda degrada a coincidencia textual.
+   - `MISTRAL_API_KEY`, `COHERE_API_KEY` (opcionales): respaldo
+     automático de embeddings si Gemini falla, Y TAMBIÉN respaldo de
+     la síntesis de `skill_ingest` — la misma clave de cada proveedor
+     sirve para ambos usos, no hace falta configurarla dos veces.
    - `GITHUB_TOKEN` (opcional): lo usa `skill_ingest` para subir el
      límite de peticiones de la API de GitHub y acceder a repos
      privados al descargar fuentes.
+   - `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `CEREBRAS_API_KEY`
+     (opcionales): respaldo automático SOLO de la síntesis de
+     `skill_ingest` si Gemini falla o no
+     está configurada — ver la tabla de proveedores más arriba.
    - `GEMINI_SYNTHESIS_MODEL` (opcional): modelo de generación para la
-     síntesis de `skill_ingest` (por defecto `gemini-3.5-flash`).
+     síntesis de `skill_ingest` (por defecto `gemini-3.5-flash`). Cada
+     proveedor de respaldo tiene su propia variable de modelo (ver
+     tabla más arriba).
 4. Si usas la integración de Supabase en el marketplace de Vercel,
    mapea sus credenciales a los nombres anteriores. El código actual
    espera `POSTGRES_URL` para la conexión de base de datos.
@@ -320,7 +358,8 @@ Variables de entorno:
 | `GITHUB_TOKEN` | No | Token para sincronizar documentos con GitHub. Si falta, se omite esa sincronización. |
 | `GITHUB_REPO` | No | Repositorio destino en formato `usuario/repositorio`. Si falta, se omite GitHub. |
 | `GITHUB_PATH` | No | Prefijo de directorio (mismo default `memoria` que `GithubStore::from_env`, ver arriba). Comparte la misma resolución que la lectura, para que escritura y reconciliación nunca miren carpetas distintas. |
-| `GEMINI_API_KEY` | No | Genera embeddings para `pgvector`; si falta, se omite esa parte. |
+| `GEMINI_API_KEY` | No | Genera embeddings para `pgvector` (primer proveedor); si falta o falla, cae a `MISTRAL_API_KEY`/`COHERE_API_KEY` si están configuradas — ver la sección de embeddings más abajo. Si ninguna está presente, se omite esa parte. |
+| `MISTRAL_API_KEY`, `COHERE_API_KEY` | No | Respaldo automático de embeddings si Gemini falla o no está configurada. |
 | `ONCE` | No | En el daemon local, procesa un lote y sale cuando está presente. |
 | `CRON_SECRET` | Recomendado en Vercel | Protege `/api/outbox` con `Authorization: Bearer <CRON_SECRET>`. Sin él, el endpoint queda abierto para desarrollo. |
 | `GITHUB_WEBHOOK_SECRET` | Obligatoria para `/api/github-webhook` | Verifica la firma `X-Hub-Signature-256` (HMAC-SHA256) que GitHub envía en cada entrega. Sin ella, el endpoint responde `503` y no procesa nada — a diferencia de `CRON_SECRET`, aquí no hay modo abierto. |
@@ -336,10 +375,41 @@ leer `GITHUB_TOKEN`/`GITHUB_REPO` directamente. El paso de embeddings del
 outbox no se ve afectado — sigue funcionando como red de reintento si el
 embedding inline del commit falló.
 
-El crate `gemini-embeddings` centraliza el modelo en la constante
-`MODEL`, actualmente `gemini-embedding-001`, y lo reutilizan tanto
-`supabase-store` para búsqueda semántica como `outbox-worker` para
-materializar embeddings.
+El crate `gemini-embeddings` centraliza el fallback multi-proveedor de
+embeddings (Gemini, con Mistral y Cohere como respaldo automático —
+ver la sección siguiente) y lo reutilizan tanto `supabase-store` para
+búsqueda semántica como `outbox-worker` para materializar embeddings:
+los dos DEBEN pasar por el mismo punto de entrada para que nunca
+puedan divergir en qué proveedor llamaron ni en qué modelo etiquetaron
+el vector resultante.
+
+#### Fallback multi-proveedor de embeddings
+
+A diferencia del fallback de síntesis de `skill_ingest` (cualquier
+proveedor devuelve texto igualmente válido), los embeddings de
+proveedores distintos **no son comparables entre sí** aunque compartan
+dimensionalidad: cada modelo aprende su propio espacio vectorial, y
+comparar por coseno un vector de un proveedor contra el de otro no da
+un error, da un ranking sin ningún significado. Por eso el fallback de
+embeddings no es un simple "probar el siguiente" — cada vector se
+persiste junto al identificador exacto del proveedor+modelo que lo
+produjo (columna `embeddings.embedding_model`), y `search_semantic`
+**solo** compara vectores con el mismo `embedding_model` que la
+consulta. Un documento indexado con el proveedor de respaldo mientras
+Gemini estaba caído simplemente queda fuera del ranking semántico de
+una consulta embebida con otro proveedor (sigue siendo encontrable por
+coincidencia de texto) hasta que se re-indexe — degradación segura,
+nunca corrupción silenciosa.
+
+| Variable | Proveedor | Modelo | Dimensiones |
+| -------- | --------- | ------ | ------------ |
+| `GEMINI_API_KEY` | Gemini (primero) | `gemini-embedding-001` (truncado) | 768 |
+| `MISTRAL_API_KEY` | Mistral (respaldo) | `mistral-embed` | 1024 |
+| `COHERE_API_KEY` | Cohere (respaldo) | `embed-english-v3.0` | 1024 |
+
+Groq y OpenRouter (los proveedores de respaldo de `skill_ingest`) no
+ofrecen API de embeddings, por eso el fallback de embeddings usa un
+conjunto de proveedores distinto.
 
 ### Webhook de GitHub (reconciliación instantánea)
 

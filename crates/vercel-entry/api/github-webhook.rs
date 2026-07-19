@@ -87,7 +87,7 @@ async fn webhook_handler(headers: HeaderMap, body: Bytes) -> Response {
                 .into_response();
         }
     };
-    let gemini_key = std::env::var("GEMINI_API_KEY").ok();
+    let embedding_keys = gemini_embeddings::EmbeddingKeys::from_env();
 
     let pool = db::get_db_pool(&db_url).await;
     let client = reqwest::Client::new();
@@ -104,7 +104,7 @@ async fn webhook_handler(headers: HeaderMap, body: Bytes) -> Response {
         &pool,
         &client,
         &github_store,
-        gemini_key.as_deref(),
+        &embedding_keys,
     )
     .await
     {

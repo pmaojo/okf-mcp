@@ -71,6 +71,43 @@ fn cors_layer() -> CorsLayer {
         .allow_headers(AllowHeaders::mirror_request())
 }
 
+/// Construye el sintetizador de `skill_ingest` a partir de las claves
+/// de proveedor presentes en el entorno, con Gemini primero (histórico,
+/// mismo proveedor que los embeddings) y el resto como respaldo
+/// automático en el orden dado: si Gemini falla (p. ej. cuota agotada,
+/// HTTP 429) `FallbackSynthesizer` prueba el siguiente configurado en
+/// vez de bloquear `synthesize: true` hasta que se restablezca la
+/// cuota. `None` si no hay ninguna clave configurada.
+fn build_synthesizer() -> Option<Box<dyn ingest_core::Synthesizer>> {
+    let key = |var: &str| std::env::var(var).ok().filter(|k| !k.is_empty());
+
+    let mut providers: Vec<Box<dyn ingest_core::Synthesizer>> = Vec::new();
+    if let Some(k) = key("GEMINI_API_KEY") {
+        providers.push(Box::new(ingest_http::GeminiSynthesizer::new(k)));
+    }
+    if let Some(k) = key("GROQ_API_KEY") {
+        providers.push(Box::new(ingest_http::ChatCompletionSynthesizer::groq(k)));
+    }
+    if let Some(k) = key("OPENROUTER_API_KEY") {
+        providers.push(Box::new(ingest_http::ChatCompletionSynthesizer::openrouter(k)));
+    }
+    if let Some(k) = key("CEREBRAS_API_KEY") {
+        providers.push(Box::new(ingest_http::ChatCompletionSynthesizer::cerebras(k)));
+    }
+    if let Some(k) = key("MISTRAL_API_KEY") {
+        providers.push(Box::new(ingest_http::ChatCompletionSynthesizer::mistral(k)));
+    }
+    if let Some(k) = key("COHERE_API_KEY") {
+        providers.push(Box::new(ingest_http::ChatCompletionSynthesizer::cohere(k)));
+    }
+
+    match providers.len() {
+        0 => None,
+        1 => providers.pop(),
+        _ => Some(Box::new(ingest_http::FallbackSynthesizer::new(providers))),
+    }
+}
+
 /// Handler único: da igual la ruta pública que el cliente use
 /// (`/mcp` vía el rewrite de `vercel.json`, o `/api/mcp` por
 /// defecto) — este archivo ES semánticamente el endpoint `/mcp`.
@@ -167,12 +204,10 @@ async fn mcp_handler(method: Method, headers: HeaderMap, body: Bytes) -> Respons
             if std::env::var("POSTGRES_URL").is_ok() {
                 let db_url = std::env::var("POSTGRES_URL").unwrap();
                 let pool = db::get_db_pool(&db_url).await;
-                let gemini_api_key = std::env::var("GEMINI_API_KEY").ok().filter(|k| !k.is_empty());
-                let db_store = SupabaseStore::new(pool, gemini_api_key.clone());
+                let db_store = SupabaseStore::new(pool, gemini_embeddings::EmbeddingKeys::from_env());
                 let store = store_core::IndexedStore::new(gh_store, db_store);
-                
-                let synthesizer = gemini_api_key
-                    .map(|key| Box::new(ingest_http::GeminiSynthesizer::new(key)) as Box<dyn ingest_core::Synthesizer>);
+
+                let synthesizer = build_synthesizer();
                 let tools = MemoryTools::new(store, actor, budget)
                     .with_ingest(Box::new(ingest_http::GithubFetcher::from_env()), synthesizer);
                 handle_mcp(&http_req, &budget, &origins, tools)
@@ -184,14 +219,14 @@ async fn mcp_handler(method: Method, headers: HeaderMap, body: Bytes) -> Respons
         _ => {
             let db_url = std::env::var("POSTGRES_URL").expect("POSTGRES_URL must be set");
             let pool = db::get_db_pool(&db_url).await;
-            let gemini_api_key = std::env::var("GEMINI_API_KEY").ok().filter(|k| !k.is_empty());
-            let store = SupabaseStore::new(pool, gemini_api_key.clone());
+            let store = SupabaseStore::new(pool, gemini_embeddings::EmbeddingKeys::from_env());
             // `skill_ingest`: descarga server-side desde GitHub; por defecto
             // conserva el contenido original íntegro bajo cabecera OKF, y con
-            // GEMINI_API_KEY disponible el cliente puede pedir
+            // algún proveedor de síntesis configurado el cliente puede pedir
             // `synthesize: true` para guardar un resumen original en su lugar.
-            let synthesizer = gemini_api_key
-                .map(|key| Box::new(ingest_http::GeminiSynthesizer::new(key)) as Box<dyn ingest_core::Synthesizer>);
+            // `build_synthesizer` encadena los proveedores disponibles con
+            // respaldo automático (ver su doc).
+            let synthesizer = build_synthesizer();
             let tools = MemoryTools::new(store, actor, budget)
                 .with_ingest(Box::new(ingest_http::GithubFetcher::from_env()), synthesizer);
             handle_mcp(&http_req, &budget, &origins, tools)

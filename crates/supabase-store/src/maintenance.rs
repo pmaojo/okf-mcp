@@ -103,7 +103,7 @@ impl StoreMaintenance for SupabaseStore {
             }
         }
 
-        if self.gemini_api_key.is_some() {
+        if self.embedding_keys.any_configured() {
             let emb_rows = crate::block_on! {
                 pg_query(
                     "SELECT h.concept_id
@@ -260,10 +260,10 @@ impl StoreMaintenance for SupabaseStore {
         path_prefix: Option<&str>,
         max: usize,
     ) -> Result<EmbedOutcome, StoreError> {
-        let gemini_key = match &self.gemini_api_key {
-            Some(k) => k.clone(),
-            None => return Ok(EmbedOutcome::default()),
-        };
+        if !self.embedding_keys.any_configured() {
+            return Ok(EmbedOutcome::default());
+        }
+        let embedding_keys = self.embedding_keys.clone();
 
         // Clonamos el pool ANTES DE CADA bloque async; el macro block_on!
         // captura por movimiento en async move, consumiendo la variable.
@@ -297,11 +297,11 @@ impl StoreMaintenance for SupabaseStore {
             let raw: String = row.get("raw");
             let content_hex: String = row.get("content_id");
 
-            // Clonamos pool, client y gemini_key en cada ciclo para evitar
-            // que el async move los consuma en la primera iteración
+            // Clonamos pool, client y embedding_keys en cada ciclo para
+            // evitar que el async move los consuma en la primera iteración
             let p = pool_2.clone();
             let c = client.clone();
-            let k = gemini_key.clone();
+            let k = embedding_keys.clone();
             let res = crate::block_on! {
                 crate::index_embedding(&p, &c, &k, &concept_str, &content_hex, &raw).await
             };

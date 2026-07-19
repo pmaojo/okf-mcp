@@ -34,6 +34,6 @@ fn supabase_cumple_el_contrato() {
                 .await
                 .expect("vaciar tablas de test");
         });
-        SupabaseStore::new(pool, None)
+        SupabaseStore::new(pool, gemini_embeddings::EmbeddingKeys::default())
     });
 }

@@ -50,7 +50,7 @@ async fn outbox_handler(headers: HeaderMap) -> Response {
         }
     };
     let (github_token, github_repo) = outbox_worker::github_sync_credentials();
-    let gemini_key = std::env::var("GEMINI_API_KEY").ok();
+    let embedding_keys = gemini_embeddings::EmbeddingKeys::from_env();
 
     let pool = db::get_db_pool(&db_url).await;
     let client = reqwest::Client::new();
@@ -61,7 +61,7 @@ async fn outbox_handler(headers: HeaderMap) -> Response {
             &pool,
             &client,
             gh_store,
-            gemini_key.as_deref(),
+            &embedding_keys,
         )
         .await
         {
@@ -74,7 +74,7 @@ async fn outbox_handler(headers: HeaderMap) -> Response {
         &client,
         github_token.as_deref(),
         github_repo.as_deref(),
-        gemini_key.as_deref(),
+        &embedding_keys,
     )
     .await
     {

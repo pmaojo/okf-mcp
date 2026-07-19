@@ -8,7 +8,7 @@ pub async fn reconcile_github_to_supabase(
     pool: &PgPool,
     client: &reqwest::Client,
     github_store: &impl MemoryRepository,
-    gemini_key: Option<&str>,
+    embedding_keys: &gemini_embeddings::EmbeddingKeys,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Iniciando reconciliación de GitHub -> Supabase...");
 
@@ -134,8 +134,8 @@ pub async fn reconcile_github_to_supabase(
             tx.commit().await?;
 
             // E. Generar embeddings
-            if let Some(key) = gemini_key {
-                if let Err(e) = supabase_store::index_embedding(pool, client, key, concept_str, &github_hash_hex, &github_doc.raw).await {
+            if embedding_keys.any_configured() {
+                if let Err(e) = supabase_store::index_embedding(pool, client, embedding_keys, concept_str, &github_hash_hex, &github_doc.raw).await {
                     eprintln!("Error generando embeddings para {}: {}", concept_str, e);
                 }
             }
@@ -241,7 +241,7 @@ mod tests {
         // 2. Ejecutar reconciliación
         let client = reqwest::Client::new();
         block_on(async {
-            reconcile_github_to_supabase(&pool, &client, &github, None)
+            reconcile_github_to_supabase(&pool, &client, &github, &gemini_embeddings::EmbeddingKeys::default())
                 .await
                 .unwrap();
         });
@@ -285,7 +285,7 @@ mod tests {
 
         // Re-conciliar
         block_on(async {
-            reconcile_github_to_supabase(&pool, &client, &github, None)
+            reconcile_github_to_supabase(&pool, &client, &github, &gemini_embeddings::EmbeddingKeys::default())
                 .await
                 .unwrap();
         });
@@ -323,7 +323,7 @@ mod tests {
 
         // Re-conciliar
         block_on(async {
-            reconcile_github_to_supabase(&pool, &client, &github, None)
+            reconcile_github_to_supabase(&pool, &client, &github, &gemini_embeddings::EmbeddingKeys::default())
                 .await
                 .unwrap();
         });

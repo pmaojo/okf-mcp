@@ -128,6 +128,17 @@ regla del apéndice [la rueda de serie](la-rueda-de-serie.md):
 *despliega la de serie*. El vector viaja tipado y en binario, sin
 ida-y-vuelta por texto.
 
+> **Nota (estado actual):** el esquema real de `crates/supabase-store/schema.sql`
+> ya no es exactamente este. Una vez que la síntesis de `skill_ingest` se topó
+> con un 429 por cuota agotada de Gemini en producción, `gemini-embeddings`
+> ganó el mismo tipo de fallback multi-proveedor (Mistral y Cohere como
+> respaldo). Como esos proveedores no truncan a 768 dimensiones como hace
+> Gemini, la columna pasó de `vector(768)` a `vector` (dimensión variable), y
+> se añadió `embedding_model VARCHAR(64)` para registrar con qué
+> proveedor+modelo se generó cada vector — sin eso, mezclar por accidente un
+> vector de un proveedor con el de otro en el mismo `ORDER BY ... <=>` no daría
+> error, daría un ranking sin ningún significado.
+
 ## 3.5. Conceptos de Rust en este capítulo
 
 Este capítulo combina APIs de terceros y transformaciones de datos para la sincronización eventual:
@@ -238,7 +249,7 @@ Sin `GITHUB_WEBHOOK_SECRET` configurada, el endpoint responde `503` y no procesa
 Para desplegar el worker:
 1. Configura `GITHUB_TOKEN` (Personal Access Token de GitHub con permisos de escritura en el repo).
 2. Configura `GITHUB_REPO` (formato `usuario/repositorio`).
-3. Configura `GEMINI_API_KEY` (clave de la API de Google AI Studio).
+3. Configura `GEMINI_API_KEY` (clave de la API de Google AI Studio); opcionalmente `MISTRAL_API_KEY`/`COHERE_API_KEY` como respaldo automático si Gemini falla o agota cuota (ver la nota sobre `embedding_model` más abajo).
 4. Configura `POSTGRES_URL` apuntando a tu base de datos de Supabase.
 5. Opcional: `GITHUB_BRANCH` (rama a sincronizar, por defecto `main`) y
    `GITHUB_PATH` (prefijo de directorio, por defecto `memoria` —
@@ -272,13 +283,27 @@ término de búsqueda relacional y ordenarlos por distancia de coseno (`<=>`)
 de sus vectores de embeddings en una sola consulta SQL.
 
    El camino de lectura ya está resuelto en
-[`SupabaseStore::search`](../crates/supabase-store/src/lib.rs) — cuando hay
-`GEMINI_API_KEY` configurada, embebe el texto de la consulta (mismo cliente
-que el worker,
+[`SupabaseStore::search`](../crates/supabase-store/src/lib.rs) — con algún
+proveedor de embeddings configurado, embebe el texto de la consulta (mismo
+cliente que el worker,
 [`gemini-embeddings`](../crates/gemini-embeddings/src/lib.rs), para
-garantizar el mismo modelo en ambos lados) y ordena por `<=>` contra
-`embeddings`; si no hay clave, o si Gemini falla, cae de vuelta a la
+garantizar que ambos lados llaman al mismo fallback y nunca puedan
+divergir) y ordena por `<=>` contra `embeddings`; si no hay ninguna clave
+configurada, o si todos los proveedores fallan, cae de vuelta a la
 búsqueda `ILIKE` de siempre. Eso NO es todavía el hybrid search que pide
 este ejercicio: son dos consultas alternativas, no una sola consulta que
 combine ambas señales de relevancia en un mismo `ORDER BY` — sigue siendo un
 ejercicio abierto diseñar esa combinación.
+
+   Una complicación adicional desde que `gemini-embeddings` ganó un
+fallback multi-proveedor (Gemini con Mistral y Cohere como respaldo si
+Gemini falla o agota cuota): vectores de proveedores distintos NO son
+comparables entre sí aunque compartan dimensionalidad — cada modelo
+aprende su propio espacio vectorial, y una distancia de coseno entre dos
+espacios distintos no da error, da un ranking sin significado. Por eso la
+columna `embeddings.embedding_model` etiqueta con qué proveedor+modelo se
+generó cada vector, y `search_semantic` filtra SIEMPRE por
+`embedding_model = <el de la consulta actual>` antes de ordenar por
+`<=>` — cualquier diseño de hybrid search para este ejercicio tiene que
+respetar ese mismo filtro, o arriesga mezclar espacios vectoriales
+incompatibles en el mismo `ORDER BY`.
