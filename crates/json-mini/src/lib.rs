@@ -16,13 +16,24 @@
 //!
 //! # Ejemplo
 //!
-//! Ida y vuelta determinista: [`parse`] → [`Value`] → [`to_string`].
+//! Construcción ergonómica con [`json`] e ida y vuelta determinista: [`parse`] → [`Value`] → [`to_string`].
 //!
 //! ```
-//! use json_mini::{parse, to_string, Value};
+//! use json_mini::{json, parse, to_string, Value};
 //!
+//! // Construcción ergonómica inline:
+//! let id = 42;
+//! let data = json!({
+//!     "jsonrpc" => "2.0",
+//!     "id" => id,
+//!     "result" => {
+//!         "status" => "ok"
+//!     }
+//! });
+//! assert_eq!(data.get("id").and_then(Value::as_u64), Some(42));
+//!
+//! // Parseo y serialización:
 //! let v = parse(r#"{"z": 1, "a": [true, null]}"#)?;
-//! assert_eq!(v.get("z").and_then(Value::as_u64), Some(1));
 //! // Las claves salen ordenadas SIEMPRE (BTreeMap):
 //! assert_eq!(to_string(&v), r#"{"a":[true,null],"z":1}"#);
 //! # Ok::<(), json_mini::ParseError>(())
