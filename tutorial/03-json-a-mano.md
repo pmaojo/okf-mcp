@@ -219,7 +219,35 @@ adaptador.
 
 Fabricar estructuras JSON a base de combinaciones manuales como `obj([("a", s("val"))])` es seguro y determinista, pero genera un código sumamente verboso y difícil de leer a medida que el protocolo crece. 
 
-Para resolverlo sin perder la restricción `std`-only (sin depender de `serde_json`), implementamos una macro declarativa `json!` en nuestro crate `json-mini` que permite instanciar cualquier estructura de forma inline y limpia.
+Para resolverlo sin perder la restricción `std`-only (sin depender de `serde_json`), implementamos una macro declarativa `json!` en nuestro crate `json-mini` que permite instanciar cualquier estructura de forma inline y limpia. Pero antes, entendamos la teoría de fondo.
+
+#### Metaprogramación en Rust: ¿Qué es una macro?
+
+En muchos lenguajes (como C/C++), las macros son simples sustituciones de texto plano hechas por el preprocesador antes de compilar. Esto es propenso a errores graves (como colisiones de nombres o precedencia de operadores incorrecta).
+
+En Rust, las **macros son herramientas de metaprogramación higiénicas**: código que genera código en tiempo de compilación. En lugar de manipular texto plano, el compilador de Rust expande las macros operando directamente sobre el árbol de sintaxis abstracta (**AST**). 
+
+Rust divide las macros en dos grandes categorías:
+1.  **Macros Procedimentales**: Son funciones escritas en Rust que se ejecutan durante la compilación. Reciben un flujo de fichas de código (`TokenStream`), lo manipulan y devuelven otro `TokenStream`. Son sumamente potentes (como `#[derive(Serialize)]`), pero requieren sus propios crates y aumentan significativamente los tiempos de compilación.
+2.  **Macros Declarativas (`macro_rules!`)**: Son macros que funcionan mediante **coincidencia de patrones** (*pattern matching*) de fichas de código. Son seguras, se procesan extremadamente rápido y están integradas en el propio compilador. Es el tipo de macro que utilizaremos aquí.
+
+##### Anatomía de `macro_rules!`
+
+Una macro declarativa define reglas compuestas de un **patrón** (qué sintaxis buscar) y una **expansión** (qué código generar):
+
+```rust
+macro_rules! mi_macro {
+    ( patron_a ) => { codigo_generado_a };
+    ( patron_b ) => { codigo_generado_b };
+}
+```
+
+Para capturar partes del código del usuario y usarlas en la expansión, definimos variables precedidas por el signo `$` asociadas a un **clasificador sintáctico** (o *designador*):
+*   `$val:expr`: Captura una **expresión** válida de Rust (como `42`, `x + 1` o `objeto.metodo()`).
+*   `$val:ident`: Captura un **identificador** (como un nombre de variable o función, ej: `mi_variable`).
+*   `$val:tt`: Captura un **Token Tree** (un único token de sintaxis, o un bloque entero de tokens rodeado por paréntesis, llaves o corchetes, ej: `[1, 2, 3]`).
+
+También podemos capturar repeticiones de patrones usando la sintaxis `$( ... )*` (cero o más repeticiones) o `$( ... ),*` (cero o más repeticiones separadas por comas).
 
 #### El trait `IntoValue`
 
