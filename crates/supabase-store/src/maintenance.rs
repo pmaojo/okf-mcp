@@ -265,11 +265,9 @@ impl StoreMaintenance for SupabaseStore {
             None => return Ok(EmbedOutcome::default()),
         };
 
-        // Clonamos el pool UNA VEZ antes de cualquier bloque async;
-        // `&self.pool.clone()` dentro de un `block_on!` capturaría `self`
-        // en el closure `async move`, impidiendo usarlo luego.
-        let pool = self.pool.clone();
-
+        // Clonamos el pool ANTES DE CADA bloque async; el macro block_on!
+        // captura por movimiento en async move, consumiendo la variable.
+        let pool_1 = self.pool.clone();
         let rows = crate::block_on! {
             pg_query(
                 "SELECT h.concept_id, b.raw, h.content_id
@@ -284,13 +282,15 @@ impl StoreMaintenance for SupabaseStore {
             )
             .bind(path_prefix)
             .bind(max as i64)
-            .fetch_all(&pool)
+            .fetch_all(&pool_1)
             .await
         }.map_err(|e| StoreError::Backend(e.to_string()))?;
+        // pool_1 se mueve aquí dentro; ya no está disponible.
 
         let mut outcome = EmbedOutcome::default();
         let client = reqwest::Client::new();
 
+        let pool_2 = self.pool.clone();
         for row in rows {
             let concept_str: String = row.get("concept_id");
             let concept = ConceptId::parse(&concept_str).map_err(|e| StoreError::Backend(e.to_string()))?;
@@ -299,7 +299,7 @@ impl StoreMaintenance for SupabaseStore {
 
             // Clonamos pool, client y gemini_key en cada ciclo para evitar
             // que el async move los consuma en la primera iteración
-            let p = pool.clone();
+            let p = pool_2.clone();
             let c = client.clone();
             let k = gemini_key.clone();
             let res = crate::block_on! {
@@ -310,7 +310,9 @@ impl StoreMaintenance for SupabaseStore {
                 Err(e) => outcome.failed.push((concept, e.to_string())),
             }
         }
+        // pool_2 se mueve aquí dentro (primera iteración); ya no está disponible.
 
+        let pool_3 = self.pool.clone();
         let remaining = crate::block_on! {
             pg_query_scalar::<i64>(
                 "SELECT COUNT(*)
@@ -321,9 +323,10 @@ impl StoreMaintenance for SupabaseStore {
                    AND (e.concept_id IS NULL OR e.content_id IS NULL OR e.content_id <> h.content_id)",
             )
             .bind(path_prefix)
-            .fetch_one(&pool)
+            .fetch_one(&pool_3)
             .await
         }.map_err(|e| StoreError::Backend(e.to_string()))?;
+        // pool_3 se mueve aquí dentro.
 
         outcome.remaining = remaining as usize;
         Ok(outcome)
