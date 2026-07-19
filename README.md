@@ -37,7 +37,7 @@ La referencia de API generada con `cargo doc` se publica en
 ┌────────────────────────────────────────────────────────────────────┐
 │ mcp-core     JSON-RPC 2.0 + ciclo de vida MCP + despacho           │
 │ json-mini    parser/serializador JSON educativo                    │
-│ memory-tools 14 herramientas MCP genéricas sobre MemoryRepository  │
+│ memory-tools  17 herramientas MCP genéricas sobre MemoryRepository │
 │ store-core   puerto MemoryRepository + contrato Liskov             │
 │ memory-model ConceptId, ContentId, Budget, Revision, Principal     │
 │ okf-core     frontmatter YAML (subconjunto) + enlaces [[...]]      │
@@ -149,7 +149,7 @@ curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
 navegador se acepta; sin configurar, cualquier origin pasa — aceptable
 en desarrollo, nunca en producción.
 
-## Las 14 herramientas
+## Las 17 herramientas
 
 | Herramienta | Qué hace |
 | --- | --- |
@@ -166,6 +166,9 @@ en desarrollo, nunca en producción.
 | `memory_validate` | reportar enlaces rotos, referencias a borrados y embeddings obsoletos |
 | `memory_status` | resumen operativo rápido de la salud del sistema |
 | `memory_stats` | estadísticas del grafo (hubs, huérfanos, recuentos de tipos/tags) |
+| `spec_propose` | crear un `spec` (requisitos + diseño) spec-driven, antes de implementar |
+| `spec_tasks` | descomponer un spec ya propuesto en tareas enlazadas y rastreables |
+| `spec_status` | progreso de un spec en una sola llamada (retomar trabajo, o que otro agente pregunte) |
 | `skill_ingest` | ingerir skills de un repo/carpeta/archivo externo del lado del servidor |
 
 ### `skill_ingest`
@@ -240,6 +243,51 @@ Owners de confianza (`SKILL_INGEST_TRUSTED_OWNERS`, por defecto solo
 `anthropics`) siguen pasando por el heurístico, pero sus avisos no
 viajan en la respuesta — sus repos de skills ya pasan por revisión
 propia, así que el mismo escrutinio ahí sería ruido.
+
+### Spec-driven development: `spec_propose` / `spec_tasks` / `spec_status`
+
+Tres herramientas para el mismo patrón que popularizaron [OpenSpec](https://github.com/Fission-AI/OpenSpec)
+y [GitHub Spec Kit](https://github.com/github/spec-kit) — acordar requisitos y
+diseño ANTES de escribir código — pero sobre la memoria compartida en vez de
+archivos locales: cualquier cliente MCP (Claude Code, ChatGPT, u otro) puede
+proponer el spec, y **cualquier otro** (en otra sesión, en otro momento,
+incluso en otro agente) puede retomarlo o preguntar el progreso, porque el
+estado no vive en el contexto de una conversación — vive en el grafo.
+
+No hay tipos ni tablas nuevas: un `spec` es un concepto `type: spec` con
+secciones "Requisitos"/"Diseño"; una `task` es `type: task` enlazada de vuelta
+con `[[implements:<spec_id>]]`. El estado de ambos es un tag `status-*`
+(`status-proposed`, `status-pending`, `status-in_progress`, `status-done`,
+`status-blocked`), así que avanzar una tarea es un `memory_patch` normal
+(`remove_tags`/`add_tags`) — no hace falta una cuarta herramienta para eso.
+
+```json
+{"name":"spec_propose","arguments":{
+  "concept_id":"specs/busqueda-hibrida-real",
+  "title":"Hybrid search en una sola consulta SQL",
+  "requirements":"Combinar ranking textual y semántico en un solo ORDER BY...",
+  "design":"Normalizar ambas distancias a [0,1] y sumarlas con un peso configurable..."
+}}
+```
+
+```json
+{"name":"spec_tasks","arguments":{
+  "spec_id":"specs/busqueda-hibrida-real",
+  "tasks":[
+    {"title":"Normalizar distancia de coseno a 0-1"},
+    {"title":"Añadir peso configurable", "description":"Via budget o argumento de memory_search"}
+  ]
+}}
+```
+
+```json
+{"name":"spec_status","arguments":{"spec_id":"specs/busqueda-hibrida-real"}}
+```
+
+`spec_status` devuelve el estado del propio spec, cuántas tareas hay por
+estado, el progreso (0-1) y la lista de tareas pendientes — todo en una sola
+llamada, calculado con `backlinks()` (ya existente) sin releer cada tarea una
+por una.
 
 ## Desplegar en Vercel
 

@@ -79,6 +79,19 @@ Ese `where` exige CAPACIDADES (repositorio + fuente de vecinos), no
 un tipo concreto. `InMemoryStore` las tiene hoy; el adaptador
 Supabase las tendrá mañana; el `McpServer` no distingue.
 
+> **Nota (estado actual):** `MemoryTools<R>` de hoy tiene bastantes más
+> campos y muchas más herramientas que las cuatro de este capítulo (17 en
+> total — ver el README para la lista completa), pero la firma genérica de
+> arriba sigue intacta: cada herramienta nueva (`memory_patch`,
+> `skill_ingest`, y las tres de spec-driven development,
+> `spec_propose`/`spec_tasks`/`spec_status`) se añadió como un método más
+> sobre el mismo `impl<R> ToolHandler for MemoryTools<R>`, sin tocar el
+> `where` ni el transporte. Las tres últimas no traen ni esquema ni almacén
+> nuevo: un `spec` y una `task` son conceptos OKF corrientes (`type: spec`,
+> `type: task`, enlazados con `[[implements:...]]`), así que viven en este
+> mismo archivo por la misma razón que todo lo demás — son traducción
+> JSON↔dominio, no protocolo ni persistencia.
+
 ¿Y el transporte, el que parecía el protagonista? Sesenta líneas:
 
 ```rust

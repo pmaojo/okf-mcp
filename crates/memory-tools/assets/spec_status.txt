@@ -1,0 +1,1 @@
+Resume en una sola llamada el progreso de un `spec`: su propio estado, cuántas tareas hay por estado (`pending`/`in_progress`/`done`/`blocked`), y cuáles siguen pendientes. Pensado para retomar trabajo cortado a mitad de sesión, o para que otro agente (incluso en otro cliente MCP) pregunte "¿cómo va esto?" sin tener que releer el spec y cada tarea una por una.
