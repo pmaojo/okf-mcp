@@ -93,7 +93,7 @@ where
         reason: String,
     ) -> Result<DeleteOutcome, StoreError> {
         // 1. Borrar de la fuente de verdad (GitHub)
-        let outcome = self.github.delete(id, expected.clone(), actor, reason.clone())?;
+        let outcome = self.github.delete(id, expected, actor, reason.clone())?;
 
         // 2. Borrar de Supabase (best effort)
         if let Err(e) = self.supabase.delete(id, expected, actor, reason) {
