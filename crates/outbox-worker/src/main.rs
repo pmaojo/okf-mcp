@@ -5,6 +5,19 @@
 //! equivalente para Vercel (una invocación por Cron, sin loop) vive en
 //! `crates/vercel-entry/api/outbox.rs`, reutilizando exactamente la
 //! misma `process_batch`.
+//!
+//! ## Despliegue en Railway
+//!
+//! El repositorio incluye configuración lista para Railway:
+//! - `Procfile` en la raíz: define el proceso `worker`.
+//! - `railway.toml`: configura el build de Nixpacks y el comando de inicio.
+//! - `DEPLOY_RAILWAY.md`: guía paso a paso.
+//!
+//! Variables de entorno requeridas:
+//! - `POSTGRES_URL`
+//! - `GITHUB_TOKEN`
+//! - `GITHUB_REPO`
+//! - `GEMINI_API_KEY` (opcional)
 
 #![forbid(unsafe_code)]
 

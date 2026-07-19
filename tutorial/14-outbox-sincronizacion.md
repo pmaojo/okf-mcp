@@ -212,6 +212,24 @@ Para desplegar el worker:
 3. Configura `GEMINI_API_KEY` (clave de la API de Google AI Studio).
 4. Configura `POSTGRES_URL` apuntando a tu base de datos de Supabase.
 
+### Despliegue en Railway
+
+El repositorio incluye configuración lista para desplegar el daemon en
+[Railway](https://railway.app):
+
+- `Procfile`: define el proceso `worker` que ejecuta el binario compilado.
+- `railway.toml`: configura el build de Nixpacks y el comando de inicio.
+- `DEPLOY_RAILWAY.md`: guía paso a paso con variables de entorno y solución de problemas.
+
+Pasos resumidos:
+
+1. Crea un proyecto en Railway conectando el repo `pmaojo/okf-mcp`.
+2. Añade una base de datos PostgreSQL (o usa Supabase) y configura `POSTGRES_URL`.
+3. Configura `GITHUB_TOKEN`, `GITHUB_REPO` y, opcionalmente, `GEMINI_API_KEY`.
+4. Railway compilará el workspace con `cargo build --release -p outbox-worker` y ejecutará el daemon.
+
+Para más detalles, consulta [`DEPLOY_RAILWAY.md`](../DEPLOY_RAILWAY.md).
+
 ## 9. Principios SOLID en juego
 
 * **S (Responsabilidad Única):** El worker no valida el formato de los documentos ni procesa peticiones JSON-RPC. Su única y exclusiva responsabilidad es despachar de forma eventual e idempotente los eventos del outbox hacia los sistemas satélite.

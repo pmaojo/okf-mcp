@@ -305,6 +305,24 @@ Hay dos formas de ejecutarlo:
   Vercel Cron. Ejecuta un lote por invocación; el cron está declarado en
   `crates/vercel-entry/vercel.json`.
 
+## Desplegar el outbox-worker en Railway
+
+El repositorio incluye todo lo necesario para desplegar el daemon en
+[Railway](https://railway.app):
+
+- `Procfile`: define el proceso `worker`.
+- `railway.toml`: configura el build de Nixpacks y el comando de inicio.
+- `DEPLOY_RAILWAY.md`: guía paso a paso.
+
+Pasos resumidos:
+
+1. Crea un proyecto en Railway conectando el repo `pmaojo/okf-mcp`.
+2. Añade una base de datos PostgreSQL (o usa Supabase) y configura `POSTGRES_URL`.
+3. Configura `GITHUB_TOKEN`, `GITHUB_REPO` y, opcionalmente, `GEMINI_API_KEY`.
+4. Railway compilará el workspace con `cargo build --release -p outbox-worker` y ejecutará el daemon.
+
+Para más detalles, consulta [`DEPLOY_RAILWAY.md`](DEPLOY_RAILWAY.md).
+
 Variables de entorno:
 
 | Variable | Obligatoria | Uso |
