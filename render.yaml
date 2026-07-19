@@ -1,0 +1,28 @@
+# Render Blueprint (config-as-code) para okf-mcp outbox-worker.
+# Docs: https://docs.render.com/blueprint-spec
+
+services:
+  - type: worker
+    name: okf-outbox-worker
+    runtime: docker
+    plan: starter
+    envVars:
+      - key: POSTGRES_URL
+        fromDatabase:
+          name: okf-postgres
+          property: connectionString
+      - key: GITHUB_TOKEN
+        generateValue: false
+      - key: GITHUB_REPO
+        generateValue: false
+      - key: GEMINI_API_KEY
+        generateValue: false
+    region: oregon
+    branch: main
+    # El Dockerfile ya define el CMD; Render solo necesita saber que es Docker.
+    dockerfilePath: ./Dockerfile
+
+databases:
+  - name: okf-postgres
+    plan: starter
+    region: oregon

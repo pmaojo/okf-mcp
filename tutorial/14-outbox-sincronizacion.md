@@ -230,6 +230,24 @@ Pasos resumidos:
 
 Para más detalles, consulta [`DEPLOY_RAILWAY.md`](../DEPLOY_RAILWAY.md).
 
+### Despliegue en Render
+
+Si el trial de Railway ha expirado, el repositorio también incluye configuración lista para desplegar el daemon en [Render](https://render.com), que ofrece una capa gratuita con workers persistentes y PostgreSQL:
+
+- `Dockerfile`: imagen multi-etapa que compila el workspace y ejecuta `outbox-worker`.
+- `render.yaml`: blueprint de Render para crear el worker y la base de datos.
+- `.dockerignore`: evita copiar archivos innecesarios al contexto de build.
+- `DEPLOY_RENDER.md`: guía paso a paso.
+
+Pasos resumidos:
+
+1. Crea un proyecto en Render conectando el repo `pmaojo/okf-mcp`.
+2. Usa el blueprint `render.yaml` para crear el worker y la base de datos.
+3. Configura `GITHUB_TOKEN`, `GITHUB_REPO` y, opcionalmente, `GEMINI_API_KEY`.
+4. Render desplegará el daemon automáticamente.
+
+Para más detalles, consulta [`DEPLOY_RENDER.md`](../DEPLOY_RENDER.md).
+
 ## 9. Principios SOLID en juego
 
 * **S (Responsabilidad Única):** El worker no valida el formato de los documentos ni procesa peticiones JSON-RPC. Su única y exclusiva responsabilidad es despachar de forma eventual e idempotente los eventos del outbox hacia los sistemas satélite.

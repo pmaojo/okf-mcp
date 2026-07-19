@@ -10,10 +10,11 @@
 //! que `mcp_http::route` / `crates/vercel-entry/api/mcp.rs`: la lógica
 //! pura vive en un crate compartido, cada transporte solo la envuelve.
 //!
-//! ## Despliegue en Railway
+//! ## Despliegue en Railway o Render
 //!
 //! El repositorio incluye configuración lista para desplegar este worker en
-//! Railway: consulta `Procfile`, `railway.toml` y `DEPLOY_RAILWAY.md` en la
+//! Railway o Render: consulta `Procfile`/`railway.toml`/`DEPLOY_RAILWAY.md`
+//! (Railway) y `Dockerfile`/`render.yaml`/`DEPLOY_RENDER.md` (Render) en la
 //! raíz del proyecto.
 
 #![forbid(unsafe_code)]

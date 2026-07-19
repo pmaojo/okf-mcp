@@ -6,12 +6,12 @@
 //! `crates/vercel-entry/api/outbox.rs`, reutilizando exactamente la
 //! misma `process_batch`.
 //!
-//! ## Despliegue en Railway
+//! ## Despliegue en Railway o Render
 //!
-//! El repositorio incluye configuración lista para Railway:
-//! - `Procfile` en la raíz: define el proceso `worker`.
-//! - `railway.toml`: configura el build de Nixpacks y el comando de inicio.
-//! - `DEPLOY_RAILWAY.md`: guía paso a paso.
+//! El repositorio incluye configuración lista para desplegar este daemon en
+//! Railway o Render:
+//! - Railway: `Procfile`, `railway.toml` y `DEPLOY_RAILWAY.md`.
+//! - Render: `Dockerfile`, `render.yaml`, `.dockerignore` y `DEPLOY_RENDER.md`.
 //!
 //! Variables de entorno requeridas:
 //! - `POSTGRES_URL`

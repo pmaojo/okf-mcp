@@ -1,0 +1,8 @@
+# Docker ignore para okf-mcp
+# Evita copiar archivos innecesarios al contexto de build.
+
+/target
+.git
+.github
+*.md
+!README.md
