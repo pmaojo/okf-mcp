@@ -175,6 +175,33 @@ falla y comprueba que el documento persiste y queda un evento pendiente. El
 rojo que buscamos observar no es un error HTTP bonito, sino una pérdida de
 sincronización: commit confirmado sin outbox o outbox procesado dos veces.
 
+## 7b. El Reconciliador Inverso: GitHub -> Supabase
+
+Cuando el servidor MCP opera en modo híbrido (`IndexedStore`), las escrituras del usuario viajan directamente a GitHub (la fuente de verdad última) y se hace un intento de mejor esfuerzo (*best-effort*) de actualizar Supabase sincrónicamente. 
+
+Para garantizar la consistencia eventual si Supabase estuvo caída, o para sincronizar cambios empujados directamente al repositorio de GitHub (por ejemplo, mediante un `git push` de la terminal de un usuario o una edición en la web de GitHub), implementamos un **bucle de reconciliación inversa** en el `outbox-worker`.
+
+Este bucle de reconciliación actúa como un controlador de estado continuo y sigue este algoritmo en cada ciclo:
+
+1.  **Obtención de la realidad (GitHub)**: Llama a `github_store.search` y `github_store.get` (usando la interfaz pública abstracta de `MemoryRepository`) para obtener todos los conceptos vivos en el repositorio con sus contenidos, hashes y versiones.
+2.  **Lectura del índice actual (Supabase)**: Consulta las tablas `heads` y `blobs` de Supabase para tener un mapa de lo que está registrado actualmente en la base de datos (incluyendo si está marcado como borrado lógico).
+3.  **Conciliación de diferencias**:
+    *   **Crear o Actualizar**: Si un concepto de GitHub no existe en Supabase, o si su hash de contenido (`content_id`) o versión difieren, se inicia una transacción SQL para:
+        *   Insertar el raw text en `blobs`.
+        *   Actualizar `heads` (limpiando `deleted_at`).
+        *   Insertar una entrada en `revisions` firmada por `system/reconciler`.
+        *   Reconstruir las relaciones en `links`.
+        *   *Opcional*: Solicitar a la API de Gemini el vector de embeddings y guardarlo en la tabla `embeddings`.
+    *   **Borrado Lógico**: Si un concepto existe como activo en Supabase pero no se encuentra en el listado de GitHub, significa que fue eliminado externamente. Se realiza un borrado lógico en Supabase (`deleted_at = CURRENT_TIMESTAMP`), se borran sus enlaces salientes y se elimina su embedding vectorial.
+
+### Optimización y Rate Limits
+
+Dado que la API REST de GitHub tiene un límite de cuota (típicamente 5000 peticiones por hora para tokens autenticados), no podemos escanear GitHub cada 5 segundos. Por ello:
+*   En el endpoint serverless de Vercel `/api/outbox`, la reconciliación se ejecuta una vez por llamada (controlado por Vercel Cron, ej. cada 10 minutos).
+*   En el daemon persistente de `outbox-worker`, la reconciliación corre inmediatamente al iniciar y luego se repite periódicamente cada 5 minutos (aproximadamente 60 ciclos de inactividad de 5 segundos).
+
+Esto mantiene tu base de datos de Supabase en sincronía eventual y garantiza que la búsqueda semántica (`memory_search`) siempre tenga acceso a la realidad de los archivos de GitHub.
+
 ## 8. Frontera de producción
 
 > 🧰 **La rueda de serie:** el patrón outbox es SQL + disciplina (sin crate), pero un framework de jobs como [`apalis`](https://docs.rs/apalis) añade reintentos, backoff y métricas. El mapa completo y el criterio para elegir: [La rueda de serie](la-rueda-de-serie.md).

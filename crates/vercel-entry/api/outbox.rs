@@ -56,6 +56,20 @@ async fn outbox_handler(headers: HeaderMap) -> Response {
     let pool = db::get_db_pool(&db_url).await;
     let client = reqwest::Client::new();
 
+    let github_store = github_store::GithubStore::from_env();
+    if let Ok(ref gh_store) = github_store {
+        if let Err(e) = outbox_worker::reconcile_github_to_supabase(
+            &pool,
+            &client,
+            gh_store,
+            gemini_key.as_deref(),
+        )
+        .await
+        {
+            eprintln!("Error en la reconciliación GitHub -> Supabase: {}", e);
+        }
+    }
+
     match outbox_worker::process_batch(
         &pool,
         &client,

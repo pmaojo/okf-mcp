@@ -9,6 +9,10 @@
 #![warn(missing_docs)]
 
 pub mod contract;
+/// Adaptador compuesto para CQRS / Almacenamiento indexado.
+pub mod indexed_store;
+
+pub use indexed_store::IndexedStore;
 
 use conflict_core::Conflict;
 use memory_model::{Budget, ConceptId, ContentId, Principal, Revision};
