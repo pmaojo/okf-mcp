@@ -1,0 +1,1 @@
+Borrado lógico de un concepto. Deja constancia de la baja en la historia de revisiones. REGLA OPERATIVA: Requiere obligatoriamente el expected_hash obtenido mediante memory_resolve para prevenir el borrado accidental de cambios realizados en paralelo por otros agentes.

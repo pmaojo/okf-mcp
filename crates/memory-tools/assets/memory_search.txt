@@ -1,0 +1,1 @@
+Busca conceptos en la memoria de manera híbrida: primero coincidencias exactas por subcadena, luego similitud semántica. Devuelve candidatos compactos con su hash y URI. REGLA OPERATIVA: Antes de intentar editar o borrar cualquier concepto retornado por la búsqueda, debes consultar su contenido exacto e expected_hash llamando a `memory_resolve`.

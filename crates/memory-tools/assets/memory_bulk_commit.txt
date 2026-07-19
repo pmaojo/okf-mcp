@@ -1,0 +1,1 @@
+Aplica un conjunto de escrituras de commits en lote. REGLA OPERATIVA: Si `atomic` es true, el lote completo se aplica o se descarta (rollback) en caso de conflicto. Es el método recomendado para realizar cambios transaccionales que involucren actualizar múltiples conceptos u organizar enlaces a la vez manteniendo la integridad referencial del grafo.

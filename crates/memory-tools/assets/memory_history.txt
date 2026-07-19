@@ -1,0 +1,1 @@
+Historia completa de revisiones de un concepto, de la más reciente a la más antigua. Permite rastrear qué cambios se hicieron, cuándo, quién los hizo y los motivos documentados en el campo `reason` al hacer commit. Pagina con before_seq.

@@ -1,0 +1,1 @@
+Devuelve todos los enlaces entrantes (backlinks) que apuntan hacia el concepto especificado, indicando qué otros documentos le enlazan mediante [[enlaces]] y con qué tipo de relación.

@@ -1,0 +1,1 @@
+Fuerza la generación e indexación inmediata de embeddings para los documentos cuyos embeddings estén pendientes u obsoletos. Recomendada tras hacer commits masivos para habilitar la búsqueda semántica en ellos.

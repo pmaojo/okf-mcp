@@ -1,0 +1,1 @@
+Lista metadatos de conceptos (concept_id, hash, type, tags) bajo un prefijo de ruta lógica opcional sin descargar su contenido completo. Muy útil para hacer listados rápidos de directorios o colecciones enteras (ej: listar todo bajo 'people/').
