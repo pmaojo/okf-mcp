@@ -190,9 +190,13 @@ trabajo pesado al servidor.
   **determinista** — se genera solo la cabecera OKF (`type: skill`,
   `title`, `tags`, `source`) y el contenido original se conserva
   íntegro, etiquetado `verbatim-import`. Con `synthesize: true` el
-  servidor genera con Gemini un resumen original (etiquetado
-  `synthesized`) en lugar del texto de terceros — útil si la licencia
-  de la fuente no permite copiarlo.
+  servidor genera un resumen original (etiquetado `synthesized`) en
+  lugar del texto de terceros, con el primer proveedor LLM disponible
+  (ver más abajo) — útil si la licencia de la fuente no permite
+  copiarlo. **Recomendación de uso:** deja el valor por defecto
+  (verbatim) cuando la licencia de la fuente sea permisiva y esté
+  confirmada (MIT, Apache, BSD); pide `synthesize: true` solo cuando la
+  licencia sea restrictiva o no quede clara.
 - `dry_run` (opcional): devuelve el plan (unidades, títulos, acciones)
   sin escribir nada.
 
@@ -208,8 +212,28 @@ La herramienta solo se anuncia en despliegues con el adaptador de
 descarga configurado (`vercel-entry`); `mcp-stdio` y `mcp-http`
 locales son `std`-only y no la exponen. `GITHUB_TOKEN` (opcional)
 sube el límite de peticiones de la API de GitHub y permite repos
-privados; `GEMINI_SYNTHESIS_MODEL` (opcional) cambia el modelo de
-síntesis sin redesplegar (por defecto `gemini-3.5-flash`).
+privados.
+
+#### Proveedores de síntesis y respaldo automático
+
+`synthesize: true` no depende de un único proveedor: el servidor
+encadena los que estén configurados y, si uno falla (típicamente un
+HTTP 429 por cuota agotada), prueba el siguiente automáticamente
+(`ingest_http::FallbackSynthesizer`). Con una sola clave configurada no
+hay fallback, solo ese proveedor.
+
+| Variable | Proveedor | Modelo por defecto | Variable de modelo |
+| -------- | --------- | ------------------- | ------------------- |
+| `GEMINI_API_KEY` | Gemini (primero, mismo proveedor que los embeddings) | `gemini-3.5-flash` | `GEMINI_SYNTHESIS_MODEL` |
+| `GROQ_API_KEY` | Groq — free tier alto, muy rápido | `llama-3.3-70b-versatile` | `GROQ_SYNTHESIS_MODEL` |
+| `OPENROUTER_API_KEY` | OpenRouter — varios modelos gratis, ya hace fallback interno entre proveedores | `meta-llama/llama-3.3-70b-instruct:free` | `OPENROUTER_SYNTHESIS_MODEL` |
+| `CEREBRAS_API_KEY` | Cerebras — velocidad similar a Groq, free tier | `llama-3.3-70b` | `CEREBRAS_SYNTHESIS_MODEL` |
+| `MISTRAL_API_KEY` | Mistral — secundario, límites más bajos | `mistral-small-latest` | `MISTRAL_SYNTHESIS_MODEL` |
+| `COHERE_API_KEY` | Cohere (API de compatibilidad OpenAI) — secundario, límites más bajos | `command-r7b-12-2024` | `COHERE_SYNTHESIS_MODEL` |
+
+El orden de la tabla es el orden de intento. Todas menos Gemini
+comparten un solo cliente (`ingest_http::ChatCompletionSynthesizer`)
+porque exponen el mismo endpoint de chat compatible con OpenAI.
 
 ## Desplegar en Vercel
 
@@ -233,12 +257,19 @@ síntesis sin redesplegar (por defecto `gemini-3.5-flash`).
      pantalla de consentimiento hacia Supabase.
    - `GEMINI_API_KEY` (opcional): habilita búsqueda semántica y
      embeddings; sin ella, la búsqueda degrada a coincidencia textual.
-     También habilita el modo `synthesize: true` de `skill_ingest`.
+     También habilita (como primer proveedor) el modo
+     `synthesize: true` de `skill_ingest`.
    - `GITHUB_TOKEN` (opcional): lo usa `skill_ingest` para subir el
      límite de peticiones de la API de GitHub y acceder a repos
      privados al descargar fuentes.
+   - `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `CEREBRAS_API_KEY`,
+     `MISTRAL_API_KEY`, `COHERE_API_KEY` (opcionales): respaldo
+     automático de la síntesis de `skill_ingest` si Gemini falla o no
+     está configurada — ver la tabla de proveedores más arriba.
    - `GEMINI_SYNTHESIS_MODEL` (opcional): modelo de generación para la
-     síntesis de `skill_ingest` (por defecto `gemini-3.5-flash`).
+     síntesis de `skill_ingest` (por defecto `gemini-3.5-flash`). Cada
+     proveedor de respaldo tiene su propia variable de modelo (ver
+     tabla más arriba).
 4. Si usas la integración de Supabase en el marketplace de Vercel,
    mapea sus credenciales a los nombres anteriores. El código actual
    espera `POSTGRES_URL` para la conexión de base de datos.
