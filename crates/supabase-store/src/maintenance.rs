@@ -318,7 +318,7 @@ impl StoreMaintenance for SupabaseStore {
                  LEFT JOIN embeddings e ON h.concept_id = e.concept_id
                  WHERE h.deleted_at IS NULL
                    AND ($1::text IS NULL OR h.concept_id = $1 OR h.concept_id LIKE $1 || '/%')
-                   AND (e.concept_id IS NULL OR e.content_id IS NULL OR e.content_id <> h.content_id),
+                   AND (e.concept_id IS NULL OR e.content_id IS NULL OR e.content_id <> h.content_id)",
             )
             .bind(path_prefix)
             .fetch_one(&pool)
