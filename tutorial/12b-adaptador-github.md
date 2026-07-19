@@ -76,9 +76,11 @@ La conclusión ineludible al operar contra GitHub es que **la búsqueda necesita
 Para resolver este límite de rendimiento, implementamos el adaptador compuesto **`IndexedStore<G, S>`**, estructurando una arquitectura CQRS pura:
 1.  **Escrituras (Commands)**: Van de forma sincrónica e inmediata directamente a GitHub (`G`), que actúa como la fuente de verdad absoluta y duradera.
 2.  **Lecturas y Búsquedas (Queries)**: Se resuelven de forma rápida contra Supabase (`S`), que almacena los embeddings vectoriales (pgvector) y sirve de índice semántico optimizado.
-3.  **Sincronización robusta**: Al guardar, se realiza una escritura inmediata de "mejor esfuerzo" en Supabase. Si esta falla o si hay cambios directos en Git, el reconciliador periódico del outbox alinea la base de datos con la realidad de GitHub.
+3.  **Sincronización robusta**: Al guardar, se realiza una escritura inmediata de "mejor esfuerzo" en Supabase. Si esta falla, o si hay cambios directos en Git (un `git push` desde la terminal, una edición en la web de GitHub), el reconciliador del outbox alinea la base de datos con la realidad de GitHub — disparado por un webhook de GitHub casi al instante, o por el Cron de Vercel como red de seguridad (capítulo 14, sección 7b/7c).
 
 De este modo, se tiene el control de cambios completo de Git y la velocidad semántica vectorial de Supabase en paralelo.
+
+Un detalle sutil de esta arquitectura, encontrado auditando el código: como `G` ya escribió en GitHub de forma síncrona en el paso 1, el espejo "mejor esfuerzo" del paso 3 NO debe además encolar un evento de outbox que dispare una segunda escritura a GitHub — sería un commit duplicado por cada guardado. `outbox_worker::github_sync_credentials()` corta ese camino cuando `OKF_STORE=github` (detalle en el capítulo 14, sección 8).
 
 ## 9. Principios SOLID en juego
 
@@ -89,4 +91,16 @@ De este modo, se tiene el control de cambios completo de Git y la velocidad sem�
 
 1. **Guiado.** El código usa `Mutex` para proteger la caché. Compara esta elección con un diseño hipotético que usara `RefCell`. ¿Por qué `RefCell` rompe la posibilidad de compartir el adaptador a través del servidor MCP en `tokio`? Justifica en términos de `Send` y `Sync`.
 2. **Medio.** ¿Qué pasa si ocurre un conflicto de SHA en la API? Modifica (mentalmente o en el código) el flujo de `put_file` para implementar un retry automático vaciando la caché si devuelve un código 409 Conflict.
-3. **Abierto.** Diseña un sketch de arquitectura donde GitHub almacene la verdad absoluta y Supabase sirva exclusivamente como un índice derivado para búsqueda semántica. ¿Quién lanza el webhook y quién aplica el cambio a pgvector?
+3. **Abierto, con solución de referencia.** Diseña un sketch de arquitectura donde GitHub almacene la verdad absoluta y Supabase sirva exclusivamente como un índice derivado para búsqueda semántica. ¿Quién lanza el webhook y quién aplica el cambio a pgvector?
+
+   Antes de diseñar el tuyo, compara con la solución real de este repo:
+   [`crates/vercel-entry/api/github-webhook.rs`](../crates/vercel-entry/api/github-webhook.rs).
+   GitHub lanza el webhook (evento `push`, firmado con HMAC-SHA256 sobre
+   `GITHUB_WEBHOOK_SECRET`); el handler serverless verifica la firma en
+   tiempo constante y delega en la misma `reconcile_github_to_supabase`
+   que usa el Cron — quien aplica el cambio a `pgvector` es esa función
+   compartida, no el webhook en sí. Preguntas para comparar contra tu
+   sketch: ¿qué pasa si dos entregas del webhook llegan casi a la vez
+   (dos `push` seguidos)? ¿Qué pasa si el webhook nunca llega (entrega
+   perdida, secreto mal configurado)? La respuesta a la segunda es por
+   qué el Cron sigue existiendo en paralelo, no se elimina.

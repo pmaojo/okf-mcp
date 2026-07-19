@@ -286,7 +286,9 @@ Variables de entorno de `GithubStore::from_env()`:
 
 Para resolver esto, el servidor implementa el modo de almacenamiento compuesto **`IndexedStore`** (se activa automáticamente si `OKF_STORE=github` y `POSTGRES_URL` están configurados en el entorno): las escrituras van sincrónicamente a GitHub y el índice semántico se actualiza en Supabase. 
 
-Además, el daemon de `outbox-worker` y el Cron de Vercel incorporan un **bucle de reconciliación** (`reconcile_github_to_supabase`) que alinea periódicamente Supabase con el estado real del repositorio de GitHub (reparando el índice ante caídas o cambios directos hechos en la web de GitHub).
+Además, el daemon de `outbox-worker`, el Cron de Vercel y el webhook de GitHub (`/api/github-webhook`, ver más abajo) incorporan un **bucle de reconciliación** (`reconcile_github_to_supabase`) que alinea Supabase con el estado real del repositorio de GitHub (reparando el índice ante caídas o cambios directos hechos en la web de GitHub).
+
+En modo `IndexedStore`, `GithubStore` ya escribe cada commit/delete directamente en `{GITHUB_PATH}/{concept_id}.md` (git-data API); `outbox-worker::github_sync` (Contents API, ver la sección de Outbox) escribe en la misma ruta — comparten la función que resuelve `GITHUB_PATH` para que nunca puedan apuntar a carpetas distintas — pero se salta ese paso automáticamente cuando `OKF_STORE=github`, porque GitHub ya recibió la escritura y repetirla ahí sería un commit duplicado.
 
 
 ## Outbox, GitHub y embeddings
@@ -296,14 +298,19 @@ escrituras persistidas generan eventos pendientes, y un worker separado
 los procesa por lotes con `SKIP LOCKED` para permitir concurrencia sin
 pisarse.
 
-Hay dos formas de ejecutarlo:
+Hay tres formas de dispararlo:
 
 - `cargo run -p outbox-worker`: daemon de larga duración pensado para
   Fly.io, Railway, un contenedor o un VPS. Repite el procesamiento cada
   pocos segundos cuando no hay trabajo.
 - `/api/outbox` en `vercel-entry`: handler serverless pensado para
   Vercel Cron. Ejecuta un lote por invocación; el cron está declarado en
-  `crates/vercel-entry/vercel.json`.
+  `crates/vercel-entry/vercel.json` (por defecto, una vez al día — es la
+  red de seguridad, no el camino rápido).
+- `/api/github-webhook` en `vercel-entry`: reacciona a un `push` real en
+  el repositorio de GitHub y ejecuta `reconcile_github_to_supabase` al
+  instante, en vez de esperar al próximo tick del cron. Ver la
+  subsección siguiente.
 
 Variables de entorno:
 
@@ -312,14 +319,53 @@ Variables de entorno:
 | `POSTGRES_URL` | Sí | Conexión PostgreSQL/Supabase para leer y marcar eventos. |
 | `GITHUB_TOKEN` | No | Token para sincronizar documentos con GitHub. Si falta, se omite esa sincronización. |
 | `GITHUB_REPO` | No | Repositorio destino en formato `usuario/repositorio`. Si falta, se omite GitHub. |
+| `GITHUB_PATH` | No | Prefijo de directorio (mismo default `memoria` que `GithubStore::from_env`, ver arriba). Comparte la misma resolución que la lectura, para que escritura y reconciliación nunca miren carpetas distintas. |
 | `GEMINI_API_KEY` | No | Genera embeddings para `pgvector`; si falta, se omite esa parte. |
 | `ONCE` | No | En el daemon local, procesa un lote y sale cuando está presente. |
 | `CRON_SECRET` | Recomendado en Vercel | Protege `/api/outbox` con `Authorization: Bearer <CRON_SECRET>`. Sin él, el endpoint queda abierto para desarrollo. |
+| `GITHUB_WEBHOOK_SECRET` | Obligatoria para `/api/github-webhook` | Verifica la firma `X-Hub-Signature-256` (HMAC-SHA256) que GitHub envía en cada entrega. Sin ella, el endpoint responde `503` y no procesa nada — a diferencia de `CRON_SECRET`, aquí no hay modo abierto. |
+
+Cuando `OKF_STORE=github` (`IndexedStore` activo), `process_batch` **no**
+repite la sincronización con GitHub para los eventos `commit`/`delete`
+del outbox — `IndexedStore` ya escribió ahí de forma síncrona antes de
+encolar el evento, así que repetirlo sería un commit duplicado por cada
+escritura. Este corte lo decide
+[`outbox_worker::github_sync_credentials`](crates/outbox-worker/src/lib.rs),
+que ambos disparadores (`main.rs` y `api/outbox.rs`) consultan en vez de
+leer `GITHUB_TOKEN`/`GITHUB_REPO` directamente. El paso de embeddings del
+outbox no se ve afectado — sigue funcionando como red de reintento si el
+embedding inline del commit falló.
 
 El crate `gemini-embeddings` centraliza el modelo en la constante
 `MODEL`, actualmente `gemini-embedding-001`, y lo reutilizan tanto
 `supabase-store` para búsqueda semántica como `outbox-worker` para
 materializar embeddings.
+
+### Webhook de GitHub (reconciliación instantánea)
+
+Sin el webhook, un borrado o edición hecho directamente en GitHub (fuera
+de las herramientas MCP) tarda hasta el próximo tick del cron en
+reflejarse en Supabase — con el cron diario por defecto, hasta 24h en
+las que la búsqueda seguiría devolviendo un concepto ya borrado. El
+webhook cierra esa ventana a segundos.
+
+Configuración, en el repositorio de GitHub que apunta `GITHUB_REPO`
+(**no** en este repo de código — el webhook se registra donde vive el
+contenido):
+
+1. Genera un secreto: `openssl rand -hex 32`.
+2. Configúralo como `GITHUB_WEBHOOK_SECRET` en las variables de entorno
+   de Vercel.
+3. En el repo de contenido → Settings → Webhooks → Add webhook:
+   - Payload URL: `https://<tu-dominio>/api/github-webhook`
+   - Content type: `application/json`
+   - Secret: el mismo valor del paso 1
+   - Which events: "Just the push event"
+
+El handler verifica la firma en tiempo constante, ignora eventos que no
+sean `push` o que no sean sobre `GITHUB_BRANCH` (por defecto `main`), y
+delega en la misma `reconcile_github_to_supabase` que usa el cron — no
+hay lógica de reconciliación duplicada entre ambos disparadores.
 
 ## Tutorial
 

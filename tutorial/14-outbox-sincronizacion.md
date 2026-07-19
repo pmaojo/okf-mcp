@@ -86,6 +86,18 @@ let put_req = GithubPutRequest {
 };
 ```
 
+La ruta del archivo (`{GITHUB_PATH}/{concept_id}.md`, con el mismo
+default `memoria` que usa `GithubStore` en el capítulo 12b) la resuelve
+`concept_path()` en [`github_sync.rs`](../crates/outbox-worker/src/github_sync.rs),
+en vez de tenerla escrita dos veces. Estuvo hardcodeada como `docs/` en
+una versión anterior de este código — dos rutas independientes para el
+mismo archivo, una para escribir (aquí) y otra para leer (el
+reconciliador de la sección 7b), sin nada que las mantuviera
+sincronizadas. Si `GITHUB_PATH` se configuraba a cualquier valor
+distinto de `docs`, el reconciliador miraba una carpeta vacía y
+concluía que **todos** los conceptos habían sido borrados de GitHub —
+ver la sección 7b para las consecuencias de ese escenario.
+
 ### B. Indexación en `pgvector`
 Para habilitar búsquedas vectoriales, cargamos la extensión `vector` en
 PostgreSQL y guardamos los vectores obtenidos de la API de Gemini:
@@ -177,7 +189,7 @@ sincronización: commit confirmado sin outbox o outbox procesado dos veces.
 
 ## 7b. El Reconciliador Inverso: GitHub -> Supabase
 
-Cuando el servidor MCP opera en modo híbrido (`IndexedStore`), las escrituras del usuario viajan directamente a GitHub (la fuente de verdad última) y se hace un intento de mejor esfuerzo (*best-effort*) de actualizar Supabase sincrónicamente. 
+Cuando el servidor MCP opera en modo híbrido (`IndexedStore`), las escrituras del usuario viajan directamente a GitHub (la fuente de verdad última) y se hace un intento de mejor esfuerzo (*best-effort*) de actualizar Supabase sincrónicamente.
 
 Para garantizar la consistencia eventual si Supabase estuvo caída, o para sincronizar cambios empujados directamente al repositorio de GitHub (por ejemplo, mediante un `git push` de la terminal de un usuario o una edición en la web de GitHub), implementamos un **bucle de reconciliación inversa** en el `outbox-worker`.
 
@@ -194,13 +206,30 @@ Este bucle de reconciliación actúa como un controlador de estado continuo y si
         *   *Opcional*: Solicitar a la API de Gemini el vector de embeddings y guardarlo en la tabla `embeddings`.
     *   **Borrado Lógico**: Si un concepto existe como activo en Supabase pero no se encuentra en el listado de GitHub, significa que fue eliminado externamente. Se realiza un borrado lógico en Supabase (`deleted_at = CURRENT_TIMESTAMP`), se borran sus enlaces salientes y se elimina su embedding vectorial.
 
+El "mejor esfuerzo" hacia Supabase que abre esta sección usa el mismo `SupabaseStore::commit`/`delete` que el modo `OKF_STORE=supabase` normal — y ese método siempre encola un evento en el `outbox`, sin saber si quien lo llama es el flujo normal (donde Supabase es la fuente de verdad y ese evento es lo único que sincroniza a GitHub) o `IndexedStore` (donde GitHub *ya* recibió la escritura, de forma síncrona, un paso antes). Sin distinguir los dos casos, el paso A de la sección 3 repetiría, vía la API de Contents, un commit que la API de git data ya hizo — dos commits por cada guardado del usuario. `outbox_worker::github_sync_credentials()` (sección 8) resuelve esto devolviendo `(None, None)` cuando `OKF_STORE=github`, así que el paso A se salta sin tocar el paso B (embeddings), que sigue siendo la red de reintento legítima si el embedding inline falló.
+
 ### Optimización y Rate Limits
 
 Dado que la API REST de GitHub tiene un límite de cuota (típicamente 5000 peticiones por hora para tokens autenticados), no podemos escanear GitHub cada 5 segundos. Por ello:
-*   En el endpoint serverless de Vercel `/api/outbox`, la reconciliación se ejecuta una vez por llamada (controlado por Vercel Cron, ej. cada 10 minutos).
+*   En el endpoint serverless de Vercel `/api/outbox`, la reconciliación se ejecuta una vez por llamada, controlada por Vercel Cron — declarado en [`crates/vercel-entry/vercel.json`](../crates/vercel-entry/vercel.json), por defecto una vez al día (`0 3 * * *`). Es deliberadamente poco frecuente: es la red de seguridad, no el camino rápido (ver 7c).
 *   En el daemon persistente de `outbox-worker`, la reconciliación corre inmediatamente al iniciar y luego se repite periódicamente cada 5 minutos (aproximadamente 60 ciclos de inactividad de 5 segundos).
 
-Esto mantiene tu base de datos de Supabase en sincronía eventual y garantiza que la búsqueda semántica (`memory_search`) siempre tenga acceso a la realidad de los archivos de GitHub.
+Esto mantiene tu base de datos de Supabase en sincronía eventual y garantiza que la búsqueda semántica (`memory_search`) siempre tenga acceso a la realidad de los archivos de GitHub — con una ventana de hasta 24h (cron diario) en la que un borrado hecho directamente en GitHub seguiría siendo "visible" en `memory_search`. La sección 7c cierra esa ventana.
+
+## 7c. Reconciliación instantánea: el webhook de GitHub
+
+Esperar al cron para reaccionar a un cambio hecho directamente en GitHub (fuera de las herramientas MCP) es aceptable como red de seguridad, pero deja una ventana incómoda: con el cron diario del proyecto, un concepto borrado en la web de GitHub sigue apareciendo en `memory_search` hasta 24h después. `/api/github-webhook` en `vercel-entry` cierra esa ventana a segundos, sin sustituir el cron — lo complementa.
+
+El flujo es:
+
+1. GitHub manda un `POST` con el payload del evento y la cabecera `X-Hub-Signature-256` (HMAC-SHA256 del cuerpo crudo, firmado con el secreto configurado al crear el webhook).
+2. El handler recalcula el HMAC con `GITHUB_WEBHOOK_SECRET` y lo compara con `hmac::Mac::verify_slice` — comparación en tiempo constante, no un `==` sobre bytes, para no filtrar el secreto por temporización.
+3. Filtra por cabecera `X-GitHub-Event` (solo `push`; `ping` se responde `200` sin trabajo) y por rama (`payload["ref"]` debe ser `refs/heads/{GITHUB_BRANCH}`).
+4. Si pasa ambos filtros, llama exactamente a la misma `reconcile_github_to_supabase` que usa el cron — no hay una segunda implementación de la lógica de reconciliación, solo un disparador distinto.
+
+Un detalle de diseño no evidente: la reconciliación nunca escribe de vuelta a GitHub ni encola eventos de outbox (ver 7b), así que un `push` disparado por el propio `outbox-worker` (cuando `OKF_STORE=supabase` y el paso A sincroniza a GitHub) hace que el webhook se dispare sobre sí mismo — pero al llegar, el hash en Supabase ya coincide con el de GitHub, así que la reconciliación no hace nada (`needs_sync = false`) y no hay bucle. Sin esa propiedad (una reconciliación que solo lee de GitHub y solo escribe en Supabase, nunca al revés), habría un ciclo real: push → webhook → reconciliar → escribir en GitHub → push → webhook → ...
+
+Sin `GITHUB_WEBHOOK_SECRET` configurada, el endpoint responde `503` y no procesa nada — a diferencia de `CRON_SECRET` (sección 8), aquí no existe un modo abierto para desarrollo, porque un webhook público sin firma sería una invitación a disparar reconciliaciones (llamadas de pago a GitHub y Gemini) para cualquiera que adivine la URL.
 
 ## 8. Frontera de producción
 
@@ -211,6 +240,18 @@ Para desplegar el worker:
 2. Configura `GITHUB_REPO` (formato `usuario/repositorio`).
 3. Configura `GEMINI_API_KEY` (clave de la API de Google AI Studio).
 4. Configura `POSTGRES_URL` apuntando a tu base de datos de Supabase.
+5. Opcional: `GITHUB_BRANCH` (rama a sincronizar, por defecto `main`) y
+   `GITHUB_PATH` (prefijo de directorio, por defecto `memoria` —
+   compartido con `GithubStore::from_env`, capítulo 12b; ver la
+   sección 3.A sobre por qué esto tiene que ser una sola función y no
+   dos rutas escritas por separado).
+6. Si vas a usar el webhook de la sección 7c: `GITHUB_WEBHOOK_SECRET`
+   (obligatoria para ese endpoint — sin ella responde `503`) y el
+   webhook registrado en GitHub (Settings → Webhooks, en el repo de
+   contenido, no en el repo de código de este servidor).
+7. Si `OKF_STORE=github` (modo `IndexedStore`, capítulo 12b): no hace
+   falta ninguna variable extra para evitar el commit duplicado — lo
+   resuelve automáticamente `github_sync_credentials()` (sección 7b).
 
 ## 9. Principios SOLID en juego
 
