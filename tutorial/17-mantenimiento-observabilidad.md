@@ -2,7 +2,7 @@
 
 Crates: [`crates/store-core`](../crates/store-core/src/lib.rs) · [`crates/supabase-store`](../crates/supabase-store/src/lib.rs) · [`crates/memory-tools`](../crates/memory-tools/src/lib.rs)
 
-Un grafo de memoria que crece con commits de múltiples agentes y se sincroniza en segundo plano mediante un outbox asíncrono tiende inevitablemente a la entropía. Con el tiempo, aparecen enlaces rotos (documentos que apuntan a conceptos eliminados o inexistentes), embeddings ausentes u obsoletos (debido a fallos de red temporales con la API de Gemini) y eventos atascados en la cola de salida.
+Un grafo de memoria que crece con commits de múltiples agentes y se sincroniza en segundo plano mediante un outbox asíncrono tiende inevitablemente a la entropía. Con el tiempo, aparecen enlaces rotos (documentos que apuntan a conceptos eliminados o inexistentes), embeddings ausentes u obsoletos (debido a fallos de red temporales con el proveedor de embeddings activo — Gemini, o su respaldo Mistral/Cohere si Gemini falla, ver capítulo 14) y eventos atascados en la cola de salida.
 
 Si un cliente — o el propio sistema de control — tiene que leer y parsear todos los documentos uno a uno para detectar estos fallos de integridad, el sistema se vuelve lento e inmanejable. La observabilidad y el mantenimiento no deben ser un añadido de última hora; deben ser parte del diseño estructural del almacén.
 

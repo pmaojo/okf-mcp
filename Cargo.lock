@@ -2445,6 +2445,7 @@ name = "vercel-entry"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "gemini-embeddings",
  "github-store",
  "graph-core",
  "hex",

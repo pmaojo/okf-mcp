@@ -16,7 +16,7 @@ mod repository;
 mod maintenance;
 mod neighbors;
 
-use gemini_embeddings::embed;
+use gemini_embeddings::{embed_document, Embedded, EmbeddingKeys};
 use pgvector::Vector;
 use store_core::{SearchQuery, StoreError};
 use sqlx::postgres::{PgArguments, PgRow};
@@ -64,63 +64,74 @@ pub fn block_on<F: std::future::Future>(fut: F) -> F::Output {
 #[derive(Debug, Clone)]
 pub struct SupabaseStore {
     pool: PgPool,
-    /// Si está configurada, `search` embebe el texto de la consulta
-    /// con Gemini y ordena por similitud semántica (`pgvector`) en vez
-    /// de la coincidencia de subcadena (`ILIKE`) — ver [`Self::search`].
-    gemini_api_key: Option<String>,
+    /// Con al menos un proveedor configurado, `search` embebe el texto
+    /// de la consulta y ordena por similitud semántica (`pgvector`) en
+    /// vez de solo la coincidencia de subcadena (`ILIKE`) — ver
+    /// [`Self::search`].
+    embedding_keys: EmbeddingKeys,
 }
 
-/// Genera el embedding de `markdown` con Gemini y lo deja indexado en
-/// `pgvector`, registrando de QUÉ contenido es el vector
-/// (`content_id`): así `status`/`embed_pending` distinguen un
-/// embedding al día de uno obsoleto.
+/// Genera el embedding de `markdown` (con el primer proveedor
+/// disponible de `keys`) y lo deja indexado en `pgvector`, junto con
+/// de QUÉ contenido (`content_id`) y de QUÉ modelo (`embedding_model`)
+/// es el vector: `status`/`embed_pending` usan `content_id` para
+/// distinguir un embedding al día de uno obsoleto, y `search_semantic`
+/// usa `embedding_model` para no comparar nunca vectores de
+/// proveedores distintos (ver el comentario de módulo de
+/// `gemini_embeddings`).
 ///
 /// Es la ÚNICA puerta de escritura al índice semántico: la usan el
 /// camino inline (tras cada commit, best-effort) y `outbox-worker`
 /// (la reparación asíncrona). Dos escritores, una función — que no
-/// puedan divergir ni en modelo ni en dimensionalidad.
+/// puedan divergir ni en qué proveedor llamaron ni en qué modelo
+/// etiquetaron.
 pub async fn index_embedding(
     pool: &PgPool,
     client: &reqwest::Client,
-    gemini_key: &str,
+    keys: &EmbeddingKeys,
     concept_id: &str,
     content_id_hex: &str,
     markdown: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let values = embed(client, gemini_key, markdown).await?;
+    let Embedded { vector, model_id } = embed_document(client, keys, markdown).await?;
     pg_query(
-        "INSERT INTO embeddings (concept_id, embedding, content_id)
-         VALUES ($1, $2, $3)
+        "INSERT INTO embeddings (concept_id, embedding, content_id, embedding_model)
+         VALUES ($1, $2, $3, $4)
          ON CONFLICT (concept_id) DO UPDATE
              SET embedding = EXCLUDED.embedding,
-                 content_id = EXCLUDED.content_id",
+                 content_id = EXCLUDED.content_id,
+                 embedding_model = EXCLUDED.embedding_model",
     )
     .bind(concept_id)
-    .bind(Vector::from(values))
+    .bind(Vector::from(vector))
     .bind(content_id_hex)
+    .bind(model_id)
     .execute(pool)
     .await?;
     Ok(())
 }
 
 impl SupabaseStore {
-    /// Crea una nueva instancia de `SupabaseStore` a partir de las variables de entorno:
+    /// Crea una nueva instancia de `SupabaseStore` a partir de las
+    /// variables de entorno:
     /// - `POSTGRES_URL` (obligatoria)
-    /// - `GEMINI_API_KEY` (opcional)
+    /// - `GEMINI_API_KEY`, `MISTRAL_API_KEY`, `COHERE_API_KEY` (todas
+    ///   opcionales; con al menos una, la búsqueda semántica se activa
+    ///   — ver [`EmbeddingKeys::from_env`])
     pub fn from_env() -> Result<Self, StoreError> {
         let db_url = std::env::var("POSTGRES_URL")
             .map_err(|_| StoreError::Backend("falta POSTGRES_URL".into()))?;
-        let gemini_api_key = std::env::var("GEMINI_API_KEY").ok();
-        
+        let embedding_keys = EmbeddingKeys::from_env();
+
         let pool = block_on(async {
             PgPool::connect(&db_url).await
         }).map_err(|e| StoreError::Backend(format!("Error conectando a Postgres: {e}")))?;
 
-        Ok(Self::new(pool, gemini_api_key))
+        Ok(Self::new(pool, embedding_keys))
     }
 
-    pub fn new(pool: PgPool, gemini_api_key: Option<String>) -> Self {
-        SupabaseStore { pool, gemini_api_key }
+    pub fn new(pool: PgPool, embedding_keys: EmbeddingKeys) -> Self {
+        SupabaseStore { pool, embedding_keys }
     }
 
     async fn search_keyword(&self, query: &SearchQuery, limit: i64) -> Result<Vec<PgRow>, StoreError> {
@@ -158,25 +169,35 @@ impl SupabaseStore {
     /// en el ranking los conceptos con embedding calculado — por eso
     /// este camino nunca va solo: `search` antepone SIEMPRE las
     /// coincidencias exactas de texto, que no dependen del índice.
+    ///
+    /// Filtra SIEMPRE por `embedding_model = embedding.model_id`: con
+    /// la columna a dimensión variable (varios proveedores posibles),
+    /// comparar `<=>` contra un vector de otro modelo no da un error,
+    /// da un ranking sin significado — un documento indexado con el
+    /// proveedor de respaldo queda fuera de este ranking (sigue
+    /// encontrable por texto) hasta que se re-indexe con el proveedor
+    /// activo.
     async fn search_semantic(
         &self,
         query: &SearchQuery,
-        embedding: &[f32],
+        embedding: &Embedded,
         limit: i64,
     ) -> Result<Vec<PgRow>, StoreError> {
-        let vector = Vector::from(embedding.to_vec());
+        let vector = Vector::from(embedding.vector.clone());
         pg_query(
             "SELECT h.concept_id, h.content_id, h.doc_type, h.title, h.tags
              FROM heads h
              JOIN blobs b ON h.content_id = b.content_id
              JOIN embeddings e ON e.concept_id = h.concept_id
              WHERE h.deleted_at IS NULL
-               AND ($1::text IS NULL OR h.doc_type = $1)
-               AND ($2::text IS NULL OR $2 = ANY(h.tags))
-               AND ($3::text IS NULL OR h.concept_id = $3 OR h.concept_id LIKE $3 || '/%')
-             ORDER BY e.embedding <=> $4
-             LIMIT $5",
+               AND e.embedding_model = $1
+               AND ($2::text IS NULL OR h.doc_type = $2)
+               AND ($3::text IS NULL OR $3 = ANY(h.tags))
+               AND ($4::text IS NULL OR h.concept_id = $4 OR h.concept_id LIKE $4 || '/%')
+             ORDER BY e.embedding <=> $5
+             LIMIT $6",
         )
+        .bind(embedding.model_id)
         .bind(query.doc_type.as_deref())
         .bind(query.tag.as_deref())
         .bind(query.path_prefix.as_deref())
@@ -187,16 +208,19 @@ impl SupabaseStore {
         .map_err(|e| StoreError::Backend(e.to_string()))
     }
 
-    /// Embedding inline tras un commit, best-effort: si Gemini no
-    /// responde, el documento queda igualmente commiteado y visible
-    /// para la búsqueda por texto; el evento del outbox lo reparará.
+    /// Embedding inline tras un commit, best-effort: si ningún
+    /// proveedor responde, el documento queda igualmente commiteado y
+    /// visible para la búsqueda por texto; el evento del outbox lo
+    /// reparará.
     fn embed_inline(&self, concept_id: &str, content_id_hex: &str, markdown: &str) {
-        let Some(key) = self.gemini_api_key.as_deref() else { return };
+        if !self.embedding_keys.any_configured() {
+            return;
+        }
         let client = reqwest::Client::new();
         let res = block_on(index_embedding(
             &self.pool,
             &client,
-            key,
+            &self.embedding_keys,
             concept_id,
             content_id_hex,
             markdown,

@@ -204,8 +204,7 @@ async fn mcp_handler(method: Method, headers: HeaderMap, body: Bytes) -> Respons
             if std::env::var("POSTGRES_URL").is_ok() {
                 let db_url = std::env::var("POSTGRES_URL").unwrap();
                 let pool = db::get_db_pool(&db_url).await;
-                let gemini_api_key = std::env::var("GEMINI_API_KEY").ok().filter(|k| !k.is_empty());
-                let db_store = SupabaseStore::new(pool, gemini_api_key);
+                let db_store = SupabaseStore::new(pool, gemini_embeddings::EmbeddingKeys::from_env());
                 let store = store_core::IndexedStore::new(gh_store, db_store);
 
                 let synthesizer = build_synthesizer();
@@ -220,8 +219,7 @@ async fn mcp_handler(method: Method, headers: HeaderMap, body: Bytes) -> Respons
         _ => {
             let db_url = std::env::var("POSTGRES_URL").expect("POSTGRES_URL must be set");
             let pool = db::get_db_pool(&db_url).await;
-            let gemini_api_key = std::env::var("GEMINI_API_KEY").ok().filter(|k| !k.is_empty());
-            let store = SupabaseStore::new(pool, gemini_api_key);
+            let store = SupabaseStore::new(pool, gemini_embeddings::EmbeddingKeys::from_env());
             // `skill_ingest`: descarga server-side desde GitHub; por defecto
             // conserva el contenido original íntegro bajo cabecera OKF, y con
             // algún proveedor de síntesis configurado el cliente puede pedir

@@ -66,7 +66,7 @@ pub async fn process_batch(
     client: &reqwest::Client,
     github_token: Option<&str>,
     github_repo: Option<&str>,
-    gemini_key: Option<&str>,
+    embedding_keys: &gemini_embeddings::EmbeddingKeys,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     // 1. Obtener un lote de eventos pendientes usando FOR UPDATE SKIP LOCKED
     let mut tx = pool.begin().await?;
@@ -111,14 +111,12 @@ pub async fn process_batch(
             }
 
             // B. Generación de embeddings e indexación vectorial
-            if success {
-                if let Some(key) = gemini_key {
-                    match supabase_store::index_embedding(pool, client, key, &concept_id, &content_id, markdown).await {
-                        Ok(_) => {}
-                        Err(e) => {
-                            success = false;
-                            error_msg = format!("Embedding generation failed: {e}");
-                        }
+            if success && embedding_keys.any_configured() {
+                match supabase_store::index_embedding(pool, client, embedding_keys, &concept_id, &content_id, markdown).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        success = false;
+                        error_msg = format!("Embedding generation failed: {e}");
                     }
                 }
             }

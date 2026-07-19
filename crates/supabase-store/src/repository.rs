@@ -1,6 +1,6 @@
 use crate::{SupabaseStore, pg_query, pg_query_scalar};
 use conflict_core::{decide, CommitDecision, Conflict};
-use gemini_embeddings::embed;
+use gemini_embeddings::embed_query;
 use hash_core::sha256;
 use memory_model::{Budget, ConceptId, ContentId, Principal, Revision};
 use store_core::{
@@ -392,10 +392,11 @@ impl MemoryRepository for SupabaseStore {
     /// sobre id, título, tags y cuerpo) van SIEMPRE primero: no
     /// dependen del índice semántico, así que un documento recién
     /// commiteado es encontrable en el mismo segundo. Detrás, si hay
-    /// `GEMINI_API_KEY`, el ranking semántico de pgvector añade los
-    /// documentos próximos en significado que el texto literal no
-    /// capturó. Si Gemini falla, la parte exacta sobrevive: un
-    /// problema transitorio del proveedor degrada la búsqueda, no la
+    /// algún proveedor de embeddings configurado, el ranking semántico
+    /// de pgvector añade los documentos próximos en significado que el
+    /// texto literal no capturó. Si el proveedor falla (o cae al
+    /// respaldo y ninguno responde), la parte exacta sobrevive: un
+    /// problema transitorio de proveedor degrada la búsqueda, no la
     /// tumba.
     fn search(&self, query: &SearchQuery, budget: &Budget) -> Result<Vec<SearchHit>, StoreError> {
         let limit = query
@@ -406,18 +407,18 @@ impl MemoryRepository for SupabaseStore {
         let rows = crate::block_on! {
             let keyword = self.search_keyword(query, limit).await?;
 
-            if let (Some(text), Some(gemini_key)) =
-                (query.text.as_deref(), self.gemini_api_key.as_deref())
-            {
-                let client = reqwest::Client::new();
-                match embed(&client, gemini_key, text).await {
-                    Ok(embedding) => {
-                        let semantic = self.search_semantic(query, &embedding, limit).await?;
-                        return Ok::<_, StoreError>(merge_hybrid(keyword, semantic, limit as usize));
+            if let Some(text) = query.text.as_deref() {
+                if self.embedding_keys.any_configured() {
+                    let client = reqwest::Client::new();
+                    match embed_query(&client, &self.embedding_keys, text).await {
+                        Ok(embedded) => {
+                            let semantic = self.search_semantic(query, &embedded, limit).await?;
+                            return Ok::<_, StoreError>(merge_hybrid(keyword, semantic, limit as usize));
+                        }
+                        Err(e) => eprintln!(
+                            "ranking semántico falló ({e}); la búsqueda sigue solo con coincidencia de texto"
+                        ),
                     }
-                    Err(e) => eprintln!(
-                        "ranking semántico falló ({e}); la búsqueda sigue solo con coincidencia de texto"
-                    ),
                 }
             }
             Ok(keyword)

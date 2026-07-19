@@ -56,8 +56,9 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE IF NOT EXISTS embeddings (
     concept_id VARCHAR(255) PRIMARY KEY REFERENCES heads(concept_id) ON DELETE CASCADE,
-    embedding vector(768), -- gemini-embedding-001 truncado a 768 dims (ver gemini-embeddings::DIMENSIONS)
-    content_id VARCHAR(64) -- de qué contenido es este vector; NULL = generado antes de rastrearlo
+    embedding vector, -- dimensión variable: el proveedor de respaldo activo puede truncar a otra distinta de gemini-embedding-001 (ver embedding_model y gemini_embeddings::Embedded)
+    content_id VARCHAR(64), -- de qué contenido es este vector; NULL = generado antes de rastrearlo
+    embedding_model VARCHAR(64) NOT NULL DEFAULT 'gemini:gemini-embedding-001@768' -- qué proveedor+modelo+dims produjo `embedding`; la búsqueda semántica NUNCA compara contra un embedding_model distinto (mezclar espacios vectoriales de proveedores distintos no da error, da un ranking sin significado)
 );
 
 -- Migración en el arranque: este archivo se aplica con CREATE TABLE
@@ -67,3 +68,9 @@ CREATE TABLE IF NOT EXISTS embeddings (
 ALTER TABLE heads ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE;
 ALTER TABLE links ADD COLUMN IF NOT EXISTS rel VARCHAR(64);
 ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS content_id VARCHAR(64);
+ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS embedding_model VARCHAR(64) NOT NULL DEFAULT 'gemini:gemini-embedding-001@768';
+-- De vector(768) fijo a dimensión variable: los proveedores de
+-- respaldo (Mistral, Cohere) no truncan a 768 dims como Gemini. Los
+-- vectores de 768 dims ya guardados siguen siendo válidos tal cual —
+-- solo se relaja la restricción de dimensión de la columna.
+ALTER TABLE embeddings ALTER COLUMN embedding TYPE vector;
