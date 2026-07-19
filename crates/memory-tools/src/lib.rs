@@ -693,12 +693,19 @@ where
     // Tres herramientas sobre pura convención de OKF, sin esquema
     // nuevo: un `spec` es un concepto `type: spec` con secciones
     // "Requisitos"/"Diseño"; una `task` es `type: task` enlazada de
-    // vuelta con `[[implements:<spec_id>]]`. El estado de ambos viaja
+    // vuelta con `[[implements:<spec_id>]]`, y opcionalmente a otras
+    // tareas con `[[depends_on:<task_id>]]`. El estado de ambos viaja
     // en un tag `status-*` (`memory_patch` ya sabe cambiarlo). Con
     // esto, cualquier cliente MCP (Claude, ChatGPT, u otro) puede
     // proponer specs y cualquier otro puede retomar el trabajo o
     // preguntar el progreso — el estado vive en la memoria compartida,
     // no en el contexto de una conversación concreta.
+    //
+    // `spec_status` calcula `next_pending` (lo que ya se puede
+    // empezar) filtrando las tareas `status-pending` cuyas
+    // `depends_on` NO están todas `done` — esas se cuentan aparte en
+    // `waiting_on_dependencies`. Así "qué sigue" respeta el orden real
+    // entre tareas, no solo su propio estado.
 
     fn spec_propose(&mut self, args: &Value) -> Result<Value, ToolError> {
         let id = Self::concept_id(&Self::require_str(args, "concept_id")?)?;
@@ -746,20 +753,65 @@ where
             return Err(ToolError::InvalidArguments("'tasks' no puede estar vacío".to_string()));
         }
 
-        let mut requests: Vec<CommitRequest> = Vec::new();
+        // Primera pasada: id/título/descripción/`depends_on` en bruto
+        // de cada tarea, para poder resolver dependencias que apunten
+        // a OTRA tarea de este mismo lote por su título exacto.
+        struct Staged {
+            concept_id: ConceptId,
+            title: String,
+            description: String,
+            depends_on_raw: Vec<String>,
+        }
+        let mut staged: Vec<Staged> = Vec::new();
         for (i, val) in tasks_arr.iter().enumerate() {
             let title = Self::require_str(val, "title")?;
             let description = Self::arg_str(val, "description").unwrap_or_default();
+            let depends_on_raw: Vec<String> = val
+                .get("depends_on")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
             let slug = ingest_core::slugify(&title);
             let concept_id = ConceptId::parse(&format!("{spec_id}/tasks/{:02}-{slug}", i + 1))
                 .map_err(|e| ToolError::InvalidArguments(format!("tarea {i}: id inválido: {e}")))?;
+            staged.push(Staged { concept_id, title, description, depends_on_raw });
+        }
+
+        // Segunda pasada: cada `depends_on` o coincide con el TÍTULO
+        // exacto de otra tarea de este mismo lote, o es ya un
+        // concept_id (dependencia cruzada con una tarea previa/de otro
+        // spec) — se acepta tal cual, sin exigir que ya exista: puede
+        // llegar en un `spec_tasks` posterior.
+        let mut requests: Vec<CommitRequest> = Vec::new();
+        for task in &staged {
+            let mut targets: Vec<ConceptId> = Vec::new();
+            for dep in &task.depends_on_raw {
+                if let Some(other) = staged.iter().find(|t| &t.title == dep) {
+                    targets.push(other.concept_id.clone());
+                } else {
+                    let target = ConceptId::parse(dep).map_err(|e| {
+                        ToolError::InvalidArguments(format!(
+                            "tarea {:?}: depends_on {dep:?} no es ni el título de otra tarea del lote ni un concept_id válido: {e}",
+                            task.title
+                        ))
+                    })?;
+                    targets.push(target);
+                }
+            }
+            let mut body = format!("Parte de [[implements:{spec_id}]].\n");
+            for t in &targets {
+                body.push_str(&format!("\nDepende de [[depends_on:{t}]].\n"));
+            }
+            body.push('\n');
+            body.push_str(task.description.trim());
+            body.push('\n');
             let markdown = format!(
-                "---\ntype: task\ntitle: {}\ntags:\n  - task\n  - status-pending\n---\n\nParte de [[implements:{spec_id}]].\n\n{}\n",
-                sanitize_title(&title),
-                description.trim(),
+                "---\ntype: task\ntitle: {}\ntags:\n  - task\n  - status-pending\n---\n\n{}",
+                sanitize_title(&task.title),
+                body,
             );
             requests.push(CommitRequest {
-                concept_id,
+                concept_id: task.concept_id.clone(),
                 expected: None,
                 markdown,
                 reason: format!("spec_tasks desde {spec_id}"),
@@ -807,18 +859,48 @@ where
             .iter()
             .filter(|b| b.rel.as_deref() == Some("implements") && b.source.doc_type == "task")
             .collect();
+        let status_by_id: std::collections::HashMap<&ConceptId, &str> =
+            tasks.iter().map(|t| (&t.source.concept_id, status_tag(&t.source.tags))).collect();
 
         let mut pending = 0usize;
         let mut in_progress = 0usize;
         let mut done = 0usize;
         let mut blocked = 0usize;
         let mut unknown = 0usize;
+        let mut waiting_on_dependencies = 0usize;
         let mut next_pending: Vec<Value> = Vec::new();
         for t in &tasks {
             match status_tag(&t.source.tags) {
                 "pending" => {
                     pending += 1;
-                    next_pending.push(s(t.source.concept_id.as_str()));
+                    // Una tarea pendiente solo es "próxima" si TODAS
+                    // sus dependencias (`[[depends_on:...]]`) ya están
+                    // done. Las de fuera de este spec se resuelven con
+                    // un `get` puntual; no encontrarla cuenta como no
+                    // resuelta (dependencia colgante = sigue bloqueada).
+                    let full = self.repo.get(&t.source.concept_id).map_err(Self::domain_error)?;
+                    let mut unmet = false;
+                    if let Some(doc) = full {
+                        for link in doc.links.iter().filter(|l| l.rel.as_deref() == Some("depends_on")) {
+                            let done_dep = match status_by_id.get(&link.target) {
+                                Some(st) => *st == "done",
+                                None => self
+                                    .repo
+                                    .get(&link.target)
+                                    .map_err(Self::domain_error)?
+                                    .is_some_and(|d| status_tag(&d.tags) == "done"),
+                            };
+                            if !done_dep {
+                                unmet = true;
+                                break;
+                            }
+                        }
+                    }
+                    if unmet {
+                        waiting_on_dependencies += 1;
+                    } else {
+                        next_pending.push(s(t.source.concept_id.as_str()));
+                    }
                 }
                 "in_progress" => in_progress += 1,
                 "done" => done += 1,
@@ -845,6 +927,7 @@ where
             ),
             ("progress", n(if total == 0 { 0.0 } else { done as f64 / total as f64 })),
             ("next_pending", arr(next_pending)),
+            ("waiting_on_dependencies", n(waiting_on_dependencies as f64)),
         ]))
     }
 
@@ -1175,7 +1258,7 @@ where
                 input_schema: schema(
                     [
                         ("spec_id", "string", "concept_id de un spec ya creado con spec_propose"),
-                        ("tasks", "array", "lista de tareas: cada una {title, description opcional}"),
+                        ("tasks", "array", "lista de tareas: cada una {title, description opcional, depends_on opcional (lista de títulos de otras tareas de este lote, o concept_ids de tareas ya existentes)}"),
                     ],
                     ["spec_id", "tasks"],
                 ),
