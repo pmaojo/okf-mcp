@@ -12,6 +12,9 @@
 #![forbid(unsafe_code)]
 
 mod github_sync;
+mod reconciliation;
+
+pub use reconciliation::reconcile_github_to_supabase;
 
 use serde_json::Value;
 use sqlx::{PgPool, Row};

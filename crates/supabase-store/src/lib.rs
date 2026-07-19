@@ -99,6 +99,21 @@ pub async fn index_embedding(
 }
 
 impl SupabaseStore {
+    /// Crea una nueva instancia de `SupabaseStore` a partir de las variables de entorno:
+    /// - `POSTGRES_URL` (obligatoria)
+    /// - `GEMINI_API_KEY` (opcional)
+    pub fn from_env() -> Result<Self, StoreError> {
+        let db_url = std::env::var("POSTGRES_URL")
+            .map_err(|_| StoreError::Backend("falta POSTGRES_URL".into()))?;
+        let gemini_api_key = std::env::var("GEMINI_API_KEY").ok();
+        
+        let pool = block_on(async {
+            PgPool::connect(&db_url).await
+        }).map_err(|e| StoreError::Backend(format!("Error conectando a Postgres: {e}")))?;
+
+        Ok(Self::new(pool, gemini_api_key))
+    }
+
     pub fn new(pool: PgPool, gemini_api_key: Option<String>) -> Self {
         SupabaseStore { pool, gemini_api_key }
     }

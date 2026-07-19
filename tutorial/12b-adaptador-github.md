@@ -71,7 +71,14 @@ fn github_store_cumple_el_contrato() {
 
 > 🧰 **La rueda de serie:** GitHub puede ser la fuente de verdad perfecta, pero carece de indexación compleja. Un cliente robusto usaría [`reqwest`](https://docs.rs/reqwest) para las llamadas REST (como hace este adaptador). El mapa completo y el criterio para elegir: [La rueda de serie](la-rueda-de-serie.md).
 
-La conclusión ineludible al operar contra GitHub es que **la búsqueda necesita un índice derivado**. Sin una base de datos secundaria, `embed_pending` y las búsquedas semánticas no pueden ser eficientes o directamente devuelven vacío (igual que `InMemoryStore`). En producción real, GitHub actuaría como el *event sourcing* dorado, mientras que un sistema externo (como pgvector) se suscribiría a esos commits para proveer la búsqueda vectorial.
+La conclusión ineludible al operar contra GitHub es que **la búsqueda necesita un índice derivado**. Sin una base de datos secundaria, `embed_pending` y las búsquedas semánticas no pueden ser eficientes o directamente devuelven vacío (igual que `InMemoryStore`). 
+
+Para resolver este límite de rendimiento, implementamos el adaptador compuesto **`IndexedStore<G, S>`**, estructurando una arquitectura CQRS pura:
+1.  **Escrituras (Commands)**: Van de forma sincrónica e inmediata directamente a GitHub (`G`), que actúa como la fuente de verdad absoluta y duradera.
+2.  **Lecturas y Búsquedas (Queries)**: Se resuelven de forma rápida contra Supabase (`S`), que almacena los embeddings vectoriales (pgvector) y sirve de índice semántico optimizado.
+3.  **Sincronización robusta**: Al guardar, se realiza una escritura inmediata de "mejor esfuerzo" en Supabase. Si esta falla o si hay cambios directos en Git, el reconciliador periódico del outbox alinea la base de datos con la realidad de GitHub.
+
+De este modo, se tiene el control de cambios completo de Git y la velocidad semántica vectorial de Supabase en paralelo.
 
 ## 9. Principios SOLID en juego
 

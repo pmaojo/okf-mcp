@@ -43,7 +43,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let run_once = env::var("ONCE").is_ok();
     let client = reqwest::Client::new();
 
+    let github_store = github_store::GithubStore::from_env();
+    if github_store.is_err() {
+        println!("ADVERTENCIA: No se pudo inicializar GithubStore. Se saltará la reconciliación GitHub -> Supabase.");
+    }
+
+    let mut ticks_since_reconcile = 0;
+
     loop {
+        if ticks_since_reconcile == 0 {
+            if let Ok(ref gh_store) = github_store {
+                if let Err(e) = outbox_worker::reconcile_github_to_supabase(
+                    &pool,
+                    &client,
+                    gh_store,
+                    gemini_key.as_deref(),
+                )
+                .await
+                {
+                    eprintln!("Error en la reconciliación GitHub -> Supabase: {}", e);
+                }
+            }
+        }
+
         let processed = process_batch(&pool, &client, github_token.as_deref(), github_repo.as_deref(), gemini_key.as_deref()).await?;
 
         if run_once {
@@ -54,6 +76,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if processed == 0 {
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
+        
+        ticks_since_reconcile = (ticks_since_reconcile + 1) % 60;
     }
 
     Ok(())

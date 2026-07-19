@@ -153,7 +153,7 @@ async fn mcp_handler(method: Method, headers: HeaderMap, body: Bytes) -> Respons
     let store_kind = std::env::var("OKF_STORE").unwrap_or_else(|_| "supabase".into());
     match store_kind.as_str() {
         "github" => {
-            let store = match github_store::GithubStore::from_env() {
+            let gh_store = match github_store::GithubStore::from_env() {
                 Ok(s) => s,
                 Err(e) => {
                     return (
@@ -164,8 +164,22 @@ async fn mcp_handler(method: Method, headers: HeaderMap, body: Bytes) -> Respons
                         .into_response();
                 }
             };
-            let tools = MemoryTools::new(store, actor, budget);
-            handle_mcp(&http_req, &budget, &origins, tools)
+            if std::env::var("POSTGRES_URL").is_ok() {
+                let db_url = std::env::var("POSTGRES_URL").unwrap();
+                let pool = db::get_db_pool(&db_url).await;
+                let gemini_api_key = std::env::var("GEMINI_API_KEY").ok().filter(|k| !k.is_empty());
+                let db_store = SupabaseStore::new(pool, gemini_api_key.clone());
+                let store = store_core::IndexedStore::new(gh_store, db_store);
+                
+                let synthesizer = gemini_api_key
+                    .map(|key| Box::new(ingest_http::GeminiSynthesizer::new(key)) as Box<dyn ingest_core::Synthesizer>);
+                let tools = MemoryTools::new(store, actor, budget)
+                    .with_ingest(Box::new(ingest_http::GithubFetcher::from_env()), synthesizer);
+                handle_mcp(&http_req, &budget, &origins, tools)
+            } else {
+                let tools = MemoryTools::new(gh_store, actor, budget);
+                handle_mcp(&http_req, &budget, &origins, tools)
+            }
         }
         _ => {
             let db_url = std::env::var("POSTGRES_URL").expect("POSTGRES_URL must be set");

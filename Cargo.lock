@@ -1079,6 +1079,7 @@ dependencies = [
  "memory-store",
  "memory-tools",
  "store-core",
+ "supabase-store",
 ]
 
 [[package]]
@@ -1286,11 +1287,15 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "gemini-embeddings",
+ "github-store",
+ "memory-model",
+ "memory-store",
  "pgvector",
  "reqwest",
  "serde",
  "serde_json",
  "sqlx",
+ "store-core",
  "supabase-store",
  "tokio",
 ]
@@ -2035,6 +2040,7 @@ name = "store-core"
 version = "0.1.0"
 dependencies = [
  "conflict-core",
+ "graph-core",
  "memory-model",
  "okf-core",
 ]

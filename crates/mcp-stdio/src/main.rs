@@ -28,8 +28,20 @@ fn main() {
     let store_kind = std::env::var("OKF_STORE").unwrap_or_else(|_| "memory".into());
     match store_kind.as_str() {
         "github" => {
-            let store = github_store::GithubStore::from_env()
+            let gh_store = github_store::GithubStore::from_env()
                 .expect("github-store: faltan variables de entorno (GITHUB_REPO, GITHUB_TOKEN)");
+            if std::env::var("POSTGRES_URL").is_ok() {
+                let db_store = supabase_store::SupabaseStore::from_env()
+                    .expect("supabase-store: faltan variables de entorno");
+                let store = store_core::IndexedStore::new(gh_store, db_store);
+                run(MemoryTools::new(store, Principal::local_dev(), budget), &budget);
+            } else {
+                run(MemoryTools::new(gh_store, Principal::local_dev(), budget), &budget);
+            }
+        }
+        "supabase" => {
+            let store = supabase_store::SupabaseStore::from_env()
+                .expect("supabase-store: faltan variables de entorno");
             run(MemoryTools::new(store, Principal::local_dev(), budget), &budget);
         }
         _ => {
