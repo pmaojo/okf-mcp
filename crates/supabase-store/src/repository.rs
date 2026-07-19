@@ -7,7 +7,6 @@ use store_core::{
     Backlink, BulkItem, BulkOutcome, CommitOutcome, CommitRequest, DeleteOutcome, DocumentView,
     MemoryRepository, SearchHit, SearchQuery, StoreError,
 };
-use okf_core::Link;
 use sqlx::postgres::PgRow;
 use sqlx::{Postgres, Row, Transaction};
 use std::sync::Arc;
@@ -436,10 +435,12 @@ impl MemoryRepository for SupabaseStore {
         // Datos para el embed inline ANTES de ceder request al helper.
         let concept = request.concept_id.as_str().to_string();
         let markdown = request.markdown.clone();
+        // Clonamos el pool antes del bloque async que mueve self
+        let pool = self.pool.clone();
 
         let outcome = crate::block_on! {
             let mut tx =
-                self.pool.begin().await.map_err(|e| StoreError::Backend(e.to_string()))?;
+                pool.begin().await.map_err(|e| StoreError::Backend(e.to_string()))?;
             let res = commit_in_tx(&mut tx, request, actor, budget).await;
             finish_tx(tx, res).await
         }?;

@@ -6,7 +6,6 @@ use store_core::{
 use memory_model::{ConceptId, Budget};
 use okf_core::Link;
 use sqlx::Row;
-use crate::repository::row_to_search_hit;
 
 impl StoreMaintenance for SupabaseStore {
     fn link_health(&self, id: &ConceptId) -> Result<LinkHealth, StoreError> {
@@ -265,6 +264,8 @@ impl StoreMaintenance for SupabaseStore {
             Some(k) => k.clone(),
             None => return Ok(EmbedOutcome::default()),
         };
+        // Clonamos el pool antes de los bloques async que moverían self
+        let pool = self.pool.clone();
 
         let rows = crate::block_on! {
             pg_query(
@@ -280,7 +281,7 @@ impl StoreMaintenance for SupabaseStore {
             )
             .bind(path_prefix)
             .bind(max as i64)
-            .fetch_all(&self.pool)
+            .fetch_all(&pool)
             .await
         }.map_err(|e| StoreError::Backend(e.to_string()))?;
 
@@ -293,8 +294,12 @@ impl StoreMaintenance for SupabaseStore {
             let raw: String = row.get("raw");
             let content_hex: String = row.get("content_id");
 
+            // Clonamos client y gemini_key antes de cada ciclo para evitar
+            // que el async move los consuma en la primera iteración
+            let c = client.clone();
+            let k = gemini_key.clone();
             let res = crate::block_on! {
-                crate::index_embedding(&self.pool, &client, &gemini_key, &concept_str, &content_hex, &raw).await
+                crate::index_embedding(&pool, &c, &k, &concept_str, &content_hex, &raw).await
             };
             match res {
                 Ok(_) => outcome.embedded.push(concept),
@@ -312,7 +317,7 @@ impl StoreMaintenance for SupabaseStore {
                    AND (e.concept_id IS NULL OR e.content_id IS NULL OR e.content_id <> h.content_id)",
             )
             .bind(path_prefix)
-            .fetch_one(&self.pool)
+            .fetch_one(&pool)
             .await
         }.map_err(|e| StoreError::Backend(e.to_string()))?;
 

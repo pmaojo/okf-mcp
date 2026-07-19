@@ -16,23 +16,12 @@ mod repository;
 mod maintenance;
 mod neighbors;
 
-use conflict_core::{decide, CommitDecision, Conflict};
 use gemini_embeddings::embed;
 use pgvector::Vector;
-use graph_core::NeighborSource;
-use hash_core::sha256;
-use memory_model::{Budget, ConceptId, ContentId, Principal, Revision};
-use store_core::{
-    Backlink, BulkItem, BulkOutcome, CommitOutcome, CommitRequest, DeleteOutcome, DocumentView,
-    EmbedOutcome, GraphStats, LinkHealth, MemoryRepository, SearchHit, SearchQuery, StoreError,
-    StoreMaintenance, StoreStatus, ValidationReport,
-};
-use okf_core::Link;
+use store_core::{SearchQuery, StoreError};
 use sqlx::postgres::{PgArguments, PgRow};
 use sqlx::query::{Query, QueryScalar};
-use sqlx::{FromRow, PgPool, Postgres, Row, Transaction};
-use std::convert::Infallible;
-use std::sync::Arc;
+use sqlx::{FromRow, PgPool, Postgres};
 
 /// Todas las consultas de este adaptador se construyen con
 /// `persistent(false)`: en producción `POSTGRES_URL` apunta al pooler
