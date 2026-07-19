@@ -149,9 +149,16 @@ async fn mcp_handler(method: Method, headers: HeaderMap, body: Bytes) -> Respons
     // 2. Obtener pool de base de datos e instanciar servicios de forma efímera
     let db_url = std::env::var("POSTGRES_URL").expect("POSTGRES_URL must be set");
     let pool = db::get_db_pool(&db_url).await;
-    let gemini_api_key = std::env::var("GEMINI_API_KEY").ok();
-    let store = SupabaseStore::new(pool, gemini_api_key);
-    let tools = MemoryTools::new(store, actor, budget);
+    let gemini_api_key = std::env::var("GEMINI_API_KEY").ok().filter(|k| !k.is_empty());
+    let store = SupabaseStore::new(pool, gemini_api_key.clone());
+    // `skill_ingest`: descarga server-side desde GitHub; por defecto
+    // conserva el contenido original íntegro bajo cabecera OKF, y con
+    // GEMINI_API_KEY disponible el cliente puede pedir
+    // `synthesize: true` para guardar un resumen original en su lugar.
+    let synthesizer = gemini_api_key
+        .map(|key| Box::new(ingest_http::GeminiSynthesizer::new(key)) as Box<dyn ingest_core::Synthesizer>);
+    let tools = MemoryTools::new(store, actor, budget)
+        .with_ingest(Box::new(ingest_http::GithubFetcher::from_env()), synthesizer);
     let mut server = McpServer::new("okf-memory-vercel", env!("CARGO_PKG_VERSION"), tools);
 
     let resp = route(&http_req, &budget, &origins, &mut server);
