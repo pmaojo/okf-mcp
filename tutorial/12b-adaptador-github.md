@@ -80,6 +80,6 @@ La conclusión ineludible al operar contra GitHub es que **la búsqueda necesita
 
 ## 10. Ejercicios
 
-1. **Guiado.** El código usa `Mutex` para proteger la caché. Antes, un diseño experimental usaba `RefCell`. ¿Por qué `RefCell` rompe la posibilidad de compartir el adaptador a través del servidor MCP en `tokio`? Justifica en términos de `Send` y `Sync`.
+1. **Guiado.** El código usa `Mutex` para proteger la caché. Compara esta elección con un diseño hipotético que usara `RefCell`. ¿Por qué `RefCell` rompe la posibilidad de compartir el adaptador a través del servidor MCP en `tokio`? Justifica en términos de `Send` y `Sync`.
 2. **Medio.** ¿Qué pasa si ocurre un conflicto de SHA en la API? Modifica (mentalmente o en el código) el flujo de `put_file` para implementar un retry automático vaciando la caché si devuelve un código 409 Conflict.
 3. **Abierto.** Diseña un sketch de arquitectura donde GitHub almacene la verdad absoluta y Supabase sirva exclusivamente como un índice derivado para búsqueda semántica. ¿Quién lanza el webhook y quién aplica el cambio a pgvector?
