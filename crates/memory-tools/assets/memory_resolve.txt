@@ -1,0 +1,1 @@
+Devuelve un concepto completo (Markdown exacto con frontmatter YAML) más su vecindario acotado en el grafo de enlaces. REGLA OPERATIVA: El hash retornado en el campo `content_id` de la respuesta debe usarse obligatoriamente como `expected_hash` en cualquier llamada posterior a `memory_commit`, `memory_patch` o `memory_delete` para garantizar consistencia (Compare-and-Swap).

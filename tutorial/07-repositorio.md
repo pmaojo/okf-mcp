@@ -13,8 +13,8 @@ crear, leer, buscar, escribir con CAS, recordar revisiones y
 alimentar el grafo.
 
 Y falta con una exigencia extra que lo cambia todo: la versión en
-RAM que vamos a escribir ahora (hito 1) y la de Supabase que vendrá
-después (hito 2) deben ser **intercambiables**. Ese requisito va a
+RAM que vamos a escribir ahora (hito 1) y las de producción que vendrán
+después —Supabase y GitHub (hito 2)— deben ser **intercambiables**. Ese requisito va a
 decidir cada firma de este capítulo.
 
 El modelo de datos entero cabe en una frase:

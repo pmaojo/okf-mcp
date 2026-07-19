@@ -817,7 +817,7 @@ where
         let mut specs = vec![
             ToolSpec {
                 name: "memory_search",
-                description: "Busca conceptos en la memoria de manera híbrida: primero coincidencias exactas por subcadena, luego similitud semántica. Devuelve candidatos compactos con su hash y URI; usa memory_resolve para leer el contenido.",
+                description: include_str!("../assets/memory_search.txt"),
                 input_schema: schema(
                     [
                         ("query", "string", "subcadena a buscar en id, título, tags y cuerpo"),
@@ -832,12 +832,12 @@ where
             },
             ToolSpec {
                 name: "memory_resolve",
-                description: "Devuelve un concepto completo (Markdown exacto) más su vecindario acotado en el grafo de enlaces [[...]]. Indica si el resultado fue truncado por presupuesto.",
+                description: include_str!("../assets/memory_resolve.txt"),
                 input_schema: schema(
                     [
                         ("concept_id", "string", "id lógico, p. ej. people/alice"),
-                        ("depth", "integer", "profundidad máxima del vecindario"),
-                        ("max_bytes", "integer", "presupuesto de bytes de la respuesta"),
+                        ("depth", "integer", "profundidad máxima del vecindario del grafo a retornar"),
+                        ("max_bytes", "integer", "presupuesto de bytes máximo para la respuesta (truncado automático si excede)"),
                     ],
                     ["concept_id"],
                 ),
@@ -845,13 +845,13 @@ where
             },
             ToolSpec {
                 name: "memory_commit",
-                description: "Escribe un documento OKF (frontmatter YAML + Markdown) con concurrencia optimista. expected_hash es obligatorio salvo en creación.",
+                description: include_str!("../assets/memory_commit.txt"),
                 input_schema: schema(
                     [
-                        ("concept_id", "string", "id lógico del concepto"),
-                        ("markdown", "string", "documento completo: '---' + frontmatter YAML + '---' + cuerpo Markdown."),
-                        ("reason", "string", "por qué se hace este cambio"),
-                        ("expected_hash", "string", "hash SHA-256 hex del contenido leído"),
+                        ("concept_id", "string", "id lógico del concepto (ej: people/alice, projects/mcp)"),
+                        ("markdown", "string", "documento completo con frontmatter YAML + Markdown, ej:\n---\ntype: person\ntitle: Alice\ntags:\n  - dev\n---\nCuerpo del documento en Markdown con [[enlaces]] a otros concept_id."),
+                        ("reason", "string", "motivo o explicación del cambio (se registrará en la historia de revisiones)"),
+                        ("expected_hash", "string", "hash SHA-256 hex del contenido actual obtenido previamente vía memory_resolve (obligatorio para actualizaciones, omitir en creación)"),
                         ("dry_run", "boolean", "si es true, valida el documento y chequea conflictos sin guardar nada"),
                     ],
                     ["concept_id", "markdown", "reason"],
@@ -860,12 +860,12 @@ where
             },
             ToolSpec {
                 name: "memory_history",
-                description: "Historia de revisiones de un concepto, de más reciente a más antigua. Pagina con before_seq.",
+                description: include_str!("../assets/memory_history.txt"),
                 input_schema: schema(
                     [
                         ("concept_id", "string", "id lógico del concepto"),
-                        ("limit", "integer", "máximo de revisiones (1-100)"),
-                        ("before_seq", "integer", "solo revisiones anteriores a este seq"),
+                        ("limit", "integer", "máximo de revisiones a retornar (1-100)"),
+                        ("before_seq", "integer", "solo revisiones anteriores a este seq (para paginar)"),
                     ],
                     ["concept_id"],
                 ),
@@ -873,12 +873,12 @@ where
             },
             ToolSpec {
                 name: "memory_delete",
-                description: "Borrado lógico de un concepto. Requiere expected_hash para concurrencia optimista. Se registra la baja en la historia.",
+                description: include_str!("../assets/memory_delete.txt"),
                 input_schema: schema(
                     [
                         ("concept_id", "string", "id lógico del concepto a borrar"),
                         ("expected_hash", "string", "hash SHA-256 hex del contenido actual"),
-                        ("reason", "string", "motivo de la baja"),
+                        ("reason", "string", "motivo de la baja o borrado lógico"),
                     ],
                     ["concept_id", "expected_hash", "reason"],
                 ),
@@ -886,11 +886,11 @@ where
             },
             ToolSpec {
                 name: "memory_list",
-                description: "Lista conceptos (concept_id, hash, type, tags) bajo un prefijo de ruta lógica opcional sin leer su contenido completo.",
+                description: include_str!("../assets/memory_list.txt"),
                 input_schema: schema(
                     [
-                        ("path_prefix", "string", "prefijo de ruta por segmentos"),
-                        ("limit", "integer", "máximo de resultados"),
+                        ("path_prefix", "string", "prefijo de ruta por segmentos (ej: 'people')"),
+                        ("limit", "integer", "máximo de resultados a retornar"),
                     ],
                     [],
                 ),
@@ -898,7 +898,7 @@ where
             },
             ToolSpec {
                 name: "memory_backlinks",
-                description: "Devuelve todos los enlaces entrantes (backlinks) hacia un concepto, indicando qué documentos le enlazan y con qué tipo de relación.",
+                description: include_str!("../assets/memory_backlinks.txt"),
                 input_schema: schema(
                     [
                         ("concept_id", "string", "id lógico del concepto de interés"),
@@ -909,7 +909,7 @@ where
             },
             ToolSpec {
                 name: "memory_embed",
-                description: "Fuerza la indexación semántica inmediata de documentos cuyo embedding falta o quedó obsoleto.",
+                description: include_str!("../assets/memory_embed.txt"),
                 input_schema: schema(
                     [
                         ("path_prefix", "string", "opcional, filtra por prefijo de ruta lógica"),
@@ -921,16 +921,16 @@ where
             },
             ToolSpec {
                 name: "memory_patch",
-                description: "Actualiza selectivamente campos del frontmatter sin reenviar ni modificar el cuerpo Markdown del documento.",
+                description: include_str!("../assets/memory_patch.txt"),
                 input_schema: schema(
                     [
                         ("concept_id", "string", "id lógico del concepto"),
                         ("expected_hash", "string", "hash SHA-256 hex del contenido actual"),
-                        ("reason", "string", "motivo del cambio"),
-                        ("set", "object", "mapa de campos clave-valor a escribir/reemplazar"),
+                        ("reason", "string", "motivo del cambio de metadatos"),
+                        ("set", "object", "mapa de campos clave-valor a escribir/reemplazar en el frontmatter"),
                         ("remove", "array", "lista de claves de frontmatter a eliminar (ej. ['tags'])"),
-                        ("add_tags", "array", "tags a añadir a la lista existente"),
-                        ("remove_tags", "array", "tags a eliminar de la lista existente"),
+                        ("add_tags", "array", "lista de tags a añadir a la lista existente"),
+                        ("remove_tags", "array", "lista de tags a eliminar de la lista existente"),
                         ("dry_run", "boolean", "si es true, simula el patch sin persistir"),
                     ],
                     ["concept_id", "expected_hash", "reason"],
@@ -939,11 +939,11 @@ where
             },
             ToolSpec {
                 name: "memory_bulk_commit",
-                description: "Aplica un conjunto de commits en lote. En modo atómico se aplica todo o nada.",
+                description: include_str!("../assets/memory_bulk_commit.txt"),
                 input_schema: schema(
                     [
-                        ("requests", "array", "lista de peticiones de commit (con concept_id, markdown, reason, y expected_hash opcional)"),
-                        ("atomic", "boolean", "si es true, revierte todo el lote ante cualquier fallo (rollback)"),
+                        ("requests", "array", "lista de peticiones de commit (cada una con concept_id, markdown, reason, y expected_hash opcional)"),
+                        ("atomic", "boolean", "si es true, revierte todo el lote ante cualquier fallo o conflicto de CAS (rollback)"),
                     ],
                     ["requests"],
                 ),
@@ -951,7 +951,7 @@ where
             },
             ToolSpec {
                 name: "memory_validate",
-                description: "Valida la integridad del grafo o un subárbol, devolviendo enlaces rotos, referencias a borrados y embeddings ausentes.",
+                description: include_str!("../assets/memory_validate.txt"),
                 input_schema: schema(
                     [
                         ("path_prefix", "string", "opcional, valida solo bajo este prefijo de ruta"),
@@ -962,13 +962,13 @@ where
             },
             ToolSpec {
                 name: "memory_status",
-                description: "Consulta rápida del estado de salud operativo del sistema (enlaces rotos, cola outbox, embeddings pendientes).",
+                description: include_str!("../assets/memory_status.txt"),
                 input_schema: schema([], []),
                 ui_resource_uri: None,
             },
             ToolSpec {
                 name: "memory_stats",
-                description: "Devuelve métricas detalladas del grafo (recuentos de tipos/tags, hubs de enlaces, documentos huérfanos).",
+                description: include_str!("../assets/memory_stats.txt"),
                 input_schema: schema([], []),
                 ui_resource_uri: None,
             },

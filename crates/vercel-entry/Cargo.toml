@@ -30,6 +30,9 @@ mcp-core = { path = "../mcp-core" }
 mcp-http = { path = "../mcp-http" }
 memory-tools = { path = "../memory-tools" }
 supabase-store = { path = "../supabase-store" }
+github-store = { path = "../github-store" }
+graph-core = { path = "../graph-core" }
+store-core = { path = "../store-core" }
 outbox-worker = { path = "../outbox-worker" }
 ingest-core = { path = "../ingest-core" }
 ingest-http = { path = "../ingest-http" }

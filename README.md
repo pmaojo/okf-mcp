@@ -268,6 +268,22 @@ una API de GitHub falsa en memoria
 es `cargo run -p github-store --example smoke -- owner/repo` (escribe
 de verdad: usar un repo de pruebas).
 
+### Cómo activarlo
+
+La variable `OKF_STORE` selecciona el backend en los entry points:
+
+- `mcp-stdio`: `OKF_STORE=github` (defecto: `memory`)
+- `vercel-entry`: `OKF_STORE=github` (defecto: `supabase`)
+
+Variables de entorno de `GithubStore::from_env()`:
+
+| Variable | Obligatoria | Formato | Defecto |
+| -------- | ----------- | ------- | ------- |
+| `GITHUB_REPO` | Sí | `owner/repo` | — |
+| `GITHUB_TOKEN` | Sí | token PAT o fine-grained | — |
+| `GITHUB_BRANCH` | No | nombre de rama | `main` |
+| `GITHUB_PATH` | No | prefijo de directorio | `memoria` |
+
 Hallazgos del prototipo, documentados en el propio crate: sin un
 índice derivado, `search`/`backlinks`/`stats` exigen materializar el
 repo entero (el adaptador lo cachea por el sha de HEAD), no hay
@@ -276,6 +292,7 @@ hechas directamente en la UI aparecen sin historia propia. La
 conclusión operativa: GitHub puede ser la verdad, pero la búsqueda
 necesita un índice derivado (hoy, Supabase) reconstruible desde el
 repo.
+
 
 ## Outbox, GitHub y embeddings
 

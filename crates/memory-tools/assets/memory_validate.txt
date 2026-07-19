@@ -1,0 +1,1 @@
+Valida la integridad del grafo o un subárbol, reportando referencias rotas (enlaces a conceptos inexistentes), referencias a borrados (enlaces a conceptos eliminados lógicamente) y embeddings ausentes.

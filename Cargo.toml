@@ -3,23 +3,25 @@
 # de dependencias — ver [workspace.package].
 resolver = "3"
 members = [
-    "crates/memory-model",
-    "crates/hash-core",
-    "crates/json-mini",
-    "crates/okf-core",
-    "crates/graph-core",
     "crates/conflict-core",
-    "crates/store-core",
-    "crates/memory-store",
-    "crates/memory-tools",
-    "crates/mcp-core",
-    "crates/mcp-stdio",
-    "crates/mcp-http",
-    "crates/vercel-entry", "crates/supabase-store", "crates/outbox-worker",
     "crates/gemini-embeddings",
+    "crates/github-store",
+    "crates/graph-core",
+    "crates/hash-core",
     "crates/ingest-core",
     "crates/ingest-http",
-    "crates/github-store",
+    "crates/json-mini",
+    "crates/mcp-core",
+    "crates/mcp-http",
+    "crates/mcp-stdio",
+    "crates/memory-model",
+    "crates/memory-store",
+    "crates/memory-tools",
+    "crates/okf-core",
+    "crates/outbox-worker",
+    "crates/store-core",
+    "crates/supabase-store",
+    "crates/vercel-entry",
 ]
 
 [workspace.package]

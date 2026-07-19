@@ -7,17 +7,42 @@
 //! SOLID-S: este archivo SOLO hace E/S. Protocolo en `mcp-core`,
 //! herramientas en `lib.rs`, datos en `memory-store`. Cambiar el
 //! transporte a HTTP (hito 2) no toca nada más que este archivo.
+//!
+//! `OKF_STORE` selecciona el backend (`memory` o `github`, defecto
+//! `memory`). Con `github` se necesitan `GITHUB_REPO` (owner/repo),
+//! `GITHUB_TOKEN`, y opcionalmente `GITHUB_BRANCH` y `GITHUB_PATH`.
 
 #![forbid(unsafe_code)]
 
+use graph_core::NeighborSource;
+use mcp_core::ToolHandler;
 use memory_tools::MemoryTools;
 use memory_model::{Budget, Principal};
 use memory_store::InMemoryStore;
+use std::convert::Infallible;
 use std::io::{BufRead, Write};
+use store_core::{MemoryRepository, StoreMaintenance};
 
 fn main() {
     let budget = Budget::default();
-    let tools = MemoryTools::new(InMemoryStore::new(), Principal::local_dev(), budget);
+    let store_kind = std::env::var("OKF_STORE").unwrap_or_else(|_| "memory".into());
+    match store_kind.as_str() {
+        "github" => {
+            let store = github_store::GithubStore::from_env()
+                .expect("github-store: faltan variables de entorno (GITHUB_REPO, GITHUB_TOKEN)");
+            run(MemoryTools::new(store, Principal::local_dev(), budget), &budget);
+        }
+        _ => {
+            run(MemoryTools::new(InMemoryStore::new(), Principal::local_dev(), budget), &budget);
+        }
+    }
+}
+
+fn run<R>(tools: MemoryTools<R>, budget: &Budget)
+where
+    R: MemoryRepository + StoreMaintenance + NeighborSource<Error = Infallible>,
+    MemoryTools<R>: ToolHandler,
+{
     let mut server = mcp_core::McpServer::new("okf-memory", env!("CARGO_PKG_VERSION"), tools);
 
     let stdin = std::io::stdin();
@@ -63,6 +88,7 @@ fn main() {
         }
     }
 }
+
 
 enum ReadError {
     TooLong,

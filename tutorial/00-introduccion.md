@@ -83,6 +83,8 @@ crates/
   conflict-core/   decisiones compare-and-swap puras
   store-core/      trait MemoryRepository + contract.rs de Liskov
   memory-store/    InMemoryStore (implementación en RAM)
+  supabase-store/  SupabaseStore (adaptador Postgres)
+  github-store/    GithubStore (adaptador GitHub REST API)
   memory-tools/    MemoryTools (las 4 herramientas MCP, genéricas sobre el trait)
   mcp-core/        JSON-RPC 2.0 + ciclo de vida MCP + despacho
   mcp-stdio/       transporte stdin/stdout

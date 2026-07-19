@@ -31,6 +31,7 @@ repositorio. Cada capítulo sigue la misma plantilla:
 | 10 | [HTTP sin estado](10-http-sin-estado.md) | parseo HTTP acotado, `TcpListener`, DNS-rebinding | S, D |
 | 11 | [El adaptador de Vercel](11-adaptador-vercel.md) | `axum` extractors, la frontera hecha código | **D**, el arco cerrado |
 | 12 | [El adaptador de Supabase](12-adaptador-supabase.md) | `sqlx`, CAS relacional, `FOR UPDATE` | **L**, S, I |
+| 12b | [El adaptador de GitHub](12b-adaptador-github.md) | `reqwest`, API REST, CAS nativo de git, trailers de commit | **L**, D |
 
 ## Hito 3 — OAuth 2.1 (Autenticación sin estado)
 

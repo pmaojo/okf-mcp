@@ -11,6 +11,9 @@ memory-model = { path = "../memory-model" }
 memory-store = { path = "../memory-store" }
 memory-tools = { path = "../memory-tools" }
 mcp-core = { path = "../mcp-core" }
+github-store = { path = "../github-store" }
+graph-core = { path = "../graph-core" }
+store-core = { path = "../store-core" }
 
 [dev-dependencies]
 json-mini = { path = "../json-mini" }

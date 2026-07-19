@@ -1,0 +1,1 @@
+Devuelve métricas detalladas del grafo de memoria (recuentos de tipos/tags, hubs de enlaces, documentos huérfanos). Úsala para entender la topología del conocimiento almacenado.

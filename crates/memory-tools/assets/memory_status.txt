@@ -1,0 +1,1 @@
+Consulta rápida del estado de salud operativo del sistema (enlaces rotos, cola outbox de sincronización, embeddings pendientes). Úsala para diagnosticar si la sincronización asíncrona o indexación semántica va al día.

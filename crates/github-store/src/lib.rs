@@ -43,7 +43,7 @@ use conflict_core::{decide, CommitDecision, Conflict};
 use memory_model::{Budget, ConceptId, ContentId, Principal, Revision};
 use okf_core::Link;
 use serde::Deserialize;
-use std::cell::RefCell;
+use std::sync::Mutex;
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -277,7 +277,7 @@ pub struct GithubStore {
     /// (p. ej. `memoria`). Vacío = raíz del repo.
     base_path: String,
     token: Option<String>,
-    cache: RefCell<Option<Snapshot>>,
+    cache: Mutex<Option<Snapshot>>,
 }
 
 impl GithubStore {
@@ -299,8 +299,32 @@ impl GithubStore {
             branch: branch.into(),
             base_path: base_path.into().trim_matches('/').to_string(),
             token,
-            cache: RefCell::new(None),
+            cache: Mutex::new(None),
         }
+    }
+
+    /// Crea el adaptador leyendo las variables de entorno:
+    /// - `GITHUB_REPO` (obligatorio, formato `owner/repo`)
+    /// - `GITHUB_TOKEN` (obligatorio)
+    /// - `GITHUB_BRANCH` (defecto: `main`)
+    /// - `GITHUB_PATH` (defecto: `memoria`)
+    pub fn from_env() -> Result<Self, StoreError> {
+        let full_repo = std::env::var("GITHUB_REPO")
+            .map_err(|_| StoreError::Backend("falta GITHUB_REPO (formato owner/repo)".into()))?;
+        let (owner, repo) = full_repo.split_once('/').ok_or_else(|| {
+            StoreError::Backend(format!(
+                "GITHUB_REPO debe tener formato owner/repo, recibido: {full_repo}"
+            ))
+        })?;
+        let token = std::env::var("GITHUB_TOKEN")
+            .map_err(|_| StoreError::Backend("falta GITHUB_TOKEN".into()))?;
+        let branch = std::env::var("GITHUB_BRANCH").unwrap_or_else(|_| "main".into());
+        let base_path = std::env::var("GITHUB_PATH").unwrap_or_else(|_| "memoria".into());
+        Ok(Self::new(
+            "https://api.github.com",
+            owner, repo, branch, base_path,
+            Some(token),
+        ))
     }
 
     fn url(&self, rest: &str) -> String {
@@ -463,19 +487,19 @@ impl GithubStore {
     fn snapshot(&self) -> Result<Snapshot, StoreError> {
         block_on(async {
             let head = self.head_sha().await?;
-            if let Some(snap) = self.cache.borrow().as_ref() {
+            if let Some(snap) = self.cache.lock().unwrap().as_ref() {
                 if snap.head_sha == head {
                     return Ok(snap.clone());
                 }
             }
             let snap = self.build_snapshot(head).await?;
-            *self.cache.borrow_mut() = Some(snap.clone());
+            *self.cache.lock().unwrap() = Some(snap.clone());
             Ok(snap)
         })
     }
 
     fn store_cache(&self, snap: Snapshot) {
-        *self.cache.borrow_mut() = Some(snap);
+        *self.cache.lock().unwrap() = Some(snap);
     }
 
     // ---- escrituras ---------------------------------------------------
@@ -511,7 +535,7 @@ impl GithubStore {
             // 409: la rama o el archivo avanzaron debajo — el CAS de
             // git rechazó la escritura. Invalidamos la caché para que
             // el siguiente intento vea la cabeza real.
-            *self.cache.borrow_mut() = None;
+            *self.cache.lock().unwrap() = None;
             return Err(StoreError::Backend(format!("PUT {url}: HTTP {status}: {text}")));
         }
         serde_json::from_str(&text)
@@ -542,7 +566,7 @@ impl GithubStore {
             .await
             .map_err(|e| StoreError::Backend(format!("DELETE {url}: {e}")))?;
         if !status.is_success() {
-            *self.cache.borrow_mut() = None;
+            *self.cache.lock().unwrap() = None;
             return Err(StoreError::Backend(format!("DELETE {url}: HTTP {status}: {text}")));
         }
         serde_json::from_str(&text).map_err(|e| {
@@ -970,14 +994,14 @@ impl MemoryRepository for GithubStore {
         if let Err(e) = new_head {
             // La rama se movió (u otro fallo de red): el lote no
             // quedó escrito y la caché ya no es de fiar.
-            *self.cache.borrow_mut() = None;
+            *self.cache.lock().unwrap() = None;
             return Err(e);
         }
 
         // Los file_sha del clon especulativo son placeholders: se
         // invalida la caché para releerlos del árbol nuevo; el estado
         // lógico del lote ya quedó confirmado en git.
-        *self.cache.borrow_mut() = None;
+        *self.cache.lock().unwrap() = None;
         Ok(BulkOutcome { applied: true, items })
     }
 }
