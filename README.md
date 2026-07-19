@@ -284,14 +284,9 @@ Variables de entorno de `GithubStore::from_env()`:
 | `GITHUB_BRANCH` | No | nombre de rama | `main` |
 | `GITHUB_PATH` | No | prefijo de directorio | `memoria` |
 
-Hallazgos del prototipo, documentados en el propio crate: sin un
-índice derivado, `search`/`backlinks`/`stats` exigen materializar el
-repo entero (el adaptador lo cachea por el sha de HEAD), no hay
-búsqueda semántica posible dentro de GitHub, y las ediciones humanas
-hechas directamente en la UI aparecen sin historia propia. La
-conclusión operativa: GitHub puede ser la verdad, pero la búsqueda
-necesita un índice derivado (hoy, Supabase) reconstruible desde el
-repo.
+Para resolver esto, el servidor implementa el modo de almacenamiento compuesto **`IndexedStore`** (se activa automáticamente si `OKF_STORE=github` y `POSTGRES_URL` están configurados en el entorno): las escrituras van sincrónicamente a GitHub y el índice semántico se actualiza en Supabase. 
+
+Además, el daemon de `outbox-worker` y el Cron de Vercel incorporan un **bucle de reconciliación** (`reconcile_github_to_supabase`) que alinea periódicamente Supabase con el estado real del repositorio de GitHub (reparando el índice ante caídas o cambios directos hechos en la web de GitHub).
 
 
 ## Outbox, GitHub y embeddings
