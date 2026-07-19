@@ -56,7 +56,7 @@ pub trait StoreMaintenance {
 }
 ```
 
-Un cliente MCP que necesite herramientas de control expondrá 13 herramientas JSON-RPC (`memory_delete`, `memory_list`, `memory_backlinks`, `memory_embed`, etc.). Las herramientas operacionales dependerán únicamente de `MemoryRepository`, mientras que las de observabilidad se apoyarán en `StoreMaintenance`.
+Un cliente MCP que necesite herramientas de control expondrá varias herramientas JSON-RPC más allá de las cuatro originales (`memory_delete`, `memory_list`, `memory_backlinks`, `memory_embed`, etc. — hoy 17 en total, ver el README). Las herramientas operacionales dependerán únicamente de `MemoryRepository`, mientras que las de observabilidad se apoyarán en `StoreMaintenance`.
 
 ## 4. La versión rota (El anti-patrón de interfaz monolítica)
 

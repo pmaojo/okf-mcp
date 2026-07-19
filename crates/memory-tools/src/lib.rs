@@ -7,11 +7,21 @@
 //! - **S:** este crate traduce entre el mundo JSON de MCP y el
 //!   dominio tipado. No implementa ni protocolo ni almacenamiento.
 //!
-//! Las cuatro herramientas (pocas y orientadas a resultados):
+//! Las cuatro herramientas originales (pocas y orientadas a
+//! resultados; el resto del archivo fue añadiendo más sin cambiar el
+//! principio):
 //! - `memory_search`  — candidatos compactos.
 //! - `memory_resolve` — documento + vecindario acotado del grafo.
 //! - `memory_commit`  — escritura con compare-and-swap.
 //! - `memory_history` — revisiones compactas, paginadas.
+//!
+//! `spec_propose`/`spec_tasks`/`spec_status` añaden un flujo
+//! spec-driven (requisitos + diseño acordados antes de implementar,
+//! descompuestos en tareas rastreables) sin esquema nuevo: son
+//! conceptos `type: spec`/`type: task` con la convención de siempre
+//! (`[[rel:destino]]` para el enlace, tags para el estado) — cualquier
+//! cliente MCP puede proponer o retomar, porque el estado vive en la
+//! memoria compartida, no en una conversación concreta.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -678,6 +688,166 @@ where
         ]))
     }
 
+    // ---- spec-driven development (requisitos → diseño → tareas) -----
+    //
+    // Tres herramientas sobre pura convención de OKF, sin esquema
+    // nuevo: un `spec` es un concepto `type: spec` con secciones
+    // "Requisitos"/"Diseño"; una `task` es `type: task` enlazada de
+    // vuelta con `[[implements:<spec_id>]]`. El estado de ambos viaja
+    // en un tag `status-*` (`memory_patch` ya sabe cambiarlo). Con
+    // esto, cualquier cliente MCP (Claude, ChatGPT, u otro) puede
+    // proponer specs y cualquier otro puede retomar el trabajo o
+    // preguntar el progreso — el estado vive en la memoria compartida,
+    // no en el contexto de una conversación concreta.
+
+    fn spec_propose(&mut self, args: &Value) -> Result<Value, ToolError> {
+        let id = Self::concept_id(&Self::require_str(args, "concept_id")?)?;
+        let title = Self::require_str(args, "title")?;
+        let requirements = Self::require_str(args, "requirements")?;
+        let design = Self::require_str(args, "design")?;
+        let reason = Self::arg_str(args, "reason").unwrap_or_else(|| "spec_propose".to_string());
+
+        let markdown = format!(
+            "---\ntype: spec\ntitle: {}\ntags:\n  - spec\n  - status-proposed\n---\n\n## Requisitos\n\n{}\n\n## Diseño\n\n{}\n",
+            sanitize_title(&title),
+            requirements.trim(),
+            design.trim(),
+        );
+
+        let outcome = self
+            .repo
+            .commit(
+                CommitRequest { concept_id: id.clone(), expected: None, markdown, reason },
+                &self.actor,
+                &self.budget,
+            )
+            .map_err(Self::domain_error)?;
+
+        Ok(obj([
+            ("concept_id", s(id.as_str())),
+            ("hash", s(&outcome.content_id.to_hex())),
+            ("version", n(outcome.version as f64)),
+            ("created", Value::Bool(outcome.created)),
+        ]))
+    }
+
+    fn spec_tasks(&mut self, args: &Value) -> Result<Value, ToolError> {
+        let spec_id = Self::concept_id(&Self::require_str(args, "spec_id")?)?;
+        self.repo
+            .get(&spec_id)
+            .map_err(Self::domain_error)?
+            .ok_or_else(|| Self::domain_error(StoreError::NotFound(spec_id.clone())))?;
+
+        let tasks_arr = args
+            .get("tasks")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ToolError::InvalidArguments("falta el argumento 'tasks' (array)".to_string()))?;
+        if tasks_arr.is_empty() {
+            return Err(ToolError::InvalidArguments("'tasks' no puede estar vacío".to_string()));
+        }
+
+        let mut requests: Vec<CommitRequest> = Vec::new();
+        for (i, val) in tasks_arr.iter().enumerate() {
+            let title = Self::require_str(val, "title")?;
+            let description = Self::arg_str(val, "description").unwrap_or_default();
+            let slug = ingest_core::slugify(&title);
+            let concept_id = ConceptId::parse(&format!("{spec_id}/tasks/{:02}-{slug}", i + 1))
+                .map_err(|e| ToolError::InvalidArguments(format!("tarea {i}: id inválido: {e}")))?;
+            let markdown = format!(
+                "---\ntype: task\ntitle: {}\ntags:\n  - task\n  - status-pending\n---\n\nParte de [[implements:{spec_id}]].\n\n{}\n",
+                sanitize_title(&title),
+                description.trim(),
+            );
+            requests.push(CommitRequest {
+                concept_id,
+                expected: None,
+                markdown,
+                reason: format!("spec_tasks desde {spec_id}"),
+            });
+        }
+
+        let ids: Vec<ConceptId> = requests.iter().map(|r| r.concept_id.clone()).collect();
+        let outcome = self
+            .repo
+            .commit_bulk(requests, false, &self.actor, &self.budget)
+            .map_err(Self::domain_error)?;
+
+        let mut task_ids: Vec<Value> = Vec::new();
+        let mut skipped: Vec<Value> = Vec::new();
+        for (id, item) in ids.iter().zip(outcome.items) {
+            match item {
+                store_core::BulkItem::Done(_) => task_ids.push(s(id.as_str())),
+                store_core::BulkItem::Failed(e) => {
+                    skipped.push(obj([("item", s(id.as_str())), ("reason", s(&e.to_string()))]));
+                }
+                store_core::BulkItem::Skipped => {
+                    skipped.push(obj([("item", s(id.as_str())), ("reason", s("omitido por el lote"))]));
+                }
+            }
+        }
+
+        Ok(obj([
+            ("spec_id", s(spec_id.as_str())),
+            ("created", n(task_ids.len() as f64)),
+            ("task_ids", arr(task_ids)),
+            ("skipped", arr(skipped)),
+        ]))
+    }
+
+    fn spec_status(&mut self, args: &Value) -> Result<Value, ToolError> {
+        let spec_id = Self::concept_id(&Self::require_str(args, "spec_id")?)?;
+        let spec = self
+            .repo
+            .get(&spec_id)
+            .map_err(Self::domain_error)?
+            .ok_or_else(|| Self::domain_error(StoreError::NotFound(spec_id.clone())))?;
+
+        let backlinks = self.repo.backlinks(&spec_id).map_err(Self::domain_error)?;
+        let tasks: Vec<_> = backlinks
+            .iter()
+            .filter(|b| b.rel.as_deref() == Some("implements") && b.source.doc_type == "task")
+            .collect();
+
+        let mut pending = 0usize;
+        let mut in_progress = 0usize;
+        let mut done = 0usize;
+        let mut blocked = 0usize;
+        let mut unknown = 0usize;
+        let mut next_pending: Vec<Value> = Vec::new();
+        for t in &tasks {
+            match status_tag(&t.source.tags) {
+                "pending" => {
+                    pending += 1;
+                    next_pending.push(s(t.source.concept_id.as_str()));
+                }
+                "in_progress" => in_progress += 1,
+                "done" => done += 1,
+                "blocked" => blocked += 1,
+                _ => unknown += 1,
+            }
+        }
+        let total = tasks.len();
+
+        Ok(obj([
+            ("spec_id", s(spec_id.as_str())),
+            ("spec_status", s(status_tag(&spec.tags))),
+            ("spec_title", spec.title.as_deref().map(s).unwrap_or(Value::Null)),
+            ("tasks_total", n(total as f64)),
+            (
+                "by_status",
+                obj([
+                    ("pending", n(pending as f64)),
+                    ("in_progress", n(in_progress as f64)),
+                    ("done", n(done as f64)),
+                    ("blocked", n(blocked as f64)),
+                    ("unknown", n(unknown as f64)),
+                ]),
+            ),
+            ("progress", n(if total == 0 { 0.0 } else { done as f64 / total as f64 })),
+            ("next_pending", arr(next_pending)),
+        ]))
+    }
+
     fn memory_validate(&mut self, args: &Value) -> Result<Value, ToolError> {
         let path_prefix = Self::arg_str(args, "path_prefix");
         let report = self.repo.validate(path_prefix.as_deref(), &self.budget)
@@ -771,6 +941,34 @@ fn opt_hash(h: Option<ContentId>) -> Value {
 
 fn opt_str(v: Option<&str>) -> Value {
     v.map(s).unwrap_or(Value::Null)
+}
+
+/// Sanea un título arbitrario para usarlo como escalar de frontmatter:
+/// sin saltos de línea ni comillas/`#` que rompan el YAML. Igual de
+/// estricto que `ingest_core::finish_document`, pero vive aquí porque
+/// `spec_propose`/`spec_tasks` no dependen de ese crate para nada más.
+fn sanitize_title(raw: &str) -> String {
+    let mut out = String::new();
+    for ch in raw.chars() {
+        match ch {
+            '\n' | '\r' | '\t' => out.push(' '),
+            '"' | '#' => {}
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    let trimmed = out.trim();
+    if trimmed.is_empty() { "sin título".to_string() } else { trimmed.to_string() }
+}
+
+/// El primer tag `status-<algo>` de `tags`, sin el prefijo — o
+/// `"unknown"` si no hay ninguno. Así se guarda el estado de un
+/// `spec`/`task` (mutable con `memory_patch`, sin reescribir el
+/// documento) y así lo agrega `spec_status` en una sola pasada.
+fn status_tag(tags: &[String]) -> &str {
+    tags.iter()
+        .find_map(|t| t.strip_prefix("status-"))
+        .unwrap_or("unknown")
 }
 
 /// Esquema JSON mínimo: `{"type":"object","properties":{...},"required":[...]}`.
@@ -956,6 +1154,42 @@ where
                 input_schema: schema([], []),
                 ui_resource_uri: None,
             },
+            ToolSpec {
+                name: "spec_propose",
+                description: include_str!("../assets/spec_propose.txt"),
+                input_schema: schema(
+                    [
+                        ("concept_id", "string", "id lógico del spec, p. ej. 'specs/skill-ingest-v2'"),
+                        ("title", "string", "título humano del spec"),
+                        ("requirements", "string", "sección de requisitos, en Markdown libre"),
+                        ("design", "string", "sección de diseño técnico, en Markdown libre"),
+                        ("reason", "string", "motivo del commit (opcional, para la historia de revisiones)"),
+                    ],
+                    ["concept_id", "title", "requirements", "design"],
+                ),
+                ui_resource_uri: None,
+            },
+            ToolSpec {
+                name: "spec_tasks",
+                description: include_str!("../assets/spec_tasks.txt"),
+                input_schema: schema(
+                    [
+                        ("spec_id", "string", "concept_id de un spec ya creado con spec_propose"),
+                        ("tasks", "array", "lista de tareas: cada una {title, description opcional}"),
+                    ],
+                    ["spec_id", "tasks"],
+                ),
+                ui_resource_uri: None,
+            },
+            ToolSpec {
+                name: "spec_status",
+                description: include_str!("../assets/spec_status.txt"),
+                input_schema: schema(
+                    [("spec_id", "string", "concept_id de un spec")],
+                    ["spec_id"],
+                ),
+                ui_resource_uri: None,
+            },
         ];
         // `skill_ingest` solo se anuncia si el despliegue configuró un
         // descargador de fuentes (adaptador `ingest-http`): anunciar
@@ -1012,6 +1246,9 @@ where
             "memory_validate" => self.memory_validate(arguments),
             "memory_status" => self.memory_status(arguments),
             "memory_stats" => self.memory_stats(arguments),
+            "spec_propose" => self.spec_propose(arguments),
+            "spec_tasks" => self.spec_tasks(arguments),
+            "spec_status" => self.spec_status(arguments),
             _ => Err(ToolError::UnknownTool),
         }
     }
