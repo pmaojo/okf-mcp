@@ -54,6 +54,7 @@ La referencia de API generada con `cargo doc` se publica en
 │ outbox-worker     procesa outbox, GitHub y embeddings              │
 │ gemini-embeddings cliente del proveedor de embeddings              │
 │ ingest-http       fetch de GitHub + síntesis Gemini (skill_ingest) │
+│ github-store      PROTOTIPO: GitHub como fuente de verdad          │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -250,6 +251,31 @@ de `crates/vercel-entry`, no en la raíz del repo: como el **Root
 Directory** del proyecto está fijado ahí (punto anterior), Vercel solo
 lee `vercel.json` relativo a esa carpeta — un `vercel.json` en la raíz
 del repo se ignora en silencio.
+
+## Prototipo: GitHub como fuente de verdad (`github-store`)
+
+`GithubStore` explora sustituir Postgres por un repositorio de GitHub
+como almacén primario: los documentos son archivos markdown en una
+rama, el CAS lo cierra el parámetro `sha` de la API de contents, la
+historia de revisiones viaja en trailers `Memory-Rev:` de los mensajes
+de commit, y el lote atómico usa la API de git data (tree → commit →
+update de ref sin force, todo-o-nada real).
+
+Pasa **la misma suite de contrato** que `InMemoryStore` y
+`SupabaseStore` (`store_core::contract::run_all`), ejecutada contra
+una API de GitHub falsa en memoria
+(`crates/github-store/tests/contract.rs`); el smoke contra la API real
+es `cargo run -p github-store --example smoke -- owner/repo` (escribe
+de verdad: usar un repo de pruebas).
+
+Hallazgos del prototipo, documentados en el propio crate: sin un
+índice derivado, `search`/`backlinks`/`stats` exigen materializar el
+repo entero (el adaptador lo cachea por el sha de HEAD), no hay
+búsqueda semántica posible dentro de GitHub, y las ediciones humanas
+hechas directamente en la UI aparecen sin historia propia. La
+conclusión operativa: GitHub puede ser la verdad, pero la búsqueda
+necesita un índice derivado (hoy, Supabase) reconstruible desde el
+repo.
 
 ## Outbox, GitHub y embeddings
 

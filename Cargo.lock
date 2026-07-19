@@ -562,6 +562,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "github-store"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64",
+ "conflict-core",
+ "graph-core",
+ "hash-core",
+ "memory-model",
+ "okf-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "store-core",
+ "tokio",
+]
+
+[[package]]
 name = "graph-core"
 version = "0.1.0"
 dependencies = [
