@@ -1,0 +1,189 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@xyflow/react/dist/style.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * okf-memory — brutalist theme.
+ *
+ * Rules of the style, enforced below:
+ *  - flat black/white, one loud accent (electric yellow), red for danger
+ *  - zero corner radius anywhere (blanket override, not per-component)
+ *  - thick solid borders, hard offset shadows (no blur, no gradients)
+ *  - monospace everywhere, uppercase headings with wide tracking
+ */
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --radius-sm: 0rem;
+  --radius-md: 0rem;
+  --radius-lg: 0rem;
+  --radius-xl: 0rem;
+  --radius-2xl: 0rem;
+  --radius-3xl: 0rem;
+  --radius-4xl: 0rem;
+  --font-sans:
+    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace;
+  --font-heading: var(--font-sans);
+}
+
+:root {
+  --background: #ffffff;
+  --foreground: #0a0a0a;
+  --card: #ffffff;
+  --card-foreground: #0a0a0a;
+  --popover: #ffffff;
+  --popover-foreground: #0a0a0a;
+  --primary: #0a0a0a;
+  --primary-foreground: #ffffff;
+  --secondary: #e7e7e7;
+  --secondary-foreground: #0a0a0a;
+  --muted: #ededed;
+  --muted-foreground: #4a4a4a;
+  --accent: #f5ff00;
+  --accent-foreground: #0a0a0a;
+  --destructive: #e10600;
+  --border: #0a0a0a;
+  --input: #0a0a0a;
+  --ring: #0a0a0a;
+  --chart-1: #0a0a0a;
+  --chart-2: #e10600;
+  --chart-3: #1d4ed8;
+  --chart-4: #00913f;
+  --chart-5: #f5ff00;
+  --radius: 0rem;
+  --sidebar: #0a0a0a;
+  --sidebar-foreground: #ffffff;
+  --sidebar-primary: #f5ff00;
+  --sidebar-primary-foreground: #0a0a0a;
+  --sidebar-accent: #1a1a1a;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: #ffffff;
+  --sidebar-ring: #f5ff00;
+}
+
+.dark {
+  --background: #0a0a0a;
+  --foreground: #f5f5f5;
+  --card: #141414;
+  --card-foreground: #f5f5f5;
+  --popover: #141414;
+  --popover-foreground: #f5f5f5;
+  --primary: #f5ff00;
+  --primary-foreground: #0a0a0a;
+  --secondary: #262626;
+  --secondary-foreground: #f5f5f5;
+  --muted: #1f1f1f;
+  --muted-foreground: #a3a3a3;
+  --accent: #f5ff00;
+  --accent-foreground: #0a0a0a;
+  --destructive: #ff5c52;
+  --border: #f5f5f5;
+  --input: #f5f5f5;
+  --ring: #f5ff00;
+  --chart-1: #f5f5f5;
+  --chart-2: #ff5c52;
+  --chart-3: #60a5fa;
+  --chart-4: #34d399;
+  --chart-5: #f5ff00;
+  --sidebar: #f5f5f5;
+  --sidebar-foreground: #0a0a0a;
+  --sidebar-primary: #0a0a0a;
+  --sidebar-primary-foreground: #f5ff00;
+  --sidebar-accent: #e5e5e5;
+  --sidebar-accent-foreground: #0a0a0a;
+  --sidebar-border: #0a0a0a;
+  --sidebar-ring: #0a0a0a;
+}
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    /* Brutalism has no curves. This wins over every rounded-* utility,
+       including shadcn primitives we did not hand-edit. */
+    border-radius: 0 !important;
+    box-sizing: border-box;
+  }
+  * {
+    border-color: var(--border);
+    @apply outline-ring/50;
+  }
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    @apply bg-background text-foreground;
+  }
+  html {
+    font-family: var(--font-sans);
+    @apply font-sans;
+  }
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    font-weight: 800;
+  }
+  ::selection {
+    background: var(--accent);
+    color: var(--accent-foreground);
+  }
+}
+
+@layer utilities {
+  .shadow-brutal {
+    box-shadow: 6px 6px 0 0 var(--border);
+  }
+  .shadow-brutal-sm {
+    box-shadow: 3px 3px 0 0 var(--border);
+  }
+  .shadow-brutal-lg {
+    box-shadow: 10px 10px 0 0 var(--border);
+  }
+  .shadow-brutal-press {
+    transition:
+      transform 100ms ease,
+      box-shadow 100ms ease;
+  }
+  .shadow-brutal-press:active {
+    transform: translate(3px, 3px);
+    box-shadow: 0 0 0 0 var(--border);
+  }
+}

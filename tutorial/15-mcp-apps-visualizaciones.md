@@ -2,18 +2,20 @@
 
 Crates: [`crates/mcp-core`](../crates/mcp-core/src/lib.rs),
 [`crates/graph-core`](../crates/graph-core/src/lib.rs),
-[`crates/memory-tools`](../crates/memory-tools/src/lib.rs)
+[`crates/memory-tools`](../crates/memory-tools/src/lib.rs) — más la
+app React en [`mcp-app/`](../mcp-app/) que compila el HTML que este
+capítulo explica cómo servir.
 
-> **Capítulo opcional.** Todo lo que sigue — los recursos `ui://`, el
-> HTML de `graph-view.html`/`history-view.html`, `resources/list` y
-> `resources/read` — es una extensión del protocolo, no parte del
-> núcleo del servidor de memoria. Un cliente que no la entiende sigue
-> usando `memory_search`, `memory_resolve`, `memory_commit` y
-> `memory_history` exactamente igual que en el hito 1: JSON, sin HTML
-> de por medio — porque ignora el `_meta` que no reconoce, no porque
-> el servidor se lo esconda (sección 2 explica por qué esa distinción
-> importa). Si no te interesa renderizar vistas, puedes saltarte este
-> capítulo entero sin perder nada del resto del tutorial.
+> **Capítulo opcional.** Todo lo que sigue — los recursos `ui://`,
+> `resources/list` y `resources/read` — es una extensión del
+> protocolo, no parte del núcleo del servidor de memoria. Un cliente
+> que no la entiende sigue usando `memory_search`, `memory_resolve`,
+> `memory_commit` y `memory_history` exactamente igual que en el hito
+> 1: JSON, sin HTML de por medio — porque ignora el `_meta` que no
+> reconoce, no porque el servidor se lo esconda (sección 2 explica por
+> qué esa distinción importa). Si no te interesa renderizar vistas,
+> puedes saltarte este capítulo entero sin perder nada del resto del
+> tutorial.
 
 ## 1. El problema
 
@@ -32,6 +34,26 @@ vincularlos a una herramienta. Si el cliente lo soporta, renderiza esa
 vista en un iframe en vez de (o además de) el JSON crudo. Si no lo
 soporta, la herramienta se comporta exactamente igual que antes: cero
 regresión para clientes que no conocen la extensión.
+
+Ese HTML autocontenido no se escribe a mano: vive como una app React
+en [`mcp-app/`](../mcp-app/) (starter Vite + shadcn, bridge oficial
+[`@modelcontextprotocol/ext-apps`](https://www.npmjs.com/package/@modelcontextprotocol/ext-apps)
+en vez de un `postMessage` casero), con un componente por herramienta
+enrutado en tiempo de ejecución por el `toolName` que inyecta el host,
+[React Flow](https://reactflow.dev/ui) para los grafos
+(`memory_resolve`, `memory_backlinks`) y
+[Recharts](https://ui.shadcn.com/charts) para las estadísticas
+(`memory_stats`, `memory_history`, `memory_validate`). `pnpm build`
+compila todo eso — JS, CSS y los estilos de React Flow incluidos — a
+un único `dist/mcp-app.html` con `vite-plugin-singlefile`, y
+`pnpm run build:sync` lo copia a
+`crates/memory-tools/assets/mcp-app.html`, que es el string que
+`include_str!` empotra en el binario (sección 6). Ese archivo generado
+tiene que vivir comiteado en el repo — el build de Rust nunca ejecuta
+`pnpm` — así que
+[`.github/workflows/mcp-app.yml`](../.github/workflows/mcp-app.yml)
+reconstruye la UI en cada push/PR y falla si la copia del repo no
+coincide con un build fresco.
 
 
 El problema práctico lo ve la persona que depura una memoria grande: el JSON
@@ -183,14 +205,20 @@ extensión opcional en una función que nunca se activa.
 
 ## 6. Memoria y asignación
 
-Los dos recursos `ui://` de este servidor (`graph-view.html`,
-`history-view.html`) son literales `&'static str` embebidos en el
-binario — el mismo costo de memoria que cualquier otra constante del
-programa, sin asignación en el heap ni en tiempo de arranque ni por
-petición. `resources/read` clona el `&'static str` en la respuesta
-JSON-RPC (una copia, como cualquier otro campo de texto que ya
-serializábamos) — no hay lectura de disco ni de red en el camino
-caliente.
+El único recurso `ui://` de este servidor (`ui://okf-memory/app`,
+compilado desde [`mcp-app/`](../mcp-app/) a
+`crates/memory-tools/assets/mcp-app.html`) es un literal `&'static
+str` embebido en el binario — el mismo costo de memoria que cualquier
+otra constante del programa, sin asignación en el heap ni en tiempo de
+arranque ni por petición, sin importar que ese string mida 1 KB o
+1 MB (React + React Flow + Recharts inlineados suman poco más de 1 MB
+sin comprimir). `resources/read` clona el `&'static str` en la
+respuesta JSON-RPC (una copia, como cualquier otro campo de texto que
+ya serializábamos) — no hay lectura de disco ni de red en el camino
+caliente. Las 13 herramientas `memory_*` comparten ese mismo recurso:
+un solo string en el binario, no trece — la app enruta internamente
+por el `toolName` que el host inyecta (ver `hostContext.toolInfo` en
+`mcp-app/src/mcp-app.tsx`).
 
 ## 7. Tests
 
@@ -237,10 +265,11 @@ necesite sería exactamente la clase de abstracción prematura que este
 tutorial lleva 14 capítulos evitando.
 
 Lo que la vista de grafo hace en su lugar es deliberadamente modesto:
-un color por `doc_type` calculado con una función hash a una paleta
-fija de 8 colores (`hashColor` en `graph-view.html`) — ni siquiera
-sabe el `doc_type` de los vecinos, porque `memory_resolve` no lo
-repite por nodo del vecindario. Es una regla, no una ontología:
+tres estados visuales fijos por nodo (raíz / vecino normal / enlace
+roto — `ConceptGraph` en `mcp-app/src/shared/components/graph/`), sin
+ningún intento de tipar la relación en sí. Ni siquiera distingue el
+`doc_type` de los vecinos, porque `memory_resolve` no lo repite por
+nodo del vecindario. Es una regla, no una ontología:
 
 > Tipar un dato tiene sentido cuando alguien va a RAZONAR sobre esos
 > tipos (subclases, herencia, inferencia). Colorear un dato para que
@@ -263,9 +292,9 @@ trabajo de una frase en `memory-tools`, no una decisión arquitectónica.
   Un handler que no sabe nada de MCP Apps no necesita conocer ni el
   tipo `UiResource` para compilar.
 * **D:** `mcp-core` no conoce el contenido de ningún HTML concreto —
-  solo sabe servir lo que el handler le dé. `graph-view.html` y
-  `history-view.html` viven en `memory-tools`, el crate que sabe qué
-  forma tienen `memory_resolve`/`memory_history`.
+  solo sabe servir lo que el handler le dé. `mcp-app.html` vive en
+  `memory-tools` (copiado ahí por `mcp-app/scripts/sync-to-rust.mjs`),
+  el crate que sabe qué forma tienen las 13 herramientas `memory_*`.
 
 ## 10. Ejercicios
 
@@ -278,10 +307,13 @@ trabajo de una frase en `memory-tools`, no una decisión arquitectónica.
    qué pasaría si `initialize` se llamara dos veces, o si se
    reordenara respecto a `tools/list` en un transporte que no
    garantiza el orden).
-2. **Medio.** Añade una vista `ui://okf-memory/search-view` para
-   `memory_search` (hoy en texto plano a propósito). ¿Qué justifica
-   el cambio de opinión — qué gana un humano viendo resultados de
-   búsqueda como tarjetas en vez de JSON?
+2. **Medio.** `memory_search` y `memory_list` devuelven exactamente el
+   mismo `SearchHit[]` (ver `crates/memory-tools/src/lib.rs`), pero
+   son dos herramientas — y dos componentes en `mcp-app/src/tools/`,
+   `memory-search/view.tsx` y `memory-list/view.tsx`. Ábrelos junto a
+   `ConceptTable` en `mcp-app/src/shared/components/tool/`: ¿qué parte
+   comparten y qué parte no, y por qué no vale la pena fusionar los
+   dos componentes en uno solo aunque su forma de datos sea idéntica?
 3. **Abierto.** La sección 8 explica por qué NO se tipan los enlaces
    con OWL. Diseña la alternativa ligera que sí se descartó por
    alcance (no por mala idea): un frontmatter `links:` con pares

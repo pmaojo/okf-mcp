@@ -1093,7 +1093,7 @@ where
                     ],
                     [],
                 ),
-                ui_resource_uri: None,
+                ui_resource_uri: Some("ui://okf-memory/app"),
             },
             ToolSpec {
                 name: "memory_resolve",
@@ -1106,7 +1106,7 @@ where
                     ],
                     ["concept_id"],
                 ),
-                ui_resource_uri: Some("ui://okf-memory/graph-view"),
+                ui_resource_uri: Some("ui://okf-memory/app"),
             },
             ToolSpec {
                 name: "memory_commit",
@@ -1121,7 +1121,7 @@ where
                     ],
                     ["concept_id", "markdown", "reason"],
                 ),
-                ui_resource_uri: None,
+                ui_resource_uri: Some("ui://okf-memory/app"),
             },
             ToolSpec {
                 name: "memory_history",
@@ -1134,7 +1134,7 @@ where
                     ],
                     ["concept_id"],
                 ),
-                ui_resource_uri: Some("ui://okf-memory/history-view"),
+                ui_resource_uri: Some("ui://okf-memory/app"),
             },
             ToolSpec {
                 name: "memory_delete",
@@ -1147,7 +1147,7 @@ where
                     ],
                     ["concept_id", "expected_hash", "reason"],
                 ),
-                ui_resource_uri: None,
+                ui_resource_uri: Some("ui://okf-memory/app"),
             },
             ToolSpec {
                 name: "memory_list",
@@ -1159,7 +1159,7 @@ where
                     ],
                     [],
                 ),
-                ui_resource_uri: None,
+                ui_resource_uri: Some("ui://okf-memory/app"),
             },
             ToolSpec {
                 name: "memory_backlinks",
@@ -1170,7 +1170,7 @@ where
                     ],
                     ["concept_id"],
                 ),
-                ui_resource_uri: None,
+                ui_resource_uri: Some("ui://okf-memory/app"),
             },
             ToolSpec {
                 name: "memory_embed",
@@ -1182,7 +1182,7 @@ where
                     ],
                     [],
                 ),
-                ui_resource_uri: None,
+                ui_resource_uri: Some("ui://okf-memory/app"),
             },
             ToolSpec {
                 name: "memory_patch",
@@ -1200,7 +1200,7 @@ where
                     ],
                     ["concept_id", "expected_hash", "reason"],
                 ),
-                ui_resource_uri: None,
+                ui_resource_uri: Some("ui://okf-memory/app"),
             },
             ToolSpec {
                 name: "memory_bulk_commit",
@@ -1212,7 +1212,7 @@ where
                     ],
                     ["requests"],
                 ),
-                ui_resource_uri: None,
+                ui_resource_uri: Some("ui://okf-memory/app"),
             },
             ToolSpec {
                 name: "memory_validate",
@@ -1223,19 +1223,19 @@ where
                     ],
                     [],
                 ),
-                ui_resource_uri: None,
+                ui_resource_uri: Some("ui://okf-memory/app"),
             },
             ToolSpec {
                 name: "memory_status",
                 description: include_str!("../assets/memory_status.txt"),
                 input_schema: schema([], []),
-                ui_resource_uri: None,
+                ui_resource_uri: Some("ui://okf-memory/app"),
             },
             ToolSpec {
                 name: "memory_stats",
                 description: include_str!("../assets/memory_stats.txt"),
                 input_schema: schema([], []),
-                ui_resource_uri: None,
+                ui_resource_uri: Some("ui://okf-memory/app"),
             },
             ToolSpec {
                 name: "spec_propose",
@@ -1297,20 +1297,12 @@ where
     }
 
     fn ui_resources(&self) -> Vec<UiResource> {
-        vec![
-            UiResource {
-                uri: "ui://okf-memory/graph-view",
-                name: "Vista de grafo",
-                description: "Vecindario de un concepto como grafo interactivo (nodos por profundidad, aristas reales padre→hijo).",
-                html: include_str!("../assets/graph-view.html"),
-            },
-            UiResource {
-                uri: "ui://okf-memory/history-view",
-                name: "Línea de tiempo",
-                description: "Historial de revisiones de un concepto como línea de tiempo vertical.",
-                html: include_str!("../assets/history-view.html"),
-            },
-        ]
+        vec![UiResource {
+            uri: "ui://okf-memory/app",
+            name: "okf-memory",
+            description: "UI React interactiva (tema brutalista) para las 13 herramientas memory_*: formularios, grafo de conceptos (React Flow) y gráficas (Recharts). Compilada en un único HTML autocontenido desde mcp-app/ (ver mcp-app/README.md); enruta internamente por el nombre de la herramienta invocada.",
+            html: include_str!("../assets/mcp-app.html"),
+        }]
     }
 
     fn call(&mut self, name: &str, arguments: &Value) -> Result<Value, ToolError> {
