@@ -1,12 +1,15 @@
 # okf-memory MCP app
 
-Interactive UI for the 13 `memory_*` MCP tools exposed by
-[`crates/memory-tools`](../crates/memory-tools). React + TypeScript +
-Vite, compiled to a single self-contained `dist/mcp-app.html` that the
-Rust server embeds at compile time via `include_str!` and serves as
-the `ui://okf-memory/app` resource (see
+Interactive UI for the 17 tools exposed by
+[`crates/memory-tools`](../crates/memory-tools) — the 13 `memory_*`
+tools plus `spec_propose`/`spec_tasks`/`spec_status`/`skill_ingest`.
+React + TypeScript + Vite, compiled to a single self-contained
+`dist/mcp-app.html` that the Rust server embeds at compile time via
+`include_str!` and serves under a distinct `ui://okf-memory/<tool>`
+resource per tool (see
 [tutorial chapter 15](../tutorial/15-mcp-apps-visualizaciones.md) for
-the protocol side of that).
+the protocol side of that, including why each tool gets its own URI
+instead of one shared one).
 
 Built on top of the
 [MCP App Vite Starter](https://github.com/modelcontextprotocol/ext-apps)
@@ -34,6 +37,26 @@ over Recharts, `src/shared/components/ui/chart.tsx` +
 `src/shared/components/charts/BarChartCard.tsx`): used by
 `memory_stats` (counts by type, top-linked hubs), `memory_history`
 (revisions by actor) and `memory_validate` (issue counts).
+
+**Cross-tool peeks** (`useServerTool` `usePeekTool` in
+`src/shared/hooks/`): a view isn't limited to calling its own tool.
+`spec_status` resolves a `next_pending` task with `memory_resolve`
+inline; `spec_propose` can chain into `spec_tasks`; `skill_ingest`
+resolves a freshly-imported skill — all via `app.callServerTool`
+without leaving the view.
+
+**Handing state back to the model** (`AddContextButton` in
+`src/shared/components/tool/`, wrapping `app.updateModelContext` —
+deliberately not `app.sendMessage`, which would inject a visible fake
+user turn): when a human re-runs a write or diagnostic tool from
+inside the UI with arguments the model never saw
+(`memory_commit`/`memory_patch`/`memory_delete`/`memory_bulk_commit`/
+`memory_validate`/`spec_propose`/`spec_tasks`/`spec_status`/
+`skill_ingest`), that result only exists in the browser. This button
+folds a summary into the model's context for its next turn, silently.
+It's gated on `useServerTool`'s `isManual` flag — it never fires for
+the initial host-provided result, since the model already has that
+(it was the model's own tool call).
 
 ## Stack
 
@@ -82,24 +105,30 @@ mcp-app/
 │   │       ├── provider/McpProvider.tsx  SDK bridge: host context, result cache, theme sync
 │   │       └── logger/          Toast + host log integration
 │   ├── lib/
-│   │   ├── mcp-types.ts         TS mirrors of the 13 tools' JSON response shapes
+│   │   ├── mcp-types.ts         TS mirrors of the 17 tools' JSON response shapes
 │   │   └── tool-result.ts       Parses CallToolResult -> typed payload
 │   ├── shared/
 │   │   ├── components/ui/       shadcn-style primitives (Base UI under the hood)
-│   │   ├── components/tool/     Layout, tables, stat tiles, commit result cards
+│   │   ├── components/tool/     Layout, tables, stat tiles, commit/spec result cards,
+│   │   │                        PeekConceptCard, AddContextButton
 │   │   ├── components/graph/    ConceptGraph (React Flow)
 │   │   ├── components/charts/   BarChartCard (Recharts)
-│   │   └── hooks/useServerTool.ts
+│   │   ├── components/ErrorBoundary.tsx  Per-tool crash containment
+│   │   └── hooks/useServerTool.ts, usePeekTool.ts
 │   └── tools/
-│       ├── memory-search/ … memory-stats/   one manifest.ts + view.tsx per tool
+│       ├── memory-search/ … skill-ingest/   one manifest.ts + view.tsx per tool
 │       └── registry.ts          Static registry mapping slug -> component
 └── docs/                        Architecture notes carried over from the starter
 ```
 
 ## How the UI talks to MCP
 
-1. `crates/memory-tools` registers each `memory_*` `ToolSpec` with
-   `ui_resource_uri: Some("ui://okf-memory/app")`.
+1. `crates/memory-tools` registers each `ToolSpec` with its own
+   `ui_resource_uri: Some("ui://okf-memory/<tool_name>")` — a distinct
+   URI per tool, all pointing at the same compiled HTML. This matters:
+   some MCP Apps hosts reuse an already-open iframe when the URI
+   doesn't change between calls, which breaks routing if two different
+   tools share one URI (see tutorial chapter 15, section 6).
 2. A compatible MCP client opens that resource in an iframe and
    injects host context.
 3. `McpProvider` (`src/core/mcp/provider/McpProvider.tsx`) calls
@@ -109,10 +138,16 @@ mcp-app/
 4. `src/mcp-app.tsx` reads `hostContext.toolInfo.tool.name` and
    resolves the matching component from `src/tools/registry.ts` — the
    slug must equal the exact server-side tool name (e.g.
-   `"memory_search"`).
+   `"memory_search"`) — then mounts it inside a `ToolErrorBoundary`
+   keyed by that name, so a render crash shows a message instead of a
+   blank screen.
 5. Views call `useServerTool(app, manifest.slug, toolResult)` to run
-   their own tool, or `app.callServerTool({ name, arguments })`
-   directly for cross-tool navigation (e.g. clicking a graph node).
+   their own tool, or `app.callServerTool({ name, arguments })` /
+   `usePeekTool` directly for cross-tool calls (e.g. clicking a graph
+   node, or `spec_status` resolving a task).
+6. When a manual re-run (`useServerTool`'s `isManual`) produces state
+   the model hasn't seen, views offer `AddContextButton` to fold a
+   summary into `app.updateModelContext` for the model's next turn.
 
 ## Adding or changing a tool view
 

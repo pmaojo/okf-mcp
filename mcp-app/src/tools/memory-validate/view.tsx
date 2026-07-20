@@ -4,6 +4,7 @@ import { ToolHeader } from "@/shared/components/tool/ToolHeader";
 import { ToolLayout, RunPanel } from "@/shared/components/tool/ToolLayout";
 import { Field } from "@/shared/components/tool/Field";
 import { ErrorBanner, EmptyBanner } from "@/shared/components/tool/StatusBanner";
+import { AddContextButton } from "@/shared/components/tool/AddContextButton";
 import { BarChartCard } from "@/shared/components/charts/BarChartCard";
 import { Input } from "@/shared/components/ui/input";
 import { Button } from "@/shared/components/ui/button";
@@ -21,7 +22,7 @@ import type { MemoryValidateResult } from "@/lib/mcp-types";
 export function MemoryValidateView({ app, toolResult }: ToolComponentProps) {
   const [pathPrefix, setPathPrefix] = useState("");
 
-  const { activeResult, isError, isLoading, executeTool } = useServerTool(
+  const { activeResult, isError, isLoading, executeTool, isManual } = useServerTool(
     app,
     "memory_validate",
     toolResult
@@ -79,6 +80,12 @@ export function MemoryValidateView({ app, toolResult }: ToolComponentProps) {
         <>
           {isHealthy && <Badge>all clear</Badge>}
           <BarChartCard data={chartData} seriesLabel="Issues" layout="horizontal" height={200} />
+          {isManual && !isHealthy && (
+            <AddContextButton
+              app={app}
+              text={`memory_validate found ${parsed.broken_links_total} broken link(s), ${parsed.deleted_referenced_total} reference(s) to deleted concepts, and ${parsed.missing_embeddings_total} document(s) missing embeddings${pathPrefix.trim() ? ` under "${pathPrefix.trim()}"` : ""}.`}
+            />
+          )}
 
           <div className="grid gap-4 md:grid-cols-3">
             <Card>

@@ -20,7 +20,7 @@ La referencia de API generada con `cargo doc` se publica en
 - ✅ **Hito 2:** transporte HTTP sin estado (`mcp-http`) + contrato ejecutable `MemoryRepository` + adaptador de Vercel (`vercel-entry`) + adaptador de base de datos PostgreSQL (`supabase-store`).
 - ✅ **Hito 3:** OAuth 2.1 (Resource Server, validación criptográfica de JWTs mediante firmas y JWKS).
 - ✅ **Hito 4:** Transactional Outbox (`outbox-worker` con procesamiento concurrente `SKIP LOCKED`, sincronización con GitHub y embeddings con `pgvector`).
-- ✅ **Hito 5:** MCP Apps — UI React interactiva ([`mcp-app/`](mcp-app/), tema brutalista) para las 13 herramientas `memory_*`, servida como un único recurso `ui://` (opcional, ver más abajo).
+- ✅ **Hito 5:** MCP Apps — UI React interactiva ([`mcp-app/`](mcp-app/), tema brutalista) para las 17 herramientas, cada una con su propio recurso `ui:// ` (opcional, ver más abajo).
 
 ## Arquitectura
 
@@ -173,10 +173,15 @@ en desarrollo, nunca en producción.
 
 ## UI interactiva (`mcp-app/`)
 
-Las 13 herramientas `memory_*` (todas menos `spec_*` y `skill_ingest`)
-anuncian `ui_resource_uri: Some("ui://okf-memory/app")`: un cliente MCP
-Apps compatible (capítulo 15 del tutorial explica el protocolo) las
-renderiza en un iframe en vez del JSON crudo.
+Las 17 herramientas (las 13 `memory_*` más `spec_propose`,
+`spec_tasks`, `spec_status` y `skill_ingest` cuando está anunciada)
+anuncian `ui_resource_uri: Some("ui://okf-memory/<nombre>")` — una URI
+**propia por herramienta**, no una compartida: varios hosts MCP Apps
+reutilizan el iframe ya abierto cuando la URI no cambia entre una
+llamada y la siguiente, así que una URI por tool es lo que garantiza
+que cada invocación abra la vista correcta (ver capítulo 15 del
+tutorial, sección 6). Un cliente MCP Apps compatible renderiza esa URI
+en un iframe en vez del JSON crudo.
 
 Esa vista es una app React independiente en [`mcp-app/`](mcp-app/)
 (starter Vite + shadcn + `@modelcontextprotocol/ext-apps`, tema
@@ -184,8 +189,10 @@ Esa vista es una app React independiente en [`mcp-app/`](mcp-app/)
 radio de esquina, sombras duras, monoespaciada), con un componente por
 herramienta (`mcp-app/src/tools/<nombre>/`) enrutado en tiempo de
 ejecución por el `toolName` que inyecta el host — el mismo patrón de
-"micro-manifest" del starter. Dos piezas hacen el grafo de conceptos
-interactivo:
+"micro-manifest" del starter, envuelto en un `ErrorBoundary` propio
+por herramienta para que un fallo de render no deje la pantalla en
+blanco. Piezas que hacen la UI interactiva de verdad, no solo un
+visor:
 
 - **[React Flow](https://reactflow.dev/ui)** (`@xyflow/react`) para
   `memory_resolve` (vecindario) y `memory_backlinks` (enlaces
@@ -194,6 +201,24 @@ interactivo:
 - **[Recharts](https://ui.shadcn.com/charts)** para `memory_stats`,
   `memory_history` y `memory_validate` (conteos por tipo/tag, hubs,
   revisiones por actor, salud del grafo).
+- **Llamadas cruzadas a otras herramientas** (`usePeekTool`, via
+  `app.callServerTool`): `spec_status` resuelve una tarea `next_pending`
+  con `memory_resolve` sin salir de la vista; `spec_propose` puede
+  encadenar `spec_tasks`; `skill_ingest` resuelve cada skill recién
+  importada.
+- **`app.updateModelContext`** (`AddContextButton`, NO
+  `app.sendMessage`): cuando el HUMANO re-ejecuta una herramienta de
+  escritura/diagnóstico desde la UI (`memory_commit`, `memory_patch`,
+  `memory_delete`, `memory_bulk_commit`, `memory_validate`,
+  `spec_propose`, `spec_tasks`, `spec_status`, `skill_ingest`) con
+  argumentos que el modelo nunca vio, ese resultado solo existe en el
+  navegador — nada se lo cuenta al modelo salvo que la UI lo haga
+  explícitamente. `updateModelContext` se lo entrega de forma
+  diferida (sin interrumpir, sin disparar una respuesta inmediata) para
+  el siguiente turno; por eso solo aparece cuando `useServerTool`
+  reporta `isManual` (un re-run disparado desde la UI), nunca para el
+  resultado inicial que ya inyectó el host — ese ya está en el
+  contexto del modelo porque fue SU llamada.
 
 `pnpm build` en `mcp-app/` compila TODO — JS, CSS y los estilos de
 React Flow — en un único `dist/mcp-app.html` autocontenido

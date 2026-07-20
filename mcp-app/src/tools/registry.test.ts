@@ -15,10 +15,14 @@ const EXPECTED_SLUGS = [
   "memory_validate",
   "memory_status",
   "memory_stats",
+  "spec_propose",
+  "spec_tasks",
+  "spec_status",
+  "skill_ingest",
 ];
 
 describe("registry", () => {
-  it("should register all 13 memory_* tool components", () => {
+  it("should register all 17 memory_*/spec_*/skill_ingest tool components", () => {
     expect(Object.keys(TOOL_COMPONENTS).sort()).toEqual(EXPECTED_SLUGS.sort());
     for (const slug of EXPECTED_SLUGS) {
       expect(TOOL_COMPONENTS[slug]).toBeDefined();

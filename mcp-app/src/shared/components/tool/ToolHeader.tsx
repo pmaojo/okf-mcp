@@ -15,19 +15,21 @@ export function ToolHeader({
   slug: string;
   title: string;
   description: string;
-  kicker?: string;
+  kicker?: "danger";
 }) {
   return (
     <Card>
-      <CardHeader>
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="default">{kicker ?? "okf-memory"}</Badge>
-          <Badge variant="outline" className="font-mono normal-case">
-            {slug}
-          </Badge>
+      <CardHeader className="flex-row flex-wrap items-start justify-between gap-3 space-y-0">
+        <div className="min-w-0">
+          <CardTitle className="text-sm">{title}</CardTitle>
+          <CardDescription className="mt-1">{description}</CardDescription>
         </div>
-        <CardTitle className="text-xl">{title}</CardTitle>
-        <CardDescription>{description}</CardDescription>
+        <Badge
+          variant={kicker === "danger" ? "destructive" : "outline"}
+          className="shrink-0 font-mono normal-case"
+        >
+          {slug}
+        </Badge>
       </CardHeader>
     </Card>
   );

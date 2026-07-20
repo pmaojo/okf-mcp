@@ -11,6 +11,7 @@ import {
 import { Field } from "@/shared/components/tool/Field";
 import { ErrorBanner, EmptyBanner } from "@/shared/components/tool/StatusBanner";
 import { CommitResultCard } from "@/shared/components/tool/CommitResultCard";
+import { AddContextButton } from "@/shared/components/tool/AddContextButton";
 import { Input } from "@/shared/components/ui/input";
 import { Button } from "@/shared/components/ui/button";
 import { Switch } from "@/shared/components/ui/switch";
@@ -41,7 +42,7 @@ export function MemoryPatchView({ app, toolResult }: ToolComponentProps) {
   const [removeTags, setRemoveTags] = useState("");
   const [dryRun, setDryRun] = useState(true);
 
-  const { activeResult, isError, isLoading, executeTool } = useServerTool(
+  const { activeResult, isError, isLoading, executeTool, isManual } = useServerTool(
     app,
     "memory_patch",
     toolResult
@@ -196,7 +197,17 @@ export function MemoryPatchView({ app, toolResult }: ToolComponentProps) {
               detail="Likely a stale expected_hash, or the document doesn't exist."
             />
           )}
-          {!isError && parsed && <CommitResultCard result={parsed} />}
+          {!isError && parsed && (
+            <>
+              <CommitResultCard result={parsed} />
+              {isManual && !parsed.dry_run && (
+                <AddContextButton
+                  app={app}
+                  text={`memory_patch just updated ${parsed.concept_id} (v${parsed.version}, reason: "${reason.trim()}")${addTags.trim() ? ` — added tags: ${addTags.trim()}.` : ""}${removeTags.trim() ? ` Removed tags: ${removeTags.trim()}.` : ""}`}
+                />
+              )}
+            </>
+          )}
           {!isError && !parsed && !isLoading && (
             <EmptyBanner>Fill in the form and run memory_patch.</EmptyBanner>
           )}

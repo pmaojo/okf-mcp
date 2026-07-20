@@ -34,6 +34,13 @@ use memory_model::{Budget, ConceptId, ContentId, Principal};
 use store_core::{CommitRequest, MemoryRepository, SearchQuery, StoreError, StoreMaintenance};
 use std::convert::Infallible;
 
+/// La UI React de las 13 herramientas `memory_*` (`mcp-app/`),
+/// compilada a un único HTML autocontenido y sincronizada aquí por
+/// `mcp-app/scripts/sync-to-rust.mjs`. Un solo `include_str!`: las 13
+/// entradas de [`MemoryTools::ui_resources`] comparten este mismo
+/// `&'static str` bajo URIs distintas, sin duplicar el binario.
+const APP_HTML: &str = include_str!("../assets/mcp-app.html");
+
 /// El [`ToolHandler`] de memoria, genérico sobre el repositorio.
 pub struct MemoryTools<R> {
     repo: R,
@@ -1093,7 +1100,7 @@ where
                     ],
                     [],
                 ),
-                ui_resource_uri: Some("ui://okf-memory/app"),
+                ui_resource_uri: Some("ui://okf-memory/memory_search"),
             },
             ToolSpec {
                 name: "memory_resolve",
@@ -1106,7 +1113,7 @@ where
                     ],
                     ["concept_id"],
                 ),
-                ui_resource_uri: Some("ui://okf-memory/app"),
+                ui_resource_uri: Some("ui://okf-memory/memory_resolve"),
             },
             ToolSpec {
                 name: "memory_commit",
@@ -1121,7 +1128,7 @@ where
                     ],
                     ["concept_id", "markdown", "reason"],
                 ),
-                ui_resource_uri: Some("ui://okf-memory/app"),
+                ui_resource_uri: Some("ui://okf-memory/memory_commit"),
             },
             ToolSpec {
                 name: "memory_history",
@@ -1134,7 +1141,7 @@ where
                     ],
                     ["concept_id"],
                 ),
-                ui_resource_uri: Some("ui://okf-memory/app"),
+                ui_resource_uri: Some("ui://okf-memory/memory_history"),
             },
             ToolSpec {
                 name: "memory_delete",
@@ -1147,7 +1154,7 @@ where
                     ],
                     ["concept_id", "expected_hash", "reason"],
                 ),
-                ui_resource_uri: Some("ui://okf-memory/app"),
+                ui_resource_uri: Some("ui://okf-memory/memory_delete"),
             },
             ToolSpec {
                 name: "memory_list",
@@ -1159,7 +1166,7 @@ where
                     ],
                     [],
                 ),
-                ui_resource_uri: Some("ui://okf-memory/app"),
+                ui_resource_uri: Some("ui://okf-memory/memory_list"),
             },
             ToolSpec {
                 name: "memory_backlinks",
@@ -1170,7 +1177,7 @@ where
                     ],
                     ["concept_id"],
                 ),
-                ui_resource_uri: Some("ui://okf-memory/app"),
+                ui_resource_uri: Some("ui://okf-memory/memory_backlinks"),
             },
             ToolSpec {
                 name: "memory_embed",
@@ -1182,7 +1189,7 @@ where
                     ],
                     [],
                 ),
-                ui_resource_uri: Some("ui://okf-memory/app"),
+                ui_resource_uri: Some("ui://okf-memory/memory_embed"),
             },
             ToolSpec {
                 name: "memory_patch",
@@ -1200,7 +1207,7 @@ where
                     ],
                     ["concept_id", "expected_hash", "reason"],
                 ),
-                ui_resource_uri: Some("ui://okf-memory/app"),
+                ui_resource_uri: Some("ui://okf-memory/memory_patch"),
             },
             ToolSpec {
                 name: "memory_bulk_commit",
@@ -1212,7 +1219,7 @@ where
                     ],
                     ["requests"],
                 ),
-                ui_resource_uri: Some("ui://okf-memory/app"),
+                ui_resource_uri: Some("ui://okf-memory/memory_bulk_commit"),
             },
             ToolSpec {
                 name: "memory_validate",
@@ -1223,19 +1230,19 @@ where
                     ],
                     [],
                 ),
-                ui_resource_uri: Some("ui://okf-memory/app"),
+                ui_resource_uri: Some("ui://okf-memory/memory_validate"),
             },
             ToolSpec {
                 name: "memory_status",
                 description: include_str!("../assets/memory_status.txt"),
                 input_schema: schema([], []),
-                ui_resource_uri: Some("ui://okf-memory/app"),
+                ui_resource_uri: Some("ui://okf-memory/memory_status"),
             },
             ToolSpec {
                 name: "memory_stats",
                 description: include_str!("../assets/memory_stats.txt"),
                 input_schema: schema([], []),
-                ui_resource_uri: Some("ui://okf-memory/app"),
+                ui_resource_uri: Some("ui://okf-memory/memory_stats"),
             },
             ToolSpec {
                 name: "spec_propose",
@@ -1250,7 +1257,7 @@ where
                     ],
                     ["concept_id", "title", "requirements", "design"],
                 ),
-                ui_resource_uri: None,
+                ui_resource_uri: Some("ui://okf-memory/spec_propose"),
             },
             ToolSpec {
                 name: "spec_tasks",
@@ -1262,7 +1269,7 @@ where
                     ],
                     ["spec_id", "tasks"],
                 ),
-                ui_resource_uri: None,
+                ui_resource_uri: Some("ui://okf-memory/spec_tasks"),
             },
             ToolSpec {
                 name: "spec_status",
@@ -1271,7 +1278,7 @@ where
                     [("spec_id", "string", "concept_id de un spec")],
                     ["spec_id"],
                 ),
-                ui_resource_uri: None,
+                ui_resource_uri: Some("ui://okf-memory/spec_status"),
             },
         ];
         // `skill_ingest` solo se anuncia si el despliegue configuró un
@@ -1290,19 +1297,58 @@ where
                     ],
                     ["source", "path_prefix"],
                 ),
-                ui_resource_uri: None,
+                ui_resource_uri: Some("ui://okf-memory/skill_ingest"),
             });
         }
         specs
     }
 
     fn ui_resources(&self) -> Vec<UiResource> {
-        vec![UiResource {
-            uri: "ui://okf-memory/app",
-            name: "okf-memory",
-            description: "UI React interactiva (tema brutalista) para las 13 herramientas memory_*: formularios, grafo de conceptos (React Flow) y gráficas (Recharts). Compilada en un único HTML autocontenido desde mcp-app/ (ver mcp-app/README.md); enruta internamente por el nombre de la herramienta invocada.",
-            html: include_str!("../assets/mcp-app.html"),
-        }]
+        // Un `UiResource` por herramienta, con URI propia — todas
+        // sirven el MISMO `APP_HTML` (un solo `include_str!`;
+        // `&'static str` es puntero+longitud, así que repetirlo aquí
+        // no duplica nada en el binario). La URI propia por tool NO es
+        // cosmética: varios hosts MCP Apps (heredado del Apps SDK de
+        // OpenAI — ver capítulo 15 del tutorial) reutilizan el iframe
+        // ya abierto cuando `_meta.ui.resourceUri` no cambia entre una
+        // llamada y la siguiente. Con una única URI compartida entre
+        // varias herramientas, invocar `memory_search` justo después
+        // de `memory_resolve` podía dejar la vista pegada al
+        // `toolName` de la primera llamada, o directamente no reabrir
+        // el panel al ver "la misma" URI de siempre. Con URI distinta
+        // por herramienta, cada llamada es inequívocamente un recurso
+        // nuevo para el host.
+        const DESCRIPTION: &str = "UI React interactiva (tema brutalista): formularios, grafo de conceptos (React Flow) y gráficas (Recharts). Compilada en un único HTML autocontenido desde mcp-app/ (ver mcp-app/README.md); enruta internamente por el nombre de la herramienta invocada.";
+        let mut resources = vec![
+            UiResource { uri: "ui://okf-memory/memory_search", name: "okf-memory · Buscar", description: DESCRIPTION, html: APP_HTML },
+            UiResource { uri: "ui://okf-memory/memory_resolve", name: "okf-memory · Resolver", description: DESCRIPTION, html: APP_HTML },
+            UiResource { uri: "ui://okf-memory/memory_commit", name: "okf-memory · Commit", description: DESCRIPTION, html: APP_HTML },
+            UiResource { uri: "ui://okf-memory/memory_history", name: "okf-memory · Historial", description: DESCRIPTION, html: APP_HTML },
+            UiResource { uri: "ui://okf-memory/memory_delete", name: "okf-memory · Borrar", description: DESCRIPTION, html: APP_HTML },
+            UiResource { uri: "ui://okf-memory/memory_list", name: "okf-memory · Listar", description: DESCRIPTION, html: APP_HTML },
+            UiResource { uri: "ui://okf-memory/memory_backlinks", name: "okf-memory · Backlinks", description: DESCRIPTION, html: APP_HTML },
+            UiResource { uri: "ui://okf-memory/memory_embed", name: "okf-memory · Embeddings", description: DESCRIPTION, html: APP_HTML },
+            UiResource { uri: "ui://okf-memory/memory_patch", name: "okf-memory · Patch", description: DESCRIPTION, html: APP_HTML },
+            UiResource { uri: "ui://okf-memory/memory_bulk_commit", name: "okf-memory · Commit en lote", description: DESCRIPTION, html: APP_HTML },
+            UiResource { uri: "ui://okf-memory/memory_validate", name: "okf-memory · Validar", description: DESCRIPTION, html: APP_HTML },
+            UiResource { uri: "ui://okf-memory/memory_status", name: "okf-memory · Estado", description: DESCRIPTION, html: APP_HTML },
+            UiResource { uri: "ui://okf-memory/memory_stats", name: "okf-memory · Estadísticas", description: DESCRIPTION, html: APP_HTML },
+            UiResource { uri: "ui://okf-memory/spec_propose", name: "okf-memory · Proponer spec", description: DESCRIPTION, html: APP_HTML },
+            UiResource { uri: "ui://okf-memory/spec_tasks", name: "okf-memory · Tareas de spec", description: DESCRIPTION, html: APP_HTML },
+            UiResource { uri: "ui://okf-memory/spec_status", name: "okf-memory · Estado de spec", description: DESCRIPTION, html: APP_HTML },
+        ];
+        // Mismo guard que `tools()`: sin descargador de fuentes
+        // configurado, `skill_ingest` no se anuncia — así que tampoco
+        // tiene sentido anunciar su vista.
+        if self.fetcher.is_some() {
+            resources.push(UiResource {
+                uri: "ui://okf-memory/skill_ingest",
+                name: "okf-memory · Ingerir skill",
+                description: DESCRIPTION,
+                html: APP_HTML,
+            });
+        }
+        resources
     }
 
     fn call(&mut self, name: &str, arguments: &Value) -> Result<Value, ToolError> {

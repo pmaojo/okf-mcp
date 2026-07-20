@@ -149,3 +149,62 @@ export interface MemoryHistoryResult {
   concept_id: string;
   revisions: Revision[];
 }
+
+export interface SpecProposeResult {
+  concept_id: string;
+  hash: string;
+  version: number;
+  created: boolean;
+}
+
+export interface SpecTasksResult {
+  spec_id: string;
+  created: number;
+  task_ids: string[];
+  skipped: { item: string; reason: string }[];
+}
+
+export interface SpecStatusResult {
+  spec_id: string;
+  spec_status: string;
+  spec_title: string | null;
+  tasks_total: number;
+  by_status: {
+    pending: number;
+    in_progress: number;
+    done: number;
+    blocked: number;
+    unknown: number;
+  };
+  progress: number;
+  next_pending: string[];
+  waiting_on_dependencies: number;
+}
+
+export type SkillIngestUnit = {
+  concept_id: string;
+  title: string;
+  action: "commit" | "convert-verbatim";
+  warnings: string[];
+};
+
+export type SkillIngestItem = {
+  concept_id: string;
+  mode: "verbatim";
+  hash: string;
+  version: number;
+  created: boolean;
+  warnings: string[];
+};
+
+export interface SkillIngestResult {
+  source_url: string;
+  format: string;
+  license: string | null;
+  dry_run?: boolean;
+  units?: SkillIngestUnit[];
+  ingested?: number;
+  concept_ids?: string[];
+  items?: SkillIngestItem[];
+  skipped: { item: string; reason: string }[];
+}
