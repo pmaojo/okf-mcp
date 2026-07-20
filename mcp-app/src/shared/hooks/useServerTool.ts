@@ -7,6 +7,17 @@ interface UseServerToolResult {
   isError: boolean;
   isLoading: boolean;
   executeTool: (args?: Record<string, unknown>) => Promise<void>;
+  /**
+   * True once the user has re-run the tool from inside this view.
+   * The initial host-provided result came from a model-initiated
+   * tools/call, whose `content` the model already has in its
+   * transcript — the model has no visibility into a re-run triggered
+   * purely by a click in the UI. Use this to gate anything that hands
+   * state back via `app.updateModelContext` (see AddContextButton):
+   * doing that for the host-provided result would just restate what
+   * the model already knows.
+   */
+  isManual: boolean;
 }
 
 export function useServerTool(
@@ -48,5 +59,6 @@ export function useServerTool(
     isError,
     isLoading,
     executeTool,
+    isManual: manualResult !== null,
   };
 }

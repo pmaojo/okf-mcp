@@ -11,6 +11,7 @@ import {
 import { Field } from "@/shared/components/tool/Field";
 import { ErrorBanner, EmptyBanner } from "@/shared/components/tool/StatusBanner";
 import { CommitResultCard } from "@/shared/components/tool/CommitResultCard";
+import { AddContextButton } from "@/shared/components/tool/AddContextButton";
 import { Input } from "@/shared/components/ui/input";
 import { Textarea } from "@/shared/components/ui/textarea";
 import { Button } from "@/shared/components/ui/button";
@@ -36,7 +37,7 @@ export function MemoryCommitView({ app, toolResult }: ToolComponentProps) {
   const [expectedHash, setExpectedHash] = useState("");
   const [dryRun, setDryRun] = useState(true);
 
-  const { activeResult, isError, isLoading, executeTool } = useServerTool(
+  const { activeResult, isError, isLoading, executeTool, isManual } = useServerTool(
     app,
     "memory_commit",
     toolResult
@@ -122,7 +123,17 @@ export function MemoryCommitView({ app, toolResult }: ToolComponentProps) {
               detail="Likely a revision conflict (stale expected_hash) or invalid frontmatter."
             />
           )}
-          {!isError && parsed && <CommitResultCard result={parsed} />}
+          {!isError && parsed && (
+            <>
+              <CommitResultCard result={parsed} />
+              {isManual && !parsed.dry_run && (
+                <AddContextButton
+                  app={app}
+                  text={`memory_commit just ${parsed.created ? "created" : "updated"} ${parsed.concept_id} (v${parsed.version}, reason: "${reason.trim()}")${parsed.no_change ? " — content was unchanged." : "."}`}
+                />
+              )}
+            </>
+          )}
           {!isError && !parsed && !isLoading && (
             <EmptyBanner>Fill in the form and run memory_commit.</EmptyBanner>
           )}

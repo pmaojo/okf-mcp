@@ -4,6 +4,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { Toaster } from "./shared/components/ui/sonner";
+import { ToolErrorBoundary } from "@/shared/components/ErrorBoundary";
 import { McpProvider, useMcp } from "@/core/mcp/provider/McpProvider";
 import { TOOL_COMPONENTS } from "./tools/registry";
 import "./index.css";
@@ -55,11 +56,16 @@ export const AppContent = () => {
   }
 
   return (
-    <ToolComponent
-      app={app}
-      toolResult={toolResult}
-      hostContext={hostContext}
-    />
+    // Keyed by toolName: switching tools always mounts a fresh
+    // component + boundary, instead of a crashed tree (or one holding
+    // stale props from a previous tool) sticking around.
+    <ToolErrorBoundary key={toolName} toolName={toolName}>
+      <ToolComponent
+        app={app}
+        toolResult={toolResult}
+        hostContext={hostContext}
+      />
+    </ToolErrorBoundary>
   );
 };
 

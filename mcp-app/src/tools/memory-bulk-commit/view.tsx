@@ -9,6 +9,7 @@ import {
   ResultPanel,
 } from "@/shared/components/tool/ToolLayout";
 import { ErrorBanner, EmptyBanner } from "@/shared/components/tool/StatusBanner";
+import { AddContextButton } from "@/shared/components/tool/AddContextButton";
 import { Input } from "@/shared/components/ui/input";
 import { Textarea } from "@/shared/components/ui/textarea";
 import { Button } from "@/shared/components/ui/button";
@@ -34,7 +35,7 @@ export function MemoryBulkCommitView({ app, toolResult }: ToolComponentProps) {
   const [rows, setRows] = useState<RequestRow[]>([emptyRow()]);
   const [atomic, setAtomic] = useState(true);
 
-  const { activeResult, isError, isLoading, executeTool } = useServerTool(
+  const { activeResult, isError, isLoading, executeTool, isManual } = useServerTool(
     app,
     "memory_bulk_commit",
     toolResult
@@ -182,6 +183,12 @@ export function MemoryBulkCommitView({ app, toolResult }: ToolComponentProps) {
                   </div>
                 ))}
               </div>
+              {isManual && (
+                <AddContextButton
+                  app={app}
+                  text={`memory_bulk_commit ${parsed.applied ? "applied" : "rolled back"} a batch of ${parsed.items.length} request(s): ${parsed.items.filter((i) => i.status === "done").length} done, ${parsed.items.filter((i) => i.status === "failed").length} failed, ${parsed.items.filter((i) => i.status === "skipped").length} skipped.`}
+                />
+              )}
             </>
           )}
           {!isError && !parsed && !isLoading && (

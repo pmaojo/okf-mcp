@@ -11,6 +11,7 @@ import {
 import { Field } from "@/shared/components/tool/Field";
 import { ErrorBanner, EmptyBanner } from "@/shared/components/tool/StatusBanner";
 import { DeleteResultCard } from "@/shared/components/tool/CommitResultCard";
+import { AddContextButton } from "@/shared/components/tool/AddContextButton";
 import { Input } from "@/shared/components/ui/input";
 import { Button } from "@/shared/components/ui/button";
 import { useServerTool } from "@/shared/hooks/useServerTool";
@@ -23,7 +24,7 @@ export function MemoryDeleteView({ app, toolResult }: ToolComponentProps) {
   const [reason, setReason] = useState("");
   const [confirmText, setConfirmText] = useState("");
 
-  const { activeResult, isError, isLoading, executeTool } = useServerTool(
+  const { activeResult, isError, isLoading, executeTool, isManual } = useServerTool(
     app,
     "memory_delete",
     toolResult
@@ -110,7 +111,17 @@ export function MemoryDeleteView({ app, toolResult }: ToolComponentProps) {
               detail="Likely a stale expected_hash — resolve the concept again."
             />
           )}
-          {!isError && parsed && <DeleteResultCard result={parsed} />}
+          {!isError && parsed && (
+            <>
+              <DeleteResultCard result={parsed} />
+              {isManual && (
+                <AddContextButton
+                  app={app}
+                  text={`memory_delete just removed ${parsed.concept_id} (reason: "${reason.trim()}"). Any concept still linking to it will show up in memory_validate as deleted_referenced.`}
+                />
+              )}
+            </>
+          )}
           {!isError && !parsed && !isLoading && (
             <EmptyBanner>Fill in the form and confirm to delete.</EmptyBanner>
           )}

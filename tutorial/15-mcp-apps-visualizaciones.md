@@ -203,22 +203,43 @@ entera de la función a que el cliente además confirme que lo
 entiende, cuando en la práctica no lo confirma, convierte una
 extensión opcional en una función que nunca se activa.
 
-## 6. Memoria y asignación
+## 6. Memoria y asignación — y una URI por herramienta, no una compartida
 
-El único recurso `ui://` de este servidor (`ui://okf-memory/app`,
-compilado desde [`mcp-app/`](../mcp-app/) a
-`crates/memory-tools/assets/mcp-app.html`) es un literal `&'static
-str` embebido en el binario — el mismo costo de memoria que cualquier
-otra constante del programa, sin asignación en el heap ni en tiempo de
-arranque ni por petición, sin importar que ese string mida 1 KB o
-1 MB (React + React Flow + Recharts inlineados suman poco más de 1 MB
-sin comprimir). `resources/read` clona el `&'static str` en la
-respuesta JSON-RPC (una copia, como cualquier otro campo de texto que
-ya serializábamos) — no hay lectura de disco ni de red en el camino
-caliente. Las 13 herramientas `memory_*` comparten ese mismo recurso:
-un solo string en el binario, no trece — la app enruta internamente
-por el `toolName` que el host inyecta (ver `hostContext.toolInfo` en
-`mcp-app/src/mcp-app.tsx`).
+El HTML de este servidor (compilado desde [`mcp-app/`](../mcp-app/) a
+`crates/memory-tools/assets/mcp-app.html`) vive en un único módulo
+constante, `APP_HTML: &'static str`, un literal embebido en el binario
+— el mismo costo de memoria que cualquier otra constante del programa,
+sin asignación en el heap ni en tiempo de arranque ni por petición, sin
+importar que ese string mida 1 KB o 1 MB (React + React Flow + Recharts
+inlineados suman poco más de 1 MB sin comprimir). `resources/read`
+clona el `&'static str` en la respuesta JSON-RPC (una copia, como
+cualquier otro campo de texto que ya serializábamos) — no hay lectura
+de disco ni de red en el camino caliente.
+
+`ui_resources()` devuelve 17 `UiResource`, uno por herramienta, y los
+17 apuntan a `APP_HTML` — compartir el mismo `&'static str` (puntero +
+longitud) 17 veces no duplica nada en el binario. Lo que SÍ es
+deliberadamente distinto es la **URI** de cada uno
+(`ui://okf-memory/memory_search`, `ui://okf-memory/memory_resolve`,
+…): la primera versión de esta sección usaba una única
+`ui://okf-memory/app` para las 13 herramientas de entonces, y no era
+solo un detalle estético. Varios hosts MCP Apps (heredado del Apps SDK
+de OpenAI, igual que `openai/outputTemplate` en la sección 3)
+reutilizan el iframe ya abierto cuando `_meta.ui.resourceUri` no
+cambia entre una llamada y la siguiente — es una optimización
+intencional, pensada para apps con estado persistente entre llamadas.
+Con una única URI compartida entre herramientas *distintas*, invocar
+`memory_search` justo después de `memory_resolve` podía dejar la vista
+pegada al `toolName` de la primera llamada, o directamente no reabrir
+el panel al ver "la misma" URI de siempre — una pantalla en blanco sin
+ningún error visible, exactamente el tipo de fallo silencioso que ya
+apareció en la sección 5. Con URI distinta por herramienta, cada
+llamada es inequívocamente un recurso nuevo para el host: el enrutado
+interno por `hostContext.toolInfo.tool.name` (ver
+`mcp-app/src/mcp-app.tsx`) sigue siendo necesario — sin él, 17 URIs
+distintas cargarían igual el mismo HTML sin saber qué componente
+montar — pero deja de ser la ÚNICA señal de la que depende el host
+para decidir si hay que volver a renderizar.
 
 ## 7. Tests
 
@@ -294,7 +315,7 @@ trabajo de una frase en `memory-tools`, no una decisión arquitectónica.
 * **D:** `mcp-core` no conoce el contenido de ningún HTML concreto —
   solo sabe servir lo que el handler le dé. `mcp-app.html` vive en
   `memory-tools` (copiado ahí por `mcp-app/scripts/sync-to-rust.mjs`),
-  el crate que sabe qué forma tienen las 13 herramientas `memory_*`.
+  el crate que sabe qué forma tienen sus 17 herramientas.
 
 ## 10. Ejercicios
 
