@@ -5,6 +5,19 @@
 //! equivalente para Vercel (una invocación por Cron, sin loop) vive en
 //! `crates/vercel-entry/api/outbox.rs`, reutilizando exactamente la
 //! misma `process_batch`.
+//!
+//! ## Despliegue en Railway o Render
+//!
+//! El repositorio incluye configuración lista para desplegar este daemon en
+//! Railway o Render:
+//! - Railway: `Procfile`, `railway.toml` y `DEPLOY_RAILWAY.md`.
+//! - Render: `Dockerfile`, `render.yaml`, `.dockerignore` y `DEPLOY_RENDER.md`.
+//!
+//! Variables de entorno requeridas:
+//! - `POSTGRES_URL`
+//! - `GITHUB_TOKEN`
+//! - `GITHUB_REPO`
+//! - `GEMINI_API_KEY` (opcional)
 
 #![forbid(unsafe_code)]
 

@@ -457,7 +457,7 @@ pisarse.
 Hay tres formas de dispararlo:
 
 - `cargo run -p outbox-worker`: daemon de larga duración pensado para
-  Fly.io, Railway, un contenedor o un VPS. Repite el procesamiento cada
+  Fly.io, Railway, Render, un contenedor o un VPS. Repite el procesamiento cada
   pocos segundos cuando no hay trabajo.
 - `/api/outbox` en `vercel-entry`: handler serverless pensado para
   Vercel Cron. Ejecuta un lote por invocación; el cron está declarado en
@@ -467,6 +467,42 @@ Hay tres formas de dispararlo:
   el repositorio de GitHub y ejecuta `reconcile_github_to_supabase` al
   instante, en vez de esperar al próximo tick del cron. Ver la
   subsección siguiente.
+
+## Desplegar el outbox-worker en Railway
+
+El repositorio incluye todo lo necesario para desplegar el daemon en
+[Railway](https://railway.app):
+
+- `Procfile`: define el proceso `worker`.
+- `railway.toml`: configura el build de Nixpacks y el comando de inicio.
+- `DEPLOY_RAILWAY.md`: guía paso a paso.
+
+Pasos resumidos:
+
+1. Crea un proyecto en Railway conectando el repo `pmaojo/okf-mcp`.
+2. Añade una base de datos PostgreSQL (o usa Supabase) y configura `POSTGRES_URL`.
+3. Configura `GITHUB_TOKEN`, `GITHUB_REPO` y, opcionalmente, `GEMINI_API_KEY`.
+4. Railway compilará el workspace con `cargo build --release -p outbox-worker` y ejecutará el daemon.
+
+Para más detalles, consulta [`DEPLOY_RAILWAY.md`](DEPLOY_RAILWAY.md).
+
+## Desplegar el outbox-worker en Render
+
+También puedes desplegar el daemon en [Render](https://render.com), que ofrece una capa gratuita con workers persistentes y PostgreSQL. El repositorio incluye:
+
+- `Dockerfile`: imagen multi-etapa que compila el workspace y ejecuta `outbox-worker`.
+- `render.yaml`: blueprint de Render para crear el worker y la base de datos.
+- `.dockerignore`: evita copiar archivos innecesarios al contexto de build.
+- `DEPLOY_RENDER.md`: guía paso a paso.
+
+Pasos resumidos:
+
+1. Crea un proyecto en Render conectando el repo `pmaojo/okf-mcp`.
+2. Usa el blueprint `render.yaml` para crear el worker y la base de datos.
+3. Configura `GITHUB_TOKEN`, `GITHUB_REPO` y, opcionalmente, `GEMINI_API_KEY`.
+4. Render desplegará el daemon automáticamente.
+
+Para más detalles, consulta [`DEPLOY_RENDER.md`](DEPLOY_RENDER.md).
 
 Variables de entorno:
 

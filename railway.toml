@@ -1,0 +1,14 @@
+# Railway configuration for okf-mcp outbox-worker
+# Docs: https://docs.railway.com/config-as-code/reference
+
+[build]
+# Explicitly build only the outbox-worker crate from the Cargo workspace.
+# Nixpacks would otherwise try to guess the primary binary.
+builder = "nixpacks"
+buildCommand = "cargo build --release -p outbox-worker"
+
+[deploy]
+# Run the compiled binary. Railway injects the environment variables
+# configured in the dashboard (POSTGRES_URL, GITHUB_TOKEN, etc.).
+startCommand = "./target/release/outbox-worker"
+restartPolicyType = "on_failure"

@@ -270,6 +270,42 @@ Para desplegar el worker:
    falta ninguna variable extra para evitar el commit duplicado — lo
    resuelve automáticamente `github_sync_credentials()` (sección 7b).
 
+### Despliegue en Railway
+
+El repositorio incluye configuración lista para desplegar el daemon en
+[Railway](https://railway.app):
+
+- `Procfile`: define el proceso `worker` que ejecuta el binario compilado.
+- `railway.toml`: configura el build de Nixpacks y el comando de inicio.
+- `DEPLOY_RAILWAY.md`: guía paso a paso con variables de entorno y solución de problemas.
+
+Pasos resumidos:
+
+1. Crea un proyecto en Railway conectando el repo `pmaojo/okf-mcp`.
+2. Añade una base de datos PostgreSQL (o usa Supabase) y configura `POSTGRES_URL`.
+3. Configura `GITHUB_TOKEN`, `GITHUB_REPO` y, opcionalmente, `GEMINI_API_KEY`.
+4. Railway compilará el workspace con `cargo build --release -p outbox-worker` y ejecutará el daemon.
+
+Para más detalles, consulta [`DEPLOY_RAILWAY.md`](../DEPLOY_RAILWAY.md).
+
+### Despliegue en Render
+
+Si el trial de Railway ha expirado, el repositorio también incluye configuración lista para desplegar el daemon en [Render](https://render.com), que ofrece una capa gratuita con workers persistentes y PostgreSQL:
+
+- `Dockerfile`: imagen multi-etapa que compila el workspace y ejecuta `outbox-worker`.
+- `render.yaml`: blueprint de Render para crear el worker y la base de datos.
+- `.dockerignore`: evita copiar archivos innecesarios al contexto de build.
+- `DEPLOY_RENDER.md`: guía paso a paso.
+
+Pasos resumidos:
+
+1. Crea un proyecto en Render conectando el repo `pmaojo/okf-mcp`.
+2. Usa el blueprint `render.yaml` para crear el worker y la base de datos.
+3. Configura `GITHUB_TOKEN`, `GITHUB_REPO` y, opcionalmente, `GEMINI_API_KEY`.
+4. Render desplegará el daemon automáticamente.
+
+Para más detalles, consulta [`DEPLOY_RENDER.md`](../DEPLOY_RENDER.md).
+
 ## 9. Principios SOLID en juego
 
 * **S (Responsabilidad Única):** El worker no valida el formato de los documentos ni procesa peticiones JSON-RPC. Su única y exclusiva responsabilidad es despachar de forma eventual e idempotente los eventos del outbox hacia los sistemas satélite.
