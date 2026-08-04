@@ -12,8 +12,18 @@ pub async fn reconcile_github_to_supabase(
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Iniciando reconciliación de GitHub -> Supabase...");
 
-    // 1. Obtener la lista de todos los conceptos vivos en GitHub usando la API pública
-    let budget = Budget::default();
+    // 1. Obtener la lista de TODOS los conceptos vivos en GitHub.
+    //
+    // `Budget::default().max_search_results` (50) corta `search()` —
+    // pensado para acotar respuestas a un cliente MCP, no para esta
+    // comparación de conjuntos completos. Con ese budget, cualquier
+    // concepto vivo más allá del puesto 50 (orden alfabético de
+    // `GithubStore`) quedaba fuera de `github_live_concepts` y el
+    // paso 4 de abajo lo marcaba como `deleted_at` en Supabase por
+    // error, aunque siguiera vivo en GitHub. Sin tope aquí: el
+    // reconciliador necesita ver el grafo entero para decidir qué
+    // borrar.
+    let budget = Budget { max_search_results: usize::MAX, ..Budget::default() };
     let query = SearchQuery::default();
     let github_hits = github_store.search(&query, &budget)?;
     
@@ -335,6 +345,73 @@ mod tests {
                 .await
                 .unwrap();
             assert!(is_deleted);
+        });
+    }
+
+    /// Regresión: con más conceptos vivos que `Budget::default()
+    /// .max_search_results` (50), la reconciliación NO debe marcar
+    /// como borrados los que queden fuera de ese tope alfabético.
+    #[test]
+    fn test_reconciliation_no_marca_borrado_mas_alla_del_budget_de_busqueda() {
+        let Ok(db_url) = std::env::var("TEST_DATABASE_URL") else {
+            eprintln!("Saltando test de reconciliación: TEST_DATABASE_URL no está configurada.");
+            return;
+        };
+
+        let pool = block_on(async {
+            let pool = PgPool::connect(&db_url).await.expect("conectar a TEST_DATABASE_URL");
+            sqlx::query(include_str!("../../supabase-store/schema.sql"))
+                .execute(&pool)
+                .await
+                .expect("inicializar tablas en db de test");
+            sqlx::query("TRUNCATE TABLE links, revisions, heads, blobs, embeddings CASCADE")
+                .execute(&pool)
+                .await
+                .expect("vaciar tablas de test");
+            pool
+        });
+
+        let mut github = InMemoryStore::new();
+        let actor = Principal::local_dev();
+        let budget = Budget::default();
+
+        // 60 conceptos vivos: más que max_search_results (50).
+        for i in 0..60 {
+            github.commit(
+                CommitRequest {
+                    concept_id: ConceptId::parse(&format!("skills/concept-{i:02}")).unwrap(),
+                    expected: None,
+                    markdown: format!("---\ntype: skill\ntitle: Concept {i}\n---\ncontenido\n"),
+                    reason: "seed".to_string(),
+                },
+                &actor,
+                &budget,
+            ).unwrap();
+        }
+
+        let client = reqwest::Client::new();
+        block_on(async {
+            reconcile_github_to_supabase(&pool, &client, &github, &gemini_embeddings::EmbeddingKeys::default())
+                .await
+                .unwrap();
+        });
+
+        block_on(async {
+            let deleted_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM heads WHERE deleted_at IS NOT NULL"
+            )
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(deleted_count, 0, "ningún concepto vivo debe quedar marcado como borrado");
+
+            let live_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM heads WHERE deleted_at IS NULL"
+            )
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(live_count, 60, "los 60 conceptos deben sincronizarse como vivos");
         });
     }
 }

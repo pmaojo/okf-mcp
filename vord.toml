@@ -1,0 +1,18 @@
+[project]
+key = "okf-mcp"
+name = "okf-mcp"
+
+[analysis]
+exclusions = [
+  "**/target/**",
+  # Bundle autogenerado por `mcp-app/` (pnpm run build:sync) y empotrado
+  # en el binario Rust vía `include_str!`. Es JS/CSS minificado en una
+  # sola línea: no es código fuente de este repo (el fuente real vive en
+  # mcp-app/src y ya lo cubre el scan) y confunde heurísticas de texto
+  # como owasp:permissive-cors con falsos positivos.
+  "crates/memory-tools/assets/mcp-app.html",
+  "**/node_modules/**",
+]
+
+[gate]
+min_health_score = 85
