@@ -1,0 +1,23 @@
+name: vord
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # `--blame-output` (vía la Action) necesita historia real para
+          # atribuir líneas — el checkout superficial por defecto (depth 1)
+          # solo trae el commit de punta.
+          fetch-depth: 0
+
+      # Fijamos un tag concreto (no @main) para que el gate no cambie de
+      # comportamiento sin que este repo lo decida explícitamente.
+      - uses: pmaojo/vord@v0.9.0
+        with:
+          enforce-gate: 'true'
