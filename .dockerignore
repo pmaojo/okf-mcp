@@ -1,0 +1,10 @@
+# El build de crates/outbox-worker/Dockerfile usa la raíz del repo como
+# contexto (es un workspace de Cargo con dependencias `path = ...` entre
+# crates), pero no necesita nada de esto para compilar el binario Rust.
+target/
+.git/
+mcp-app/
+tutorial/
+scripts/
+.github/
+.vercelignore

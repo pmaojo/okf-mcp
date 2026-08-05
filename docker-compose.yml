@@ -1,0 +1,17 @@
+# Despliegue del daemon de outbox-worker en un VPS.
+#
+#   cp outbox-worker.env.example .env
+#   $EDITOR .env                    # rellena POSTGRES_URL como mínimo
+#   docker compose up -d --build
+#   docker compose logs -f
+#
+# Variables disponibles: ver README, sección "Outbox, GitHub y
+# embeddings" (tabla de variables de entorno de outbox-worker).
+services:
+  outbox-worker:
+    build:
+      context: .
+      dockerfile: crates/outbox-worker/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env

@@ -458,7 +458,11 @@ Hay tres formas de dispararlo:
 
 - `cargo run -p outbox-worker`: daemon de larga duración pensado para
   Fly.io, Railway, un contenedor o un VPS. Repite el procesamiento cada
-  pocos segundos cuando no hay trabajo.
+  pocos segundos cuando no hay trabajo. Para un VPS con Docker:
+  `crates/outbox-worker/Dockerfile` (build multi-stage, el contexto es
+  la raíz del repo) y el `docker-compose.yml` de la raíz lo envuelven;
+  copia `outbox-worker.env.example` a `.env`, rellena `POSTGRES_URL` y
+  `docker compose up -d --build`.
 - `/api/outbox` en `vercel-entry`: handler serverless pensado para
   Vercel Cron. Ejecuta un lote por invocación; el cron está declarado en
   `crates/vercel-entry/vercel.json` (por defecto, una vez al día — es la
