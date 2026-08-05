@@ -184,7 +184,7 @@ tutorial, sección 6). Un cliente MCP Apps compatible renderiza esa URI
 en un iframe en vez del JSON crudo.
 
 Esa vista es una app React independiente en [`mcp-app/`](mcp-app/)
-(starter Vite + shadcn + `@modelcontextprotocol/ext-apps`, tema
+(Vite + shadcn + `@modelcontextprotocol/ext-apps`, tema
 **brutalista**: negro/blanco, un acento amarillo eléctrico, cero
 radio de esquina, sombras duras, monoespaciada), con un componente por
 herramienta (`mcp-app/src/tools/<nombre>/`) enrutado en tiempo de
