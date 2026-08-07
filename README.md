@@ -20,7 +20,8 @@ La referencia de API generada con `cargo doc` se publica en
 - ✅ **Hito 2:** transporte HTTP sin estado (`mcp-http`) + contrato ejecutable `MemoryRepository` + adaptador de Vercel (`vercel-entry`) + adaptador de base de datos PostgreSQL (`supabase-store`).
 - ✅ **Hito 3:** OAuth 2.1 (Resource Server, validación criptográfica de JWTs mediante firmas y JWKS).
 - ✅ **Hito 4:** Transactional Outbox (`outbox-worker` con procesamiento concurrente `SKIP LOCKED`, sincronización con GitHub y embeddings con `pgvector`).
-- ✅ **Hito 5:** MCP Apps — UI React interactiva ([`mcp-app/`](mcp-app/), tema brutalista) para 17 de las 18 herramientas, cada una con su propio recurso `ui:// ` (opcional, ver más abajo).
+- ✅ **Hito 5:** MCP Apps — UI React interactiva ([`mcp-app/`](mcp-app/), tema brutalista) para 18 de las 19 herramientas, cada una con su propio recurso `ui:// ` (opcional, ver más abajo).
+- ✅ **Hito 7:** Razonamiento ligero (`ontology-core`, capítulo 18 del tutorial) — triples derivados del frontmatter/enlaces existentes, punto fijo OWL-RL/RDFS acotado, persistidos vía `TripleStore` (`triples` en Supabase) sin `oxigraph` ni dependencias externas.
 
 ## Arquitectura
 
@@ -37,7 +38,7 @@ La referencia de API generada con `cargo doc` se publica en
 ┌────────────────────────────────────────────────────────────────────┐
 │ mcp-core     JSON-RPC 2.0 + ciclo de vida MCP + despacho           │
 │ json-mini    parser/serializador JSON educativo                    │
-│ memory-tools  18 herramientas MCP genéricas sobre MemoryRepository │
+│ memory-tools  19 herramientas MCP genéricas sobre MemoryRepository │
 │ store-core   puerto MemoryRepository + contrato Liskov             │
 │ memory-model ConceptId, ContentId, Budget, Revision, Principal     │
 │ okf-core     frontmatter YAML (subconjunto) + enlaces [[...]]      │
@@ -150,12 +151,31 @@ curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
 navegador se acepta; sin configurar, cualquier origin pasa — aceptable
 en desarrollo, nunca en producción.
 
-## Las 18 herramientas
+## Instalación como Agent Plugin
+
+`plugin.json` y `mcp.json` en la raíz siguen la
+[Agent Plugins Specification 1.0.0](https://github.com/agentplugins/agent-plugins-spec):
+cualquier cliente compatible descubre el servidor MCP (`cargo run
+--release -p mcp-stdio`, sin variables de entorno obligatorias — usa
+`InMemoryStore` por defecto) leyendo esos dos archivos, sin
+configuración manual. `OKF_STORE=github` o `OKF_STORE=supabase`
+cambian el backend (variables de entorno documentadas en
+`crates/mcp-stdio/src/main.rs`); `mcp.json` deliberadamente no las
+fija, porque son credenciales/despliegue, no parte del manifiesto.
+
+Instalar SKILLS (contenido, no el servidor) es una llamada a la
+herramienta `skill_ingest` en tiempo de ejecución — ver la tabla de
+abajo — no un paso de instalación del plugin: el servidor no viene
+con skills precargadas, las trae el agente desde la fuente que
+necesite en cada sesión.
+
+## Las 19 herramientas
 
 | Herramienta | Qué hace |
 | --- | --- |
 | `memory_search` | candidatos compactos de búsqueda híbrida (textual + semántica) |
 | `memory_resolve` | Markdown exacto + vecindario acotado del grafo de `[[enlaces]]` |
+| `memory_reason` | razonamiento OWL-RL/RDFS acotado (`ontology-core`) sobre el vecindario: subclases, transitividad, simetría, propiedades inversas |
 | `memory_commit` | escritura con compare-and-swap (`expected_hash`) y `dry_run` |
 | `memory_consolidate` | consolidar una sesión (título/resumen/entidades/decisiones redactados por el agente) como `type: session-summary`, validado y renderizado a OKF sin LLM del lado del servidor |
 | `memory_history` | revisiones de más reciente a más antigua, paginadas |
@@ -175,9 +195,10 @@ en desarrollo, nunca en producción.
 
 ## UI interactiva (`mcp-app/`)
 
-17 de las 18 herramientas (las 13 `memory_*` originales más
-`spec_propose`, `spec_tasks`, `spec_status` y `skill_ingest` cuando
-está anunciada) anuncian `ui_resource_uri: Some("ui://okf-memory/<nombre>")`
+18 de las 19 herramientas (las 13 `memory_*` originales más
+`memory_reason`, `spec_propose`, `spec_tasks`, `spec_status` y
+`skill_ingest` cuando está anunciada) anuncian
+`ui_resource_uri: Some("ui://okf-memory/<nombre>")`
 — una URI
 **propia por herramienta**, no una compartida: varios hosts MCP Apps
 reutilizan el iframe ya abierto cuando la URI no cambia entre una
