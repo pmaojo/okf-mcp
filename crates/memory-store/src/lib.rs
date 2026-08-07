@@ -238,6 +238,7 @@ impl MemoryRepository for InMemoryStore {
                     version: head.version,
                     created: false,
                     no_change: true,
+                    warnings: Vec::new(),
                 })
             }
             CommitDecision::Create | CommitDecision::Update => {
@@ -275,6 +276,7 @@ impl MemoryRepository for InMemoryStore {
                     version,
                     created,
                     no_change: false,
+                    warnings: Vec::new(),
                 })
             }
         }
@@ -342,7 +344,7 @@ impl MemoryRepository for InMemoryStore {
         self.next_seq += 1;
         self.revisions.push(revision.clone());
 
-        Ok(DeleteOutcome { content_id: head.content_id, version: head.version, revision })
+        Ok(DeleteOutcome { content_id: head.content_id, version: head.version, revision, warnings: Vec::new() })
     }
 
     fn backlinks(&self, id: &ConceptId) -> Result<Vec<Backlink>, StoreError> {

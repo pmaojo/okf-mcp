@@ -1,10 +1,48 @@
 use crate::{
-    Backlink, Budget, BulkOutcome, CommitOutcome, CommitRequest, DeleteOutcome, DocumentView,
-    GraphStats, LinkHealth, MemoryRepository, SearchHit, SearchQuery, StoreError, StoreMaintenance,
-    StoreStatus, ValidationReport, EmbedOutcome,
+    Backlink, Budget, BulkItem, BulkOutcome, CommitOutcome, CommitRequest, DeleteOutcome,
+    DocumentView, GraphStats, LinkHealth, MemoryRepository, SearchHit, SearchQuery, StoreError,
+    StoreMaintenance, StoreStatus, ValidationReport, EmbedOutcome,
 };
 use memory_model::{ConceptId, ContentId, Principal, Revision};
 use graph_core::NeighborSource;
+
+/// Un mensaje uniforme para los tres puntos de sincronización
+/// best-effort de este módulo — el texto es lo que termina en
+/// `CommitOutcome::warnings`/`DeleteOutcome::warnings`, así que lo
+/// lee un MODELO, no solo un humano mirando logs: dice qué falló Y
+/// qué implica para lecturas inmediatas.
+fn sync_warning(op: &str, err: &StoreError) -> String {
+    format!(
+        "el índice de lectura (Supabase) no se sincronizó tras {op} en GitHub (ni siquiera \
+         reintentando una vez): {err} — memory_resolve/memory_search pueden seguir mostrando \
+         el estado anterior hasta que se repare (reconciliación diaria)"
+    )
+}
+
+/// Espera fija y corta antes del único reintento — no backoff
+/// exponencial, esto no es una cola de reintentos indefinidos. Un
+/// blip de red típico (un timeout de conexión, un 5xx pasajero) se
+/// resuelve en milisegundos; si el segundo intento TAMBIÉN falla, es
+/// una señal de que el problema no es transitorio y seguir
+/// reintentando en el camino caliente de la llamada solo la haría
+/// más lenta sin arreglar nada — para eso está `outcome.warnings` (el
+/// caller se entera YA) y la reconciliación diaria (lo repara
+/// después).
+const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// Ejecuta `attempt` una vez; si falla, espera [`RETRY_DELAY`] y lo
+/// intenta una segunda y última vez. El camino de éxito (la inmensa
+/// mayoría de las llamadas) no paga NADA extra: ni el `sleep` ni el
+/// segundo intento se ejecutan si el primero ya funcionó.
+fn once_with_one_retry<T>(mut attempt: impl FnMut() -> Result<T, StoreError>) -> Result<T, StoreError> {
+    match attempt() {
+        Ok(v) => Ok(v),
+        Err(_first_err) => {
+            std::thread::sleep(RETRY_DELAY);
+            attempt()
+        }
+    }
+}
 
 /// Adaptador compuesto que delega las escrituras a un almacén de verdad (GitHub)
 /// y las lecturas rápidas e índices a un almacén de lectura (Supabase).
@@ -70,16 +108,28 @@ where
         budget: &Budget,
     ) -> Result<CommitOutcome, StoreError> {
         let req_for_supabase = request.clone();
-        
-        // 1. Escribir en la fuente de verdad (GitHub)
-        let outcome = self.github.commit(request, actor, budget)?;
 
-        // 2. Sincronizar en el momento con Supabase (best effort)
-        if let Err(e) = self.supabase.commit(req_for_supabase, actor, budget) {
-            eprintln!(
-                "IndexedStore: Best-effort commit to Supabase failed (reconciler will repair): {}",
-                e
-            );
+        // 1. Escribir en la fuente de verdad (GitHub)
+        let mut outcome = self.github.commit(request, actor, budget)?;
+
+        // 2. Sincronizar en el momento con Supabase (best effort, con
+        //    UN reintento — ver `once_with_one_retry`): un fallo aquí
+        //    NO deshace el commit (ya está en GitHub, la fuente de
+        //    verdad), pero SÍ dice que memory_resolve/memory_search
+        //    (que leen del índice) pueden seguir mostrando el estado
+        //    anterior. Antes esto solo iba a stderr del servidor ("el
+        //    reconciliador lo arreglará") — con una reconciliación
+        //    diaria, un caller que confía en el `Ok` de esta llamada
+        //    puede pasar hasta 24h sin saber que su escritura no es
+        //    visible todavía. Ahora también viaja en
+        //    `outcome.warnings`, visible para quien llamó.
+        let supabase = &mut self.supabase;
+        if let Err(e) =
+            once_with_one_retry(|| supabase.commit(req_for_supabase.clone(), actor, budget))
+        {
+            let warning = sync_warning("commit", &e);
+            eprintln!("IndexedStore: {warning}");
+            outcome.warnings.push(warning);
         }
 
         Ok(outcome)
@@ -93,14 +143,22 @@ where
         reason: String,
     ) -> Result<DeleteOutcome, StoreError> {
         // 1. Borrar de la fuente de verdad (GitHub)
-        let outcome = self.github.delete(id, expected, actor, reason.clone())?;
+        let mut outcome = self.github.delete(id, expected, actor, reason.clone())?;
 
-        // 2. Borrar de Supabase (best effort)
-        if let Err(e) = self.supabase.delete(id, expected, actor, reason) {
-            eprintln!(
-                "IndexedStore: Best-effort delete from Supabase failed (reconciler will repair): {}",
-                e
-            );
+        // 2. Borrar de Supabase (best effort, con un reintento) — ver
+        //    el comentario de `commit` arriba: el fallo se registra en
+        //    `outcome.warnings` además de en stderr, para que quien
+        //    llamó a `memory_delete` sepa YA que el documento puede
+        //    seguir apareciendo en lecturas hasta que se repare, en
+        //    vez de asumir que "success" significa "invisible en
+        //    todas partes".
+        let supabase = &mut self.supabase;
+        if let Err(e) =
+            once_with_one_retry(|| supabase.delete(id, expected, actor, reason.clone()))
+        {
+            let warning = sync_warning("delete", &e);
+            eprintln!("IndexedStore: {warning}");
+            outcome.warnings.push(warning);
         }
 
         Ok(outcome)
@@ -114,17 +172,27 @@ where
         budget: &Budget,
     ) -> Result<BulkOutcome, StoreError> {
         let reqs_for_supabase = requests.clone();
-        
-        // 1. Aplicar lote a GitHub
-        let outcome = self.github.commit_bulk(requests, atomic, actor, budget)?;
 
-        // 2. Sincronizar lote con Supabase si se aplicó
+        // 1. Aplicar lote a GitHub
+        let mut outcome = self.github.commit_bulk(requests, atomic, actor, budget)?;
+
+        // 2. Sincronizar lote con Supabase si se aplicó. El fallo es
+        //    de TODO el lote (una sola llamada a commit_bulk contra
+        //    Supabase), así que se anota en cada item que sí se
+        //    aplicó — no hay un lugar a nivel de `BulkOutcome` para
+        //    un aviso que no sea "sobre alguno de los items".
         if outcome.applied {
-            if let Err(e) = self.supabase.commit_bulk(reqs_for_supabase, atomic, actor, budget) {
-                eprintln!(
-                    "IndexedStore: Best-effort commit_bulk to Supabase failed: {}",
-                    e
-                );
+            let supabase = &mut self.supabase;
+            if let Err(e) = once_with_one_retry(|| {
+                supabase.commit_bulk(reqs_for_supabase.clone(), atomic, actor, budget)
+            }) {
+                let warning = sync_warning("commit_bulk", &e);
+                eprintln!("IndexedStore: {warning}");
+                for item in &mut outcome.items {
+                    if let BulkItem::Done(done) = item {
+                        done.warnings.push(warning.clone());
+                    }
+                }
             }
         }
 

@@ -611,6 +611,7 @@ impl GithubStore {
                         version: live.version,
                         created: false,
                         no_change: true,
+                        warnings: Vec::new(),
                     },
                 })
             }
@@ -772,6 +773,7 @@ impl MemoryRepository for GithubStore {
                     version: *version,
                     created: *created,
                     no_change: false,
+                    warnings: Vec::new(),
                 };
                 let new_file_sha = resp.content.map(|c| c.sha).unwrap_or_default();
                 Self::apply_write(&mut snap, &request.concept_id, &request.markdown, &decided, new_file_sha);
@@ -846,7 +848,7 @@ impl MemoryRepository for GithubStore {
         snap.head_sha = resp.commit.sha;
         self.store_cache(snap);
 
-        Ok(DeleteOutcome { content_id: doc.content_id, version: doc.version, revision })
+        Ok(DeleteOutcome { content_id: doc.content_id, version: doc.version, revision, warnings: Vec::new() })
     }
 
     fn backlinks(&self, id: &ConceptId) -> Result<Vec<Backlink>, StoreError> {
@@ -914,6 +916,7 @@ impl MemoryRepository for GithubStore {
                         version: *version,
                         created: *created,
                         no_change: false,
+                        warnings: Vec::new(),
                     }));
                     // El siguiente item del lote ve este efecto.
                     Self::apply_write(

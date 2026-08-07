@@ -301,6 +301,17 @@ where
         }
     }
 
+    /// Avisos no bloqueantes de un `CommitOutcome`/`DeleteOutcome`
+    /// (ver `store_core::CommitOutcome::warnings`) como array JSON —
+    /// vacío en el caso normal, así que un caller que nunca los mira
+    /// no nota diferencia; uno que sí los mira ve YA, en la misma
+    /// respuesta, que un backend compuesto (`IndexedStore`) no pudo
+    /// sincronizar su índice de lectura, en vez de descubrirlo cuando
+    /// `memory_resolve` le devuelva algo que ya no debería existir.
+    fn warnings_json(warnings: &[String]) -> Value {
+        arr(warnings.iter().map(|w| s(w)).collect())
+    }
+
     fn object_to_json(object: &Object) -> Value {
         match object {
             Object::Concept(id) => obj([("kind", s("concept")), ("value", s(id.as_str()))]),
@@ -493,6 +504,7 @@ where
                 ("no_change", Value::Bool(matches!(decision, conflict_core::CommitDecision::NoChange))),
                 ("revision_seq", Value::Null),
                 ("dry_run", Value::Bool(true)),
+                ("warnings", arr(Vec::new())),
             ]));
         }
 
@@ -515,6 +527,7 @@ where
                 "revision_seq",
                 outcome.revision.as_ref().map(|r| n(r.seq as f64)).unwrap_or(Value::Null),
             ),
+            ("warnings", Self::warnings_json(&outcome.warnings)),
         ]))
     }
 
@@ -623,6 +636,7 @@ where
                 "revision_seq",
                 outcome.revision.as_ref().map(|r| n(r.seq as f64)).unwrap_or(Value::Null),
             ),
+            ("warnings", Self::warnings_json(&outcome.warnings)),
         ]))
     }
 
@@ -641,6 +655,7 @@ where
             ("hash", s(&outcome.content_id.to_hex())),
             ("version", n(outcome.version as f64)),
             ("revision_seq", n(outcome.revision.seq as f64)),
+            ("warnings", Self::warnings_json(&outcome.warnings)),
         ]))
     }
 
@@ -788,6 +803,7 @@ where
                 ("no_change", Value::Bool(matches!(decision, conflict_core::CommitDecision::NoChange))),
                 ("revision_seq", Value::Null),
                 ("dry_run", Value::Bool(true)),
+                ("warnings", arr(Vec::new())),
             ]));
         }
 
@@ -808,6 +824,7 @@ where
                 "revision_seq",
                 outcome.revision.as_ref().map(|r| n(r.seq as f64)).unwrap_or(Value::Null),
             ),
+            ("warnings", Self::warnings_json(&outcome.warnings)),
         ]))
     }
 
@@ -847,6 +864,7 @@ where
                     ("version", n(out.version as f64)),
                     ("created", Value::Bool(out.created)),
                     ("no_change", Value::Bool(out.no_change)),
+                    ("warnings", Self::warnings_json(&out.warnings)),
                 ]),
                 store_core::BulkItem::Failed(err) => {
                     let err_val = match err {
@@ -982,13 +1000,23 @@ where
             match item {
                 store_core::BulkItem::Done(out) => {
                     concept_ids.push(s(id.as_str()));
+                    // `warnings` son los avisos de contenido sospechoso
+                    // (ingest_core); `out.warnings` son los de
+                    // sincronización best-effort (store_core, ver
+                    // CommitOutcome::warnings) — dos fuentes distintas,
+                    // ninguna reemplaza a la otra.
+                    let mut all_warnings = match warnings {
+                        Value::Array(items) => items,
+                        other => vec![other],
+                    };
+                    all_warnings.extend(out.warnings.iter().map(|w| s(w)));
                     items.push(obj([
                         ("concept_id", s(id.as_str())),
                         ("mode", s("verbatim")),
                         ("hash", s(&out.content_id.to_hex())),
                         ("version", n(out.version as f64)),
                         ("created", Value::Bool(out.created)),
-                        ("warnings", warnings),
+                        ("warnings", Value::Array(all_warnings)),
                     ]));
                 }
                 store_core::BulkItem::Failed(StoreError::Conflict(_)) => {
@@ -1070,6 +1098,7 @@ where
             ("hash", s(&outcome.content_id.to_hex())),
             ("version", n(outcome.version as f64)),
             ("created", Value::Bool(outcome.created)),
+            ("warnings", Self::warnings_json(&outcome.warnings)),
         ]))
     }
 
@@ -1161,9 +1190,13 @@ where
 
         let mut task_ids: Vec<Value> = Vec::new();
         let mut skipped: Vec<Value> = Vec::new();
+        let mut warnings: Vec<Value> = Vec::new();
         for (id, item) in ids.iter().zip(outcome.items) {
             match item {
-                store_core::BulkItem::Done(_) => task_ids.push(s(id.as_str())),
+                store_core::BulkItem::Done(out) => {
+                    task_ids.push(s(id.as_str()));
+                    warnings.extend(out.warnings.iter().map(|w| s(w)));
+                }
                 store_core::BulkItem::Failed(e) => {
                     skipped.push(obj([("item", s(id.as_str())), ("reason", s(&e.to_string()))]));
                 }
@@ -1178,6 +1211,7 @@ where
             ("created", n(task_ids.len() as f64)),
             ("task_ids", arr(task_ids)),
             ("skipped", arr(skipped)),
+            ("warnings", arr(warnings)),
         ]))
     }
 

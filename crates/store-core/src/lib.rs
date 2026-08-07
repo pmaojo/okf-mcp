@@ -71,6 +71,16 @@ pub struct CommitOutcome {
     pub created: bool,
     /// `true` si el contenido ya era idéntico (idempotencia).
     pub no_change: bool,
+    /// Avisos NO bloqueantes: la operación en sí se aceptó (por eso
+    /// esto es `Ok`, no un `StoreError`), pero algo secundario no
+    /// salió como se esperaba. Hoy solo lo llena `IndexedStore`
+    /// cuando su sincronización best-effort a Supabase falla — la
+    /// escritura de verdad (GitHub) sí se aplicó, pero
+    /// `memory_resolve`/`memory_search` (que leen del índice) pueden
+    /// seguir mostrando el estado anterior hasta que el
+    /// reconciliador lo repare. Vacío en el resto de backends: no
+    /// tienen un paso secundario que pueda fallar por separado.
+    pub warnings: Vec<String>,
 }
 
 /// Consulta de búsqueda. Todos los criterios son opcionales y se
@@ -133,6 +143,12 @@ pub struct DeleteOutcome {
     pub version: u64,
     /// La revisión que deja constancia del borrado en la historia.
     pub revision: Revision,
+    /// Avisos NO bloqueantes — ver [`CommitOutcome::warnings`]. El
+    /// caso que motivó este campo es exactamente este: un borrado
+    /// que `IndexedStore` aceptó en GitHub pero no logró propagar a
+    /// Supabase, dejando `memory_resolve`/`memory_search` sirviendo
+    /// el documento como si siguiera vivo.
+    pub warnings: Vec<String>,
 }
 
 /// Un enlace entrante: quién apunta a un concepto y con qué relación.

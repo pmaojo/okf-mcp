@@ -106,6 +106,7 @@ pub(crate) async fn commit_in_tx(
             version: current_version as u64,
             created: false,
             no_change: true,
+            warnings: Vec::new(),
         }),
         CommitDecision::Create | CommitDecision::Update => {
             let created = matches!(decision, CommitDecision::Create);
@@ -225,6 +226,7 @@ pub(crate) async fn commit_in_tx(
                 version: new_version as u64,
                 created,
                 no_change: false,
+                warnings: Vec::new(),
             })
         }
     }
@@ -320,7 +322,7 @@ pub(crate) async fn delete_in_tx(
         reason,
     };
 
-    Ok(DeleteOutcome { content_id, version: version as u64, revision })
+    Ok(DeleteOutcome { content_id, version: version as u64, revision, warnings: Vec::new() })
 }
 
 /// Cierra una transacción según el resultado de lo que se hizo dentro:
