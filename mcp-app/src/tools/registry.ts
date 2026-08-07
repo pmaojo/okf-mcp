@@ -14,6 +14,7 @@
 import type { ToolManifest } from "@/core/framework/tool-contract";
 import { memorySearchManifest } from "./memory-search/manifest";
 import { memoryResolveManifest } from "./memory-resolve/manifest";
+import { memoryReasonManifest } from "./memory-reason/manifest";
 import { memoryCommitManifest } from "./memory-commit/manifest";
 import { memoryHistoryManifest } from "./memory-history/manifest";
 import { memoryDeleteManifest } from "./memory-delete/manifest";
@@ -31,7 +32,7 @@ import { specStatusManifest } from "./spec-status/manifest";
 import { skillIngestManifest } from "./skill-ingest/manifest";
 
 /**
- * Array of all actively registered tool manifests — the 13 `memory_*`
+ * Array of all actively registered tool manifests — the 14 `memory_*`
  * tools plus `spec_propose`/`spec_tasks`/`spec_status`/`skill_ingest`
  * from `crates/memory-tools`. Slugs must match the server-side tool
  * names exactly (see `ToolSpec::name` in
@@ -40,6 +41,7 @@ import { skillIngestManifest } from "./skill-ingest/manifest";
 const manifests: ToolManifest[] = [
   memorySearchManifest,
   memoryResolveManifest,
+  memoryReasonManifest,
   memoryCommitManifest,
   memoryHistoryManifest,
   memoryDeleteManifest,

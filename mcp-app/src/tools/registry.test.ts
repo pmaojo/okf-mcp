@@ -4,6 +4,7 @@ import { TOOL_COMPONENTS } from "@/tools/registry";
 const EXPECTED_SLUGS = [
   "memory_search",
   "memory_resolve",
+  "memory_reason",
   "memory_commit",
   "memory_history",
   "memory_delete",
@@ -22,7 +23,7 @@ const EXPECTED_SLUGS = [
 ];
 
 describe("registry", () => {
-  it("should register all 17 memory_*/spec_*/skill_ingest tool components", () => {
+  it("should register all 18 memory_*/spec_*/skill_ingest tool components", () => {
     expect(Object.keys(TOOL_COMPONENTS).sort()).toEqual(EXPECTED_SLUGS.sort());
     for (const slug of EXPECTED_SLUGS) {
       expect(TOOL_COMPONENTS[slug]).toBeDefined();
