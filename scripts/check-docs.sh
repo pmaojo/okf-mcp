@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 # Los adaptadores de frontera se documentan igual, pero su puerta de
 # calidad vive en sus propios tests de contrato.
 nucleo="-p memory-model -p hash-core -p json-mini -p okf-core \
- -p graph-core -p conflict-core -p store-core -p memory-store \
+ -p graph-core -p ontology-core -p conflict-core -p store-core -p memory-store \
  -p memory-tools -p mcp-core -p ingest-core"
 
 # shellcheck disable=SC2086  # $nucleo debe expandirse en argumentos
