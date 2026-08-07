@@ -4,6 +4,7 @@
 resolver = "3"
 members = [
     "crates/conflict-core",
+    "crates/consolidate-core",
     "crates/gemini-embeddings",
     "crates/github-store",
     "crates/graph-core",
