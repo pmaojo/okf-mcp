@@ -32,7 +32,12 @@ use ingest_core::{IngestError, PlannedAction, SkillFormat, SourceFetcher};
 use json_mini::{arr, n, obj, s, Value};
 use mcp_core::{ToolError, ToolHandler, ToolSpec, UiResource};
 use memory_model::{Budget, ConceptId, ContentId, Principal};
-use store_core::{CommitRequest, MemoryRepository, SearchQuery, StoreError, StoreMaintenance};
+use ontology_core::{
+    materialize, parse_ontology_document, triples_from_document, Object, Ontology, PropertyAxiom,
+    ReasoningBudget, SubClassOf, Triple,
+};
+use std::collections::BTreeMap;
+use store_core::{CommitRequest, MemoryRepository, SearchQuery, StoreError, StoreMaintenance, TripleStore};
 use std::convert::Infallible;
 
 /// La UI React de las 13 herramientas `memory_*` (`mcp-app/`),
@@ -58,7 +63,7 @@ pub struct MemoryTools<R> {
 
 impl<R> MemoryTools<R>
 where
-    R: MemoryRepository + StoreMaintenance + NeighborSource<Error = Infallible>,
+    R: MemoryRepository + StoreMaintenance + NeighborSource<Error = Infallible> + TripleStore,
 {
     /// Envuelve un repositorio con el actor y el presupuesto que
     /// gobernarán TODAS las llamadas. Sin capacidad de ingesta: la
@@ -66,6 +71,17 @@ where
     /// [`MemoryTools::with_ingest`].
     pub fn new(repo: R, actor: Principal, budget: Budget) -> Self {
         MemoryTools { repo, actor, budget, fetcher: None, trusted_owners: Vec::new() }
+    }
+
+    /// Acceso de solo lectura al repositorio envuelto — para tests
+    /// que necesitan verificar efectos secundarios (p. ej. que
+    /// `memory_reason` persistió triples) sin pasar de nuevo por el
+    /// protocolo JSON. Nunca lo uses fuera de tests: cualquier
+    /// herramienta que necesite esto en producción es una señal de
+    /// que le falta una respuesta propia, no de que le falte este
+    /// atajo.
+    pub fn repo(&self) -> &R {
+        &self.repo
     }
 
     /// Activa `skill_ingest` con un descargador de fuentes. La
@@ -233,6 +249,209 @@ where
                     ("by_nodes", Value::Bool(traversal.truncated_by_nodes)),
                     ("by_depth", Value::Bool(traversal.truncated_by_depth)),
                     ("by_bytes", Value::Bool(traversal.truncated_by_bytes)),
+                ]),
+            ),
+        ]))
+    }
+
+    /// Traduce el argumento `classes` (array de `{subclass,
+    /// superclass}`) y `properties` (array de `{kind, ...}`) a una
+    /// [`Ontology`]. Ninguno de los dos es obligatorio: sin ellos,
+    /// `Ontology::default()` hace que [`materialize`] sea un no-op —
+    /// razonar es estrictamente opt-in (capítulo 18 del tutorial).
+    fn parse_ontology(args: &Value) -> Result<Ontology, ToolError> {
+        let classes = match args.get("classes").and_then(|v| v.as_array()) {
+            None => Vec::new(),
+            Some(items) => items
+                .iter()
+                .map(|item| {
+                    Ok(SubClassOf {
+                        subclass: Self::require_str(item, "subclass")?,
+                        superclass: Self::require_str(item, "superclass")?,
+                    })
+                })
+                .collect::<Result<Vec<_>, ToolError>>()?,
+        };
+        let properties = match args.get("properties").and_then(|v| v.as_array()) {
+            None => Vec::new(),
+            Some(items) => items
+                .iter()
+                .map(Self::parse_property_axiom)
+                .collect::<Result<Vec<_>, ToolError>>()?,
+        };
+        Ok(Ontology { classes, properties })
+    }
+
+    fn parse_property_axiom(item: &Value) -> Result<PropertyAxiom, ToolError> {
+        let kind = Self::require_str(item, "kind")?;
+        match kind.as_str() {
+            "transitive" => Ok(PropertyAxiom::Transitive(Self::require_str(item, "property")?)),
+            "symmetric" => Ok(PropertyAxiom::Symmetric(Self::require_str(item, "property")?)),
+            "sub_property_of" => Ok(PropertyAxiom::SubPropertyOf {
+                sub: Self::require_str(item, "sub")?,
+                sup: Self::require_str(item, "sup")?,
+            }),
+            "inverse_of" => Ok(PropertyAxiom::InverseOf {
+                property: Self::require_str(item, "property")?,
+                inverse: Self::require_str(item, "inverse")?,
+            }),
+            other => Err(ToolError::InvalidArguments(format!(
+                "'kind' de axioma de propiedad desconocido: {other:?} (usa transitive | symmetric | sub_property_of | inverse_of)"
+            ))),
+        }
+    }
+
+    fn object_to_json(object: &Object) -> Value {
+        match object {
+            Object::Concept(id) => obj([("kind", s("concept")), ("value", s(id.as_str()))]),
+            Object::Literal(text) => obj([("kind", s("literal")), ("value", s(text))]),
+        }
+    }
+
+    fn triple_to_json(triple: &Triple, derived: bool) -> Value {
+        obj([
+            ("subject", s(triple.subject.as_str())),
+            ("predicate", s(&triple.predicate)),
+            ("object", Self::object_to_json(&triple.object)),
+            ("derived", Value::Bool(derived)),
+        ])
+    }
+
+    /// Carga la [`Ontology`] declarada en el CUERPO de un documento
+    /// `type: ontology` referenciado por `id` (sintaxis: ver
+    /// [`ontology_core::parse_ontology_document`]) — en el cuerpo, no
+    /// en el frontmatter, porque el subconjunto YAML de `okf-core` no
+    /// soporta listas de objetos anidados.
+    fn load_ontology_document(&self, id: &ConceptId) -> Result<Ontology, ToolError> {
+        let doc = self
+            .repo
+            .get(id)
+            .map_err(Self::domain_error)?
+            .ok_or_else(|| Self::domain_error(StoreError::NotFound(id.clone())))?;
+        if doc.doc_type != "ontology" {
+            return Err(ToolError::InvalidArguments(format!(
+                "ontology_id {id} no es 'type: ontology' (es 'type: {}')",
+                doc.doc_type
+            )));
+        }
+        let parsed = okf_core::parse_document(&doc.raw, &self.budget)
+            .map_err(StoreError::from)
+            .map_err(Self::domain_error)?;
+        let body = &doc.raw[parsed.body_offset..];
+        parse_ontology_document(body)
+            .map_err(|e| ToolError::InvalidArguments(format!("ontology_id {id}: {e}")))
+    }
+
+    /// Reúne los hechos (`rdf:type`, tags, enlaces tipados) del
+    /// vecindario acotado de `concept_id` — el mismo recorrido que
+    /// `memory_resolve` — y aplica el razonador de `ontology-core`
+    /// sobre `classes`/`properties` inline y, si se da `ontology_id`,
+    /// también sobre la ontología de ESE documento (las dos fuentes
+    /// se combinan; ninguna reemplaza a la otra). Persiste la
+    /// clausura derivada (agrupada por sujeto: cada concepto visto se
+    /// reemplaza con los triples que le corresponden en ESTA
+    /// ejecución) salvo que `persist: false`. Ver capítulo 18 del
+    /// tutorial.
+    fn memory_reason(&mut self, args: &Value) -> Result<Value, ToolError> {
+        let root = Self::concept_id(&Self::require_str(args, "concept_id")?)?;
+        let ontology_id: Option<ConceptId> =
+            Self::arg_str(args, "ontology_id").map(|raw| Self::concept_id(&raw)).transpose()?;
+        let mut budget = self.budget;
+        if let Some(depth) = Self::arg_usize(args, "depth")? {
+            budget.max_graph_depth = (depth as u8).min(self.budget.max_graph_depth);
+        }
+
+        let traversal = match graph_core::bounded_bfs(&self.repo, &root, &budget) {
+            Ok(t) => t,
+            Err(never) => match never {},
+        };
+
+        let mut facts: Vec<Triple> = Vec::new();
+        for visited in &traversal.visited {
+            if !visited.exists {
+                continue; // enlace roto: no hay documento del que extraer hechos
+            }
+            let doc = self.repo.get(&visited.id).map_err(Self::domain_error)?;
+            let Some(doc) = doc else { continue };
+            let okf_doc = okf_core::OkfDocument {
+                doc_type: doc.doc_type,
+                title: doc.title,
+                tags: doc.tags,
+                extra: BTreeMap::new(),
+                body_offset: 0,
+                links: doc.links,
+            };
+            facts.extend(triples_from_document(&visited.id, &okf_doc));
+        }
+
+        let mut ontology = Self::parse_ontology(args)?;
+        if let Some(id) = &ontology_id {
+            let referenced = self.load_ontology_document(id)?;
+            ontology.classes.extend(referenced.classes);
+            ontology.properties.extend(referenced.properties);
+        }
+        let mut reasoning_budget = ReasoningBudget::default();
+        if let Some(max_iterations) = Self::arg_usize(args, "max_iterations")? {
+            reasoning_budget.max_iterations = max_iterations;
+        }
+        if let Some(max_triples) = Self::arg_usize(args, "max_triples")? {
+            reasoning_budget.max_triples = max_triples;
+        }
+
+        let materialized = materialize(&facts, &ontology, &reasoning_budget);
+        // Marca cada triple del resultado como asertado o derivado
+        // comparando contra el conjunto de partida — `materialize`
+        // devuelve la unión ya deduplicada, así que la pertenencia a
+        // `asserted_set` es la única señal fiable (el ORDEN de
+        // `facts` no sobrevive al `BTreeSet` interno).
+        let asserted_set: std::collections::BTreeSet<Triple> = facts.into_iter().collect();
+
+        let persist = args.get("persist").and_then(|v| v.as_bool()).unwrap_or(true);
+        if persist {
+            let mut by_subject: BTreeMap<ConceptId, Vec<Triple>> = BTreeMap::new();
+            for triple in &materialized.triples {
+                by_subject.entry(triple.subject.clone()).or_default().push(triple.clone());
+            }
+            for (subject, triples) in &by_subject {
+                self.repo.save_triples(subject, triples).map_err(Self::domain_error)?;
+            }
+        }
+
+        let neighborhood: Vec<Value> = traversal
+            .visited
+            .iter()
+            .map(|v| {
+                obj([
+                    ("concept_id", s(v.id.as_str())),
+                    ("depth", n(v.depth as f64)),
+                    ("exists", Value::Bool(v.exists)),
+                ])
+            })
+            .collect();
+
+        Ok(obj([
+            ("root", s(root.as_str())),
+            ("asserted_count", n(asserted_set.len() as f64)),
+            ("derived_count", n(materialized.triples.len().saturating_sub(asserted_set.len()) as f64)),
+            (
+                "triples",
+                arr(materialized
+                    .triples
+                    .iter()
+                    .map(|t| Self::triple_to_json(t, !asserted_set.contains(t)))
+                    .collect()),
+            ),
+            ("neighborhood", arr(neighborhood)),
+            ("ontology_id", ontology_id.as_ref().map(|id| s(id.as_str())).unwrap_or(Value::Null)),
+            ("persisted", Value::Bool(persist)),
+            (
+                "truncated",
+                obj([
+                    ("traversal_by_nodes", Value::Bool(traversal.truncated_by_nodes)),
+                    ("traversal_by_depth", Value::Bool(traversal.truncated_by_depth)),
+                    ("traversal_by_bytes", Value::Bool(traversal.truncated_by_bytes)),
+                    ("reasoning_by_iterations", Value::Bool(materialized.truncated_by_iterations)),
+                    ("reasoning_by_triples", Value::Bool(materialized.truncated_by_triples)),
                 ]),
             ),
         ]))
@@ -1192,8 +1411,12 @@ fn schema<const N: usize, const M: usize>(
 
 impl<R> ToolHandler for MemoryTools<R>
 where
-    R: MemoryRepository + StoreMaintenance + NeighborSource<Error = Infallible>,
+    R: MemoryRepository + StoreMaintenance + NeighborSource<Error = Infallible> + TripleStore,
 {
+    fn instructions(&self) -> Option<&str> {
+        Some(include_str!("../assets/instructions.txt"))
+    }
+
     fn tools(&self) -> Vec<ToolSpec> {
         let mut specs = vec![
             ToolSpec {
@@ -1223,6 +1446,24 @@ where
                     ["concept_id"],
                 ),
                 ui_resource_uri: Some("ui://okf-memory/memory_resolve"),
+            },
+            ToolSpec {
+                name: "memory_reason",
+                description: include_str!("../assets/memory_reason.txt"),
+                input_schema: schema(
+                    [
+                        ("concept_id", "string", "id lógico raíz: mismo vecindario acotado que memory_resolve"),
+                        ("depth", "integer", "profundidad máxima del vecindario a considerar (por defecto el presupuesto del servidor)"),
+                        ("ontology_id", "string", "concept_id de un documento 'type: ontology' cuyo CUERPO declara axiomas (una línea por axioma: 'subclass_of: X -> Y', 'transitive: P', 'symmetric: P', 'sub_property_of: X -> Y', 'inverse_of: X -> Y'); se COMBINA con classes/properties inline, no los reemplaza"),
+                        ("classes", "array", "axiomas de subclase inline: lista de {subclass, superclass} (rdfs:subClassOf)"),
+                        ("properties", "array", "axiomas de propiedad inline: lista de {kind, ...}. kind='transitive'|'symmetric' con {property}; kind='sub_property_of' con {sub, sup}; kind='inverse_of' con {property, inverse}"),
+                        ("max_iterations", "integer", "tope de rondas de punto fijo (por defecto 16)"),
+                        ("max_triples", "integer", "tope de triples totales, asertados + derivados (por defecto 10000)"),
+                        ("persist", "boolean", "si es true (por defecto), guarda los triples derivados para lecturas futuras sin volver a razonar"),
+                    ],
+                    ["concept_id"],
+                ),
+                ui_resource_uri: Some("ui://okf-memory/memory_reason"),
             },
             ToolSpec {
                 name: "memory_commit",
@@ -1448,6 +1689,7 @@ where
         let mut resources = vec![
             UiResource { uri: "ui://okf-memory/memory_search", name: "okf-memory · Buscar", description: DESCRIPTION, html: APP_HTML },
             UiResource { uri: "ui://okf-memory/memory_resolve", name: "okf-memory · Resolver", description: DESCRIPTION, html: APP_HTML },
+            UiResource { uri: "ui://okf-memory/memory_reason", name: "okf-memory · Razonar", description: DESCRIPTION, html: APP_HTML },
             UiResource { uri: "ui://okf-memory/memory_commit", name: "okf-memory · Commit", description: DESCRIPTION, html: APP_HTML },
             UiResource { uri: "ui://okf-memory/memory_history", name: "okf-memory · Historial", description: DESCRIPTION, html: APP_HTML },
             UiResource { uri: "ui://okf-memory/memory_delete", name: "okf-memory · Borrar", description: DESCRIPTION, html: APP_HTML },
@@ -1481,6 +1723,7 @@ where
         match name {
             "memory_search" => self.memory_search(arguments),
             "memory_resolve" => self.memory_resolve(arguments),
+            "memory_reason" => self.memory_reason(arguments),
             "memory_commit" => self.memory_commit(arguments),
             "memory_consolidate" => self.memory_consolidate(arguments),
             "memory_history" => self.memory_history(arguments),

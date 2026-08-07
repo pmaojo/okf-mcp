@@ -70,7 +70,7 @@ export function SpecProposeView({ app, toolResult }: ToolComponentProps) {
         description="Requirements + design, agreed before implementation. Any MCP client can pick this up later — the state lives in shared memory, not a conversation."
       />
       <ToolSplit>
-        <RunPanel>
+        <RunPanel defaultOpen={!toolResult}>
           <Field id="sp-id" label="concept_id" hint="e.g. specs/hybrid-search-v2">
             <Input
               id="sp-id"

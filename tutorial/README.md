@@ -57,6 +57,12 @@ repositorio. Cada capítulo sigue la misma plantilla:
 |---|----------|------|--------------------|
 | 17 | [Mantenimiento y Observabilidad](17-mantenimiento-observabilidad.md) | segregación de interfaces, consultas agregadas de base de datos | **I**, S |
 
+## Hito 7 — Razonamiento ligero (Triples y OWL-RL acotado, opcional)
+
+| # | Capítulo | Rust | SOLID protagonista |
+|---|----------|------|--------------------|
+| 18 | [Razonamiento ligero: triples y OWL-RL acotado](18-razonamiento-ligero.md) (opcional — extensión negociable, no forma parte del núcleo) | `BTreeSet` como deduplicación, `let-else`, punto fijo acotado | S, D, **O** (con una grieta honesta) |
+
 ## Transversal — La documentación ejecutable
 
 | # | Capítulo | Rust | SOLID protagonista |

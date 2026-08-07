@@ -62,7 +62,7 @@ export function MemoryResolveView({ app, toolResult }: ToolComponentProps) {
         description="Click any neighbor node to jump the graph over to it — each click re-runs memory_resolve on the server."
       />
 
-      <RunPanel>
+      <RunPanel defaultOpen={!toolResult}>
         <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto]">
           <Field id="mr-id" label="concept_id">
             <Input

@@ -1,5 +1,5 @@
 [package]
-name = "memory-store"
+name = "ontology-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,9 +8,4 @@ publish.workspace = true
 
 [dependencies]
 memory-model = { path = "../memory-model" }
-store-core = { path = "../store-core" }
-hash-core = { path = "../hash-core" }
 okf-core = { path = "../okf-core" }
-graph-core = { path = "../graph-core" }
-conflict-core = { path = "../conflict-core" }
-ontology-core = { path = "../ontology-core" }

@@ -57,7 +57,7 @@ export function MemoryDeleteView({ app, toolResult }: ToolComponentProps) {
         kicker="danger"
       />
       <ToolSplit>
-        <RunPanel>
+        <RunPanel defaultOpen={!toolResult}>
           <Field id="md-id" label="concept_id">
             <Input
               id="md-id"

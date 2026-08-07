@@ -1,0 +1,23 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "okf-mcp",
+  "version": "0.1.0",
+  "description": "Servidor MCP de memoria persistente para agentes: núcleo std-only en Rust, grafo OKF (frontmatter + wikilinks), razonamiento OWL-RL/RDFS acotado (ontology-core) y adaptadores para Vercel, Supabase y GitHub.",
+  "author": {
+    "name": "pmaojo",
+    "url": "https://github.com/pmaojo"
+  },
+  "homepage": "https://pmaojo.github.io/okf-mcp/",
+  "repository": "https://github.com/pmaojo/okf-mcp",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "memory",
+    "knowledge-graph",
+    "okf",
+    "rust",
+    "owl",
+    "rdf",
+    "reasoning"
+  ]
+}

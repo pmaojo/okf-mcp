@@ -17,6 +17,7 @@ hash-core = { path = "../hash-core" }
 conflict-core = { path = "../conflict-core" }
 ingest-core = { path = "../ingest-core" }
 consolidate-core = { path = "../consolidate-core" }
+ontology-core = { path = "../ontology-core" }
 
 [dev-dependencies]
 memory-store = { path = "../memory-store" }

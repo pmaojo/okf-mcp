@@ -84,7 +84,7 @@ export function MemoryPatchView({ app, toolResult }: ToolComponentProps) {
         description="Update or remove specific frontmatter keys and tags — the Markdown body is left untouched."
       />
       <ToolSplit>
-        <RunPanel>
+        <RunPanel defaultOpen={!toolResult}>
           <div className="grid grid-cols-2 gap-3">
             <Field id="mp-id" label="concept_id">
               <Input

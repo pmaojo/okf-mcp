@@ -26,6 +26,14 @@ export interface GraphEdgeSpec {
   source: string;
   target: string;
   label?: string;
+  /**
+   * true = produced by ontology-core's materialize(), not written in the
+   * source document. Styled dashed/accent instead of solid/border, and
+   * prefixed onto the React Flow edge id (`derived-...` vs `asserted-...`)
+   * so a consumer (memory-reason's animated view) can target either group
+   * with a plain CSS selector instead of threading extra props through.
+   */
+  derived?: boolean;
 }
 
 /**
@@ -110,14 +118,21 @@ export function ConceptGraph({
 
   const flowEdges: Edge[] = useMemo(
     () =>
-      edges.map((edge, i) => ({
-        id: `${edge.source}->${edge.target}-${i}`,
-        source: edge.source,
-        target: edge.target,
-        label: edge.label,
-        style: { stroke: "var(--border)", strokeWidth: 2 },
-        markerEnd: { type: MarkerType.ArrowClosed, color: "var(--border)" },
-      })),
+      edges.map((edge, i) => {
+        const color = edge.derived ? "var(--accent)" : "var(--border)";
+        return {
+          id: `${edge.derived ? "derived" : "asserted"}-${edge.source}->${edge.target}-${i}`,
+          source: edge.source,
+          target: edge.target,
+          label: edge.label,
+          style: {
+            stroke: color,
+            strokeWidth: 2,
+            ...(edge.derived ? { strokeDasharray: "6 4" } : {}),
+          },
+          markerEnd: { type: MarkerType.ArrowClosed, color },
+        };
+      }),
     [edges]
   );
 

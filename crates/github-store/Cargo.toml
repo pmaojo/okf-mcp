@@ -27,6 +27,7 @@ okf-core = { path = "../okf-core" }
 graph-core = { path = "../graph-core" }
 conflict-core = { path = "../conflict-core" }
 hash-core = { path = "../hash-core" }
+ontology-core = { path = "../ontology-core" }
 
 [dev-dependencies]
 axum = { version = "0.8" }

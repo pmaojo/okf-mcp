@@ -45,7 +45,7 @@ export function SpecStatusView({ app, toolResult }: ToolComponentProps) {
         description="next_pending are tasks whose depends_on are all done (or none) — ready to start now. waiting_on_dependencies counts pending tasks that are not."
       />
 
-      <RunPanel>
+      <RunPanel defaultOpen={!toolResult}>
         <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
           <Field id="ss-id" label="spec_id">
             <Input

@@ -60,7 +60,7 @@ export function SkillIngestView({ app, toolResult }: ToolComponentProps) {
         description="Content is always kept verbatim under a generated OKF header — never rewritten or summarized by any model. Not available if this deployment has no source fetcher configured."
       />
       <ToolSplit>
-        <RunPanel>
+        <RunPanel defaultOpen={!toolResult}>
           <Field id="si-source" label="Source" hint="Repo URL, owner/repo, or a direct file URL.">
             <Input
               id="si-source"

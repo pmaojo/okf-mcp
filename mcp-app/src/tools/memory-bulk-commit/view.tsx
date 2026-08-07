@@ -72,7 +72,7 @@ export function MemoryBulkCommitView({ app, toolResult }: ToolComponentProps) {
         description="Atomic mode rolls back the whole batch on any conflict; non-atomic applies what it can and reports each outcome."
       />
       <ToolSplit>
-        <RunPanel>
+        <RunPanel defaultOpen={!toolResult}>
           <div className="space-y-4">
             {rows.map((row, i) => (
               <div key={i} className="space-y-2 border-2 border-border p-3">

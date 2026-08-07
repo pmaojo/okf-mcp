@@ -413,3 +413,32 @@ pub trait StoreMaintenance {
         max: usize,
     ) -> Result<EmbedOutcome, StoreError>;
 }
+
+/// Persistencia de los triples que `ontology-core` deriva
+/// (`crates/ontology-core`, capítulo 18 del tutorial) — asertados
+/// (extraídos del frontmatter/enlaces) y derivados (por
+/// `ontology_core::materialize`) por igual.
+///
+/// Trait SEPARADO de [`MemoryRepository`] a conciencia, igual que
+/// [`StoreMaintenance`] (SOLID-I): razonar sobre un concepto es un
+/// cliente distinto de leerlo o escribirlo, y un consumidor que solo
+/// hace CRUD de documentos no debería arrastrar esta superficie.
+///
+/// `save_triples` REEMPLAZA todos los triples conocidos de `subject`
+/// — no los acumula — porque cada llamada a `memory_reason`
+/// materializa la clausura completa para ese sujeto; guardar la unión
+/// con la ejecución anterior resucitaría hechos que una ontología más
+/// reciente ya no implica.
+pub trait TripleStore {
+    /// Reemplaza los triples almacenados de `subject` por `triples`.
+    fn save_triples(
+        &mut self,
+        subject: &ConceptId,
+        triples: &[ontology_core::Triple],
+    ) -> Result<(), StoreError>;
+
+    /// Los triples conocidos cuyo sujeto es `subject`, o vacío si
+    /// nunca se razonó sobre él (no es un error: es normal que la
+    /// mayoría de conceptos nunca hayan pasado por `memory_reason`).
+    fn load_triples(&self, subject: &ConceptId) -> Result<Vec<ontology_core::Triple>, StoreError>;
+}

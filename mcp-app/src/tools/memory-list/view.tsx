@@ -44,7 +44,7 @@ export function MemoryListView({ app, toolResult }: ToolComponentProps) {
         description="No query needed — just walk a path prefix (e.g. 'people') to see everything filed under it."
       />
       <ToolSplit>
-        <RunPanel>
+        <RunPanel defaultOpen={!toolResult}>
           <Field
             id="ml-prefix"
             label="Path prefix"

@@ -19,6 +19,7 @@ members = [
     "crates/memory-store",
     "crates/memory-tools",
     "crates/okf-core",
+    "crates/ontology-core",
     "crates/outbox-worker",
     "crates/store-core",
     "crates/supabase-store",

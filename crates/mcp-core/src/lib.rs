@@ -107,6 +107,23 @@ pub trait ToolHandler {
     fn ui_resources(&self) -> Vec<UiResource> {
         Vec::new()
     }
+
+    /// Guía de USO — no de protocolo — que el cliente muestra al
+    /// MODELO una vez, en `initialize` (campo `instructions` de
+    /// `InitializeResult`), no en cada llamada. Es el sitio correcto
+    /// para una convención que de otro modo el modelo tendría que
+    /// adivinar o redescubrir cada sesión (p. ej. "busca un
+    /// vocabulario ya declarado antes de inventar nombres nuevos"):
+    /// pagar el coste de tokens UNA vez al arrancar es más barato y
+    /// más determinista que repetirlo en la descripción de cada
+    /// herramienta, y mucho más que dejar que el modelo alucine una
+    /// convención plausible pero distinta cada vez. Cuerpo por
+    /// defecto `None` — mismo Abierto/Cerrado que [`Self::ui_resources`]:
+    /// un handler que no tiene nada que decir aquí no cambia una
+    /// línea.
+    fn instructions(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// Estado del ciclo de vida MCP.
@@ -248,20 +265,19 @@ impl<H: ToolHandler> McpServer<H> {
         };
         self.lifecycle = Lifecycle::Initializing;
 
-        ok_response(
-            id,
-            json!({
-                "protocolVersion" => version,
-                "capabilities" => {
-                    "tools" => {},
-                    "resources" => {}
-                },
-                "serverInfo" => {
-                    "name" => (self.server_name),
-                    "version" => (self.server_version)
-                }
-            }),
-        )
+        let mut fields = vec![
+            ("protocolVersion", s(version)),
+            ("capabilities", obj([("tools", obj([])), ("resources", obj([]))])),
+            (
+                "serverInfo",
+                obj([("name", s(self.server_name)), ("version", s(self.server_version))]),
+            ),
+        ];
+        if let Some(instructions) = self.handler.instructions() {
+            fields.push(("instructions", s(instructions)));
+        }
+
+        ok_response(id, Value::Object(fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect()))
     }
 
     fn on_tools_list(&mut self, id: Value) -> Value {
@@ -536,6 +552,40 @@ mod tests {
             .unwrap();
         assert!(resp.contains("isError\":false"));
         assert!(resp.contains("{\\\"x\\\":1}"));
+    }
+
+    /// Handler mínimo que SÍ tiene algo que decir en `instructions`,
+    /// para probar el otro lado del Abierto/Cerrado que `EchoTools`
+    /// ya prueba por omisión (su `initialize` nunca lleva el campo).
+    struct EchoWithInstructions;
+
+    impl ToolHandler for EchoWithInstructions {
+        fn tools(&self) -> Vec<ToolSpec> {
+            Vec::new()
+        }
+        fn call(&mut self, _name: &str, _arguments: &Value) -> Result<Value, ToolError> {
+            Err(ToolError::UnknownTool)
+        }
+        fn instructions(&self) -> Option<&str> {
+            Some("busca convenciones ya declaradas antes de inventar nombres nuevos")
+        }
+    }
+
+    #[test]
+    fn initialize_omite_instructions_por_defecto() {
+        let resp = server()
+            .handle_message(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#)
+            .unwrap();
+        assert!(!resp.contains("instructions"));
+    }
+
+    #[test]
+    fn initialize_incluye_instructions_cuando_el_handler_las_declara() {
+        let mut srv = McpServer::new("test", "0.0.0", EchoWithInstructions);
+        let resp = srv
+            .handle_message(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#)
+            .unwrap();
+        assert!(resp.contains("busca convenciones ya declaradas"));
     }
 
     #[test]

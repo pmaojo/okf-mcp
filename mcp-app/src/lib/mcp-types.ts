@@ -50,6 +50,42 @@ export interface MemoryResolveResult {
   };
 }
 
+export interface TripleObject {
+  kind: "concept" | "literal";
+  value: string;
+}
+
+export interface ReasonedTriple {
+  subject: string;
+  predicate: string;
+  object: TripleObject;
+  /** false = extracted straight from frontmatter/links; true = produced by materialize(). */
+  derived: boolean;
+}
+
+export interface ReasonNeighborhoodNode {
+  concept_id: string;
+  depth: number;
+  exists: boolean;
+}
+
+export interface MemoryReasonResult {
+  root: string;
+  asserted_count: number;
+  derived_count: number;
+  triples: ReasonedTriple[];
+  neighborhood: ReasonNeighborhoodNode[];
+  ontology_id: string | null;
+  persisted: boolean;
+  truncated: {
+    traversal_by_nodes: boolean;
+    traversal_by_depth: boolean;
+    traversal_by_bytes: boolean;
+    reasoning_by_iterations: boolean;
+    reasoning_by_triples: boolean;
+  };
+}
+
 export interface CommitLikeResult {
   concept_id: string;
   hash: string;

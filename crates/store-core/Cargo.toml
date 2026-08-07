@@ -11,3 +11,4 @@ memory-model = { path = "../memory-model" }
 conflict-core = { path = "../conflict-core" }
 okf-core = { path = "../okf-core" }
 graph-core = { path = "../graph-core" }
+ontology-core = { path = "../ontology-core" }
