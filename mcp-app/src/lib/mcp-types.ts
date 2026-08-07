@@ -75,6 +75,7 @@ export interface MemoryReasonResult {
   derived_count: number;
   triples: ReasonedTriple[];
   neighborhood: ReasonNeighborhoodNode[];
+  ontology_id: string | null;
   persisted: boolean;
   truncated: {
     traversal_by_nodes: boolean;

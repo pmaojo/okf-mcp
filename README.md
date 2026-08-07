@@ -21,7 +21,7 @@ La referencia de API generada con `cargo doc` se publica en
 - ✅ **Hito 3:** OAuth 2.1 (Resource Server, validación criptográfica de JWTs mediante firmas y JWKS).
 - ✅ **Hito 4:** Transactional Outbox (`outbox-worker` con procesamiento concurrente `SKIP LOCKED`, sincronización con GitHub y embeddings con `pgvector`).
 - ✅ **Hito 5:** MCP Apps — UI React interactiva ([`mcp-app/`](mcp-app/), tema brutalista) para 18 de las 19 herramientas, cada una con su propio recurso `ui:// ` (opcional, ver más abajo).
-- ✅ **Hito 7:** Razonamiento ligero (`ontology-core`, capítulo 18 del tutorial) — triples derivados del frontmatter/enlaces existentes, punto fijo OWL-RL/RDFS acotado, persistidos vía `TripleStore` (`triples` en Supabase) sin `oxigraph` ni dependencias externas.
+- ✅ **Hito 7:** Razonamiento ligero (`ontology-core`, capítulo 18 del tutorial) — triples derivados del frontmatter/enlaces existentes, punto fijo OWL-RL/RDFS acotado, persistidos vía `TripleStore` (`triples` en Supabase) sin `oxigraph` ni dependencias externas. Las ontologías se declaran UNA VEZ como documento `type: ontology` y se reutilizan por `ontology_id` — `ToolHandler::instructions()` se lo dice al agente en `initialize`, antes de que invente axiomas.
 
 ## Arquitectura
 

@@ -285,28 +285,99 @@ que el capítulo 15 evitó:
   problema distinto — no "adoptar OWL", sino tomar prestada la idea
   de subsunción con la forma que ya tiene el resto de este núcleo.
 
-## 11. Ejercicios
+## 12. Actualización — `memory_reason` y ontologías por referencia
 
-1. **Guiado.** El capítulo 15, ejercicio 3, preguntaba por una
-   alternativa ligera a tipar `[[wiki-links]]` con OWL. `ontology-core`
-   es esa respuesta — pero solo para el RAZONAMIENTO, no para la
-   sintaxis: los enlaces siguen siendo `[[rel:destino]]` sin cambios
-   en `okf-core::scan_links`. Escribe la `Ontology` que declararía
-   `depends_on` como sub-propiedad de `related` y `manages` como
-   inversa de `managed_by`, y verifica con un test que
-   `triples_from_document` + `materialize` sobre un documento real
-   del repo (por ejemplo uno con `[[depends_on:...]]`) produce el
-   triple derivado esperado.
+El ejercicio 3 de más abajo preguntaba por el esquema de persistencia
+y la herramienta MCP: los dos existen ya. `store_core::TripleStore`
+(`save_triples`/`load_triples`, mismo patrón de error fijo que
+`MemoryRepository`) tiene una implementación por backend —
+`InMemoryStore` con un `BTreeMap`, `SupabaseStore` con una tabla
+`triples` reemplazada transaccionalmente por sujeto, `IndexedStore`
+delegando en el lado Supabase (los triples son un índice de lectura,
+no la fuente de verdad de GitHub), `GithubStore` aceptando y
+descartando el guardado (git no tiene índice de consultas propio,
+igual que su `NeighborSource` ya degrada sin fallar). `memory_reason`
+reúne los hechos del vecindario acotado de un `concept_id` (el mismo
+recorrido que `memory_resolve`), aplica `materialize` y persiste la
+clausura salvo `persist: false`.
+
+Lo que NO tenía la primera versión de la herramienta era una forma de
+declarar una `Ontology` sin volver a escribirla en cada llamada. La
+solución: una `Ontology` es también, en sí misma, un documento OKF
+normal — `type: ontology`, sin campos nuevos en el frontmatter, con
+los axiomas en el CUERPO en el mismo formato de texto plano de la
+sección 3:
+
+```text
+subclass_of: student -> person
+transitive: depends_on
+symmetric: married_to
+sub_property_of: depends_on -> related
+inverse_of: manages -> managed_by
+```
+
+`ontology_core::parse_ontology_document` lo parsea línea a línea —
+cinco palabras clave, sin YAML ni JSON, con el mismo criterio de
+"rechaza con línea y motivo" que el resto del núcleo
+(`OntologyDocError::Malformed`/`InvalidAxiom`/`UnknownKeyword`, todos
+con número de línea). `memory_reason` acepta un `ontology_id`
+opcional: si se da, `MemoryTools::load_ontology_document` lee ESE
+documento (exige `type: ontology`; cualquier otro tipo es un error
+legible por el modelo, no un triple vacío en silencio), lo parsea, y
+sus axiomas se SUMAN a los `classes`/`properties` inline — ninguno
+reemplaza al otro, así que "usa el vocabulario del equipo más una
+excepción de esta llamada" es una sola petición, no dos.
+
+La pieza que lo cierra es `ToolHandler::instructions()` (capítulo 15
+extendido — mismo Abierto/Cerrado que `ui_resources()`, cuerpo por
+defecto `None`): el texto que el servidor manda en `initialize`
+le dice al agente, antes de que llame a ninguna herramienta, que
+busque un documento `type: ontology` existente (`memory_search`) y
+pase su `concept_id` como `ontology_id` en vez de inventar axiomas
+sesión a sesión. Sin esto, "guardar la ontología como documento" es
+una convención que solo funciona si alguien se acuerda de seguirla;
+con esto, es el primer texto que cualquier cliente MCP real le
+muestra al modelo.
+
+Por qué el cuerpo y no el frontmatter, otra vez: el subconjunto YAML
+de `okf-core` (capítulo 4) no soporta listas de objetos anidados —
+`classes: [{subclass: a, superclass: b}]` está fuera del subconjunto
+a propósito. Poner los axiomas en el cuerpo, con su propio parser
+pequeño y determinista, es la misma decisión que ya tomó el resto de
+este capítulo: un formato mínimo hecho a medida en vez de forzar el
+problema dentro de una sintaxis que no lo soporta.
+
+## 13. Ejercicios
+
+1. ~~**Guiado.** El capítulo 15, ejercicio 3, preguntaba por una
+   alternativa ligera a tipar `[[wiki-links]]` con OWL...~~
+   Resuelto en la sección 3: `ontology-core` reutiliza
+   `[[rel:destino]]` sin cambiar `okf-core::scan_links` — la relación
+   tipada YA estaba ahí desde el capítulo 4, este capítulo solo la
+   nombra explícitamente como predicado de un triple. Como ejercicio
+   real: escribe la `Ontology` que declara `depends_on` como
+   sub-propiedad de `related` y `manages` como inversa de
+   `managed_by`, y verifica con un test que `triples_from_document` +
+   `materialize` sobre un documento con `[[depends_on:...]]` produce
+   el triple derivado esperado.
 2. **Medio.** `apply_rules_once` es `O(aristas²)` para la regla
    transitiva. Diseña una versión con un índice
    `HashMap<ConceptId, Vec<ConceptId>>` construido una vez por ronda
    que la baje a casi lineal. ¿Sigue siendo determinista el ORDEN de
    los triples derivados? (pista: `known` es un `BTreeSet` — ¿importa
    el orden en que `apply_rules_once` los genera?)
-3. **Abierto.** Diseña el esquema de `triples` en `supabase-store`
-   (sección 8) y la herramienta MCP `memory_reason` que lo sirva:
-   ¿materializa en cada escritura (`memory_commit`) o de forma
-   perezosa en la primera lectura? ¿Qué pasa con los triples
-   derivados de un documento que se BORRA (`memory_delete`,
-   capítulo 17)? ¿Se recalculan todos los que dependían de él, o
-   quedan huérfanos hasta la siguiente materialización completa?
+3. ~~**Abierto.** Diseña el esquema de `triples` en `supabase-store` y
+   la herramienta MCP `memory_reason` que lo sirva...~~ Resuelto en la
+   sección 12 — salvo la mitad que sigue abierta A PROPÓSITO: hoy
+   `memory_delete` (capítulo 17) no toca la tabla `triples` para nada.
+   Si `people/bob` se borra lógicamente, los triples que otros
+   conceptos derivaron sobre él (p. ej. `alice reports_to bob`) siguen
+   ahí hasta que alguien vuelva a llamar `memory_reason` sobre esos
+   sujetos. Diseña la limpieza: ¿`memory_delete` dispara un
+   recálculo de todo lo que dependía del concepto borrado (¿cómo lo
+   encuentras — un índice inverso por `object_value`?), o se deja
+   como está documentado aquí y punto, aceptando que `triples` es una
+   caché que puede quedar desactualizada hasta la siguiente
+   materialización? ¿Cuál de las dos respuestas es más coherente con
+   cómo `memory_delete` ya trata `links` (capítulo 17: "un borrado
+   deja de enlazar")?

@@ -33,8 +33,8 @@ use json_mini::{arr, n, obj, s, Value};
 use mcp_core::{ToolError, ToolHandler, ToolSpec, UiResource};
 use memory_model::{Budget, ConceptId, ContentId, Principal};
 use ontology_core::{
-    materialize, triples_from_document, Object, Ontology, PropertyAxiom, ReasoningBudget,
-    SubClassOf, Triple,
+    materialize, parse_ontology_document, triples_from_document, Object, Ontology, PropertyAxiom,
+    ReasoningBudget, SubClassOf, Triple,
 };
 use std::collections::BTreeMap;
 use store_core::{CommitRequest, MemoryRepository, SearchQuery, StoreError, StoreMaintenance, TripleStore};
@@ -317,15 +317,45 @@ where
         ])
     }
 
+    /// Carga la [`Ontology`] declarada en el CUERPO de un documento
+    /// `type: ontology` referenciado por `id` (sintaxis: ver
+    /// [`ontology_core::parse_ontology_document`]) — en el cuerpo, no
+    /// en el frontmatter, porque el subconjunto YAML de `okf-core` no
+    /// soporta listas de objetos anidados.
+    fn load_ontology_document(&self, id: &ConceptId) -> Result<Ontology, ToolError> {
+        let doc = self
+            .repo
+            .get(id)
+            .map_err(Self::domain_error)?
+            .ok_or_else(|| Self::domain_error(StoreError::NotFound(id.clone())))?;
+        if doc.doc_type != "ontology" {
+            return Err(ToolError::InvalidArguments(format!(
+                "ontology_id {id} no es 'type: ontology' (es 'type: {}')",
+                doc.doc_type
+            )));
+        }
+        let parsed = okf_core::parse_document(&doc.raw, &self.budget)
+            .map_err(StoreError::from)
+            .map_err(Self::domain_error)?;
+        let body = &doc.raw[parsed.body_offset..];
+        parse_ontology_document(body)
+            .map_err(|e| ToolError::InvalidArguments(format!("ontology_id {id}: {e}")))
+    }
+
     /// Reúne los hechos (`rdf:type`, tags, enlaces tipados) del
     /// vecindario acotado de `concept_id` — el mismo recorrido que
     /// `memory_resolve` — y aplica el razonador de `ontology-core`
-    /// sobre `classes`/`properties`. Persiste la clausura derivada
-    /// (agrupada por sujeto: cada concepto visto se reemplaza con
-    /// los triples que le corresponden en ESTA ejecución) salvo que
-    /// `persist: false`. Ver capítulo 18 del tutorial.
+    /// sobre `classes`/`properties` inline y, si se da `ontology_id`,
+    /// también sobre la ontología de ESE documento (las dos fuentes
+    /// se combinan; ninguna reemplaza a la otra). Persiste la
+    /// clausura derivada (agrupada por sujeto: cada concepto visto se
+    /// reemplaza con los triples que le corresponden en ESTA
+    /// ejecución) salvo que `persist: false`. Ver capítulo 18 del
+    /// tutorial.
     fn memory_reason(&mut self, args: &Value) -> Result<Value, ToolError> {
         let root = Self::concept_id(&Self::require_str(args, "concept_id")?)?;
+        let ontology_id: Option<ConceptId> =
+            Self::arg_str(args, "ontology_id").map(|raw| Self::concept_id(&raw)).transpose()?;
         let mut budget = self.budget;
         if let Some(depth) = Self::arg_usize(args, "depth")? {
             budget.max_graph_depth = (depth as u8).min(self.budget.max_graph_depth);
@@ -354,7 +384,12 @@ where
             facts.extend(triples_from_document(&visited.id, &okf_doc));
         }
 
-        let ontology = Self::parse_ontology(args)?;
+        let mut ontology = Self::parse_ontology(args)?;
+        if let Some(id) = &ontology_id {
+            let referenced = self.load_ontology_document(id)?;
+            ontology.classes.extend(referenced.classes);
+            ontology.properties.extend(referenced.properties);
+        }
         let mut reasoning_budget = ReasoningBudget::default();
         if let Some(max_iterations) = Self::arg_usize(args, "max_iterations")? {
             reasoning_budget.max_iterations = max_iterations;
@@ -407,6 +442,7 @@ where
                     .collect()),
             ),
             ("neighborhood", arr(neighborhood)),
+            ("ontology_id", ontology_id.as_ref().map(|id| s(id.as_str())).unwrap_or(Value::Null)),
             ("persisted", Value::Bool(persist)),
             (
                 "truncated",
@@ -1418,8 +1454,9 @@ where
                     [
                         ("concept_id", "string", "id lógico raíz: mismo vecindario acotado que memory_resolve"),
                         ("depth", "integer", "profundidad máxima del vecindario a considerar (por defecto el presupuesto del servidor)"),
-                        ("classes", "array", "axiomas de subclase: lista de {subclass, superclass} (rdfs:subClassOf)"),
-                        ("properties", "array", "axiomas de propiedad: lista de {kind, ...}. kind='transitive'|'symmetric' con {property}; kind='sub_property_of' con {sub, sup}; kind='inverse_of' con {property, inverse}"),
+                        ("ontology_id", "string", "concept_id de un documento 'type: ontology' cuyo CUERPO declara axiomas (una línea por axioma: 'subclass_of: X -> Y', 'transitive: P', 'symmetric: P', 'sub_property_of: X -> Y', 'inverse_of: X -> Y'); se COMBINA con classes/properties inline, no los reemplaza"),
+                        ("classes", "array", "axiomas de subclase inline: lista de {subclass, superclass} (rdfs:subClassOf)"),
+                        ("properties", "array", "axiomas de propiedad inline: lista de {kind, ...}. kind='transitive'|'symmetric' con {property}; kind='sub_property_of' con {sub, sup}; kind='inverse_of' con {property, inverse}"),
                         ("max_iterations", "integer", "tope de rondas de punto fijo (por defecto 16)"),
                         ("max_triples", "integer", "tope de triples totales, asertados + derivados (por defecto 10000)"),
                         ("persist", "boolean", "si es true (por defecto), guarda los triples derivados para lecturas futuras sin volver a razonar"),

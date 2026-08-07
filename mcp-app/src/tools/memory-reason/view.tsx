@@ -201,6 +201,7 @@ function ReasoningResult({ data }: { data: MemoryReasonResult }) {
           {data.derived_count} derived
         </Badge>
         <Badge variant="outline">{data.persisted ? "persisted" : "not persisted"}</Badge>
+        {data.ontology_id && <Badge variant="outline">ontology: {data.ontology_id}</Badge>}
         {truncatedKeys.length > 0 && (
           <Badge variant="destructive">truncated: {truncatedKeys.join(", ")}</Badge>
         )}
@@ -236,6 +237,7 @@ export function MemoryReasonView({ app, toolResult }: ToolComponentProps) {
   const [depth, setDepth] = useState("");
   const [classRows, setClassRows] = useState<ClassRow[]>([]);
   const [propertyRows, setPropertyRows] = useState<PropertyRow[]>([]);
+  const [ontologyId, setOntologyId] = useState("");
   const [maxIterations, setMaxIterations] = useState("");
   const [maxTriples, setMaxTriples] = useState("");
   const [persist, setPersist] = useState(true);
@@ -258,6 +260,8 @@ export function MemoryReasonView({ app, toolResult }: ToolComponentProps) {
 
     const depthNum = Number(depth);
     if (Number.isFinite(depthNum) && depthNum > 0) args.depth = depthNum;
+
+    if (ontologyId.trim()) args.ontology_id = ontologyId.trim();
 
     const classes = classRows
       .filter((r) => r.subclass.trim() && r.superclass.trim())
@@ -315,6 +319,20 @@ export function MemoryReasonView({ app, toolResult }: ToolComponentProps) {
               min={1}
               value={depth}
               onChange={(e) => setDepth(e.target.value)}
+            />
+          </Field>
+          <Field
+            id="mr-ontology-id"
+            label="Ontology id"
+            hint={
+              'concept_id of a type: ontology document — its body axioms (subclass_of: X -> Y, transitive: P, ...) are merged with anything below, not replaced by it'
+            }
+          >
+            <Input
+              id="mr-ontology-id"
+              value={ontologyId}
+              onChange={(e) => setOntologyId(e.target.value)}
+              placeholder="ontologies/org"
             />
           </Field>
 

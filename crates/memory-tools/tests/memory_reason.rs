@@ -135,6 +135,96 @@ fn presupuesto_de_iteraciones_se_refleja_en_truncated() {
 }
 
 #[test]
+fn ontology_id_carga_axiomas_del_documento_referenciado() {
+    let mut tools = tools();
+    commit(&mut tools, "ontologies/org", "---\ntype: ontology\n---\nsubclass_of: student -> person\n");
+    commit(&mut tools, "people/alice", "---\ntype: student\n---\nnota\n");
+
+    let out = call(
+        &mut tools,
+        "memory_reason",
+        r#"{"concept_id":"people/alice","ontology_id":"ontologies/org"}"#,
+    );
+
+    assert_eq!(out.get("ontology_id").unwrap().as_str(), Some("ontologies/org"));
+    let triples = out.get("triples").unwrap().as_array().unwrap();
+    assert!(triples.iter().any(|t| {
+        t.get("predicate").unwrap().as_str() == Some("rdf:type")
+            && t.get("object").unwrap().get("value").unwrap().as_str() == Some("person")
+            && t.get("derived").unwrap() == &Value::Bool(true)
+    }));
+}
+
+#[test]
+fn ontology_id_se_combina_con_axiomas_inline_no_los_reemplaza() {
+    let mut tools = tools();
+    commit(&mut tools, "ontologies/org", "---\ntype: ontology\n---\nsubclass_of: student -> person\n");
+    commit(&mut tools, "people/alice", "---\ntype: student\n---\nVer [[depends_on:tasks/x]].\n");
+    commit(&mut tools, "tasks/x", "---\ntype: task\n---\nVer [[depends_on:tasks/y]].\n");
+    commit(&mut tools, "tasks/y", "---\ntype: task\n---\nsin dependencias\n");
+
+    let out = call(
+        &mut tools,
+        "memory_reason",
+        r#"{"concept_id":"people/alice","depth":3,"ontology_id":"ontologies/org","properties":[{"kind":"transitive","property":"depends_on"}]}"#,
+    );
+
+    let triples = out.get("triples").unwrap().as_array().unwrap();
+    // Del documento referenciado (subclass_of):
+    assert!(triples.iter().any(|t| t.get("object").unwrap().get("value").unwrap().as_str() == Some("person")));
+    // Del axioma inline (transitive), aplicado sobre el MISMO conjunto de hechos:
+    assert!(triples.iter().any(|t| {
+        t.get("subject").unwrap().as_str() == Some("people/alice")
+            && t.get("predicate").unwrap().as_str() == Some("depends_on")
+            && t.get("object").unwrap().get("value").unwrap().as_str() == Some("tasks/y")
+    }));
+}
+
+#[test]
+fn ontology_id_inexistente_se_rechaza() {
+    let mut tools = tools();
+    commit(&mut tools, "people/alice", "---\ntype: person\n---\nnota\n");
+
+    let args =
+        json_mini::parse(r#"{"concept_id":"people/alice","ontology_id":"ontologies/no-existe"}"#)
+            .unwrap();
+    let err = tools.call("memory_reason", &args).unwrap_err();
+    assert!(matches!(err, mcp_core::ToolError::Failed(ref msg) if msg.contains("not_found")));
+}
+
+#[test]
+fn ontology_id_que_no_es_type_ontology_se_rechaza() {
+    let mut tools = tools();
+    commit(&mut tools, "people/bob", "---\ntype: person\n---\nno es una ontologia\n");
+    commit(&mut tools, "people/alice", "---\ntype: person\n---\nnota\n");
+
+    let args = json_mini::parse(r#"{"concept_id":"people/alice","ontology_id":"people/bob"}"#).unwrap();
+    let err = tools.call("memory_reason", &args).unwrap_err();
+    assert!(matches!(err, mcp_core::ToolError::InvalidArguments(_)));
+}
+
+#[test]
+fn ontology_id_con_sintaxis_invalida_en_el_cuerpo_se_rechaza() {
+    let mut tools = tools();
+    commit(&mut tools, "ontologies/roto", "---\ntype: ontology\n---\nesto no es un axioma\n");
+    commit(&mut tools, "people/alice", "---\ntype: person\n---\nnota\n");
+
+    let args =
+        json_mini::parse(r#"{"concept_id":"people/alice","ontology_id":"ontologies/roto"}"#).unwrap();
+    let err = tools.call("memory_reason", &args).unwrap_err();
+    assert!(matches!(err, mcp_core::ToolError::InvalidArguments(ref msg) if msg.contains("línea 1")));
+}
+
+#[test]
+fn sin_ontology_id_el_campo_viene_null() {
+    let mut tools = tools();
+    commit(&mut tools, "people/alice", "---\ntype: person\n---\nnota\n");
+
+    let out = call(&mut tools, "memory_reason", r#"{"concept_id":"people/alice"}"#);
+    assert_eq!(out.get("ontology_id").unwrap(), &Value::Null);
+}
+
+#[test]
 fn kind_de_axioma_desconocido_se_rechaza() {
     let mut tools = tools();
     commit(&mut tools, "people/alice", "---\ntype: person\n---\nnota\n");
