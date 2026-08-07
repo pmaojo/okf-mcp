@@ -48,14 +48,15 @@ fn conversacion_completa() {
     assert!(resp.get("result").is_some());
     assert!(srv.handle_message(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).is_none());
 
-    // 2. tools/list expone las 17 herramientas
+    // 2. tools/list expone las 18 herramientas
     let resp = send(&mut srv, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
     let tools = resp.get("result").unwrap().get("tools").unwrap().as_array().unwrap();
     let names: Vec<&str> = tools.iter().map(|t| t.get("name").unwrap().as_str().unwrap()).collect();
-    assert_eq!(names.len(), 17);
+    assert_eq!(names.len(), 18);
     for expected in [
         "memory_search",
         "memory_resolve",
+        "memory_reason",
         "memory_commit",
         "memory_consolidate",
         "memory_history",
