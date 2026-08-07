@@ -285,6 +285,14 @@ de una ontología formal antes de tener un caso de uso real que lo
 necesite sería exactamente la clase de abstracción prematura que este
 tutorial lleva 14 capítulos evitando.
 
+> **Actualización.** El caso de uso real llegó — no como base de
+> conocimiento compartida a gran escala, sino como una pregunta de
+> agente concreta ("¿Alice cuenta como `agent` si `person` es
+> sub-clase de `agent`?"). El [capítulo 18](18-razonamiento-ligero.md)
+> retoma exactamente este párrafo y explica por qué la respuesta —
+> `ontology-core`, sin `oxigraph` ni ningún vocabulario obligatorio —
+> no contradice lo que se acaba de argumentar aquí.
+
 Lo que la vista de grafo hace en su lugar es deliberadamente modesto:
 tres estados visuales fijos por nodo (raíz / vecino normal / enlace
 roto — `ConceptGraph` en `mcp-app/src/shared/components/graph/`), sin
@@ -340,6 +348,37 @@ trabajo de una frase en `memory-tools`, no una decisión arquitectónica.
    alcance (no por mala idea): un frontmatter `links:` con pares
    `{target, kind}` en vez de `[[wiki-links]]` sin tipo. ¿Qué se
    rompe en `okf-core::scan_links` y en `memory_resolve`? ¿La vista de
-   grafo podría entonces colorear ARISTAS, no solo nodos?
+   grafo podría entonces colorear ARISTAS, no solo nodos? (El
+   [capítulo 18](18-razonamiento-ligero.md), ejercicio 1, resuelve la
+   mitad de esta pregunta — el RAZONAMIENTO sobre relaciones tipadas —
+   sin tocar la sintaxis `[[rel:destino]]` que ya existía desde el
+   capítulo 4; la sintaxis alternativa sigue siendo tuya por diseñar.)
+
+## 11. Actualización — formularios de entrada colapsables
+
+Un problema práctico apareció al usar estas 17 vistas desde un agente
+real en vez de a mano: `RunPanel` (los campos de búsqueda o edición)
+se renderizaba SIEMPRE junto a `ResultPanel`, incluso cuando el
+`toolResult` ya venía relleno porque el MODELO había llamado a la
+herramienta — la persona solo quería ver el resultado, no un
+formulario para repetir una búsqueda que el agente ya hizo. `RunPanel`
+(`mcp-app/src/shared/components/tool/ToolLayout.tsx`) ahora acepta
+`defaultOpen`, y las 15 vistas que lo usan pasan
+`defaultOpen={!toolResult}`: colapsado cuando el host ya trajo un
+resultado, expandido cuando se abre en frío (sin resultado, el
+formulario es la única forma de usar la herramienta). Un botón "Edit
+inputs" en la cabecera permite expandirlo en cualquier caso — la
+persona sigue pudiendo reeditar y relanzar, solo que ya no es lo
+primero que ve.
+
+No fue una decisión de protocolo: `hostContext` (sección 3) no trae
+ninguna señal de "esto lo abrió el modelo" frente a "esto lo abrió un
+humano en frío" — solo `toolInfo.tool.name`. La señal que sí existe es
+más simple y ya estaba en `useServerTool`: `toolResult`, la prop que
+SOLO llega poblada cuando el host inyectó un resultado al abrir la
+vista. Es el mismo principio que `isManual` (la misma hook, ver su
+doc-comment) usa para decidir si un botón "Add to agent context" debe
+aparecer: no inventar un canal nuevo cuando la pregunta ya tiene
+respuesta en el estado que la vista ya recibe.
 
 Siguiente: no hay — este es, por ahora, el último capítulo escrito.
