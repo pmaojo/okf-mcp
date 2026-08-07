@@ -178,6 +178,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "consolidate-core"
+version = "0.1.0"
+dependencies = [
+ "memory-model",
+ "okf-core",
+]
+
+[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1119,6 +1127,7 @@ name = "memory-tools"
 version = "0.1.0"
 dependencies = [
  "conflict-core",
+ "consolidate-core",
  "graph-core",
  "hash-core",
  "ingest-core",

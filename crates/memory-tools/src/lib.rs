@@ -26,6 +26,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+use consolidate_core::{ConsolidateError, DigestDecision, DigestEntity, SessionDigest};
 use graph_core::NeighborSource;
 use ingest_core::{IngestError, PlannedAction, SkillFormat, SourceFetcher};
 use json_mini::{arr, n, obj, s, Value};
@@ -275,6 +276,114 @@ where
                 ("dry_run", Value::Bool(true)),
             ]));
         }
+
+        let outcome = self
+            .repo
+            .commit(
+                CommitRequest { concept_id: id.clone(), expected, markdown, reason },
+                &self.actor,
+                &self.budget,
+            )
+            .map_err(Self::domain_error)?;
+
+        Ok(obj([
+            ("concept_id", s(id.as_str())),
+            ("hash", s(&outcome.content_id.to_hex())),
+            ("version", n(outcome.version as f64)),
+            ("created", Value::Bool(outcome.created)),
+            ("no_change", Value::Bool(outcome.no_change)),
+            (
+                "revision_seq",
+                outcome.revision.as_ref().map(|r| n(r.seq as f64)).unwrap_or(Value::Null),
+            ),
+        ]))
+    }
+
+    /// Traduce el argumento `entities` (array de `{concept_id,
+    /// relation?}`) a `Vec<DigestEntity>`, o vacío si se omite.
+    fn parse_digest_entities(args: &Value) -> Result<Vec<DigestEntity>, ToolError> {
+        let Some(items) = args.get("entities").and_then(|v| v.as_array()) else {
+            return Ok(Vec::new());
+        };
+        items
+            .iter()
+            .map(|item| {
+                let concept_id = Self::concept_id(&Self::require_str(item, "concept_id")?)?;
+                let relation = Self::arg_str(item, "relation");
+                Ok(DigestEntity { concept_id, relation })
+            })
+            .collect()
+    }
+
+    /// Traduce el argumento `decisions` (array de `{text,
+    /// concept_id?}`) a `Vec<DigestDecision>`, o vacío si se omite.
+    fn parse_digest_decisions(args: &Value) -> Result<Vec<DigestDecision>, ToolError> {
+        let Some(items) = args.get("decisions").and_then(|v| v.as_array()) else {
+            return Ok(Vec::new());
+        };
+        items
+            .iter()
+            .map(|item| {
+                let text = Self::require_str(item, "text")?;
+                let concept_id = Self::arg_str(item, "concept_id")
+                    .map(|raw| Self::concept_id(&raw))
+                    .transpose()?;
+                Ok(DigestDecision { text, concept_id })
+            })
+            .collect()
+    }
+
+    /// Traduce un rechazo de [`consolidate_core::render_digest`] a un
+    /// fallo legible por el MODELO.
+    fn consolidate_error(err: ConsolidateError) -> ToolError {
+        let kind = match &err {
+            ConsolidateError::EmptyTitle => "empty_title",
+            ConsolidateError::EmptySummary => "empty_summary",
+            ConsolidateError::Okf(_) => "invalid_okf_document",
+        };
+        ToolError::Failed(json_mini::to_string(&obj([
+            ("kind", s(kind)),
+            ("detail", s(&err.to_string())),
+        ])))
+    }
+
+    /// Consolida lo ocurrido en una sesión como un concepto
+    /// `type: session-summary` durable. QUIEN redacta título, resumen,
+    /// entidades y decisiones es el agente que llama a esta
+    /// herramienta (ya es un LLM con todo el contexto de la sesión) —
+    /// el servidor solo valida esa estructura y la renderiza a OKF de
+    /// forma determinista vía `consolidate_core::render_digest`,
+    /// nunca sintetiza contenido con ningún modelo propio. Mismo
+    /// reparto de responsabilidades que `memory_commit` ya tiene con
+    /// su markdown.
+    fn memory_consolidate(&mut self, args: &Value) -> Result<Value, ToolError> {
+        let title = Self::require_str(args, "title")?;
+        let summary = Self::require_str(args, "summary")?;
+        let entities = Self::parse_digest_entities(args)?;
+        let decisions = Self::parse_digest_decisions(args)?;
+
+        let id = match Self::arg_str(args, "concept_id") {
+            Some(raw) => Self::concept_id(&raw)?,
+            None => Self::concept_id(&format!("sessions/{}", ingest_core::slugify(&title)))?,
+        };
+        let reason = Self::arg_str(args, "reason").unwrap_or_else(|| "consolidación de sesión".to_string());
+        let expected = match args.get("expected_hash") {
+            None | Some(Value::Null) => None,
+            Some(v) => {
+                let hex = v.as_str().ok_or_else(|| {
+                    ToolError::InvalidArguments("'expected_hash' debe ser string".to_string())
+                })?;
+                Some(ContentId::from_hex(hex).ok_or_else(|| {
+                    ToolError::InvalidArguments(
+                        "'expected_hash' debe ser 64 caracteres hexadecimales".to_string(),
+                    )
+                })?)
+            }
+        };
+
+        let digest = SessionDigest { title, summary, entities, decisions };
+        let markdown = consolidate_core::render_digest(&digest, &self.budget)
+            .map_err(Self::consolidate_error)?;
 
         let outcome = self
             .repo
@@ -1131,6 +1240,23 @@ where
                 ui_resource_uri: Some("ui://okf-memory/memory_commit"),
             },
             ToolSpec {
+                name: "memory_consolidate",
+                description: include_str!("../assets/memory_consolidate.txt"),
+                input_schema: schema(
+                    [
+                        ("title", "string", "título corto de la sesión (deriva el concept_id si no se da 'concept_id')"),
+                        ("summary", "string", "resumen en prosa de lo ocurrido; puede contener [[enlaces]] OKF normales"),
+                        ("entities", "array", "entidades relacionadas: lista de {concept_id, relation?} (relation en prosa libre)"),
+                        ("decisions", "array", "decisiones tomadas: lista de {text, concept_id?}"),
+                        ("concept_id", "string", "id lógico del documento de sesión (por defecto sessions/<slug-del-título>)"),
+                        ("reason", "string", "motivo para la historia de revisiones (por defecto 'consolidación de sesión')"),
+                        ("expected_hash", "string", "hash SHA-256 hex leído previamente, obligatorio para actualizar una sesión ya existente"),
+                    ],
+                    ["title", "summary"],
+                ),
+                ui_resource_uri: None,
+            },
+            ToolSpec {
                 name: "memory_history",
                 description: include_str!("../assets/memory_history.txt"),
                 input_schema: schema(
@@ -1356,6 +1482,7 @@ where
             "memory_search" => self.memory_search(arguments),
             "memory_resolve" => self.memory_resolve(arguments),
             "memory_commit" => self.memory_commit(arguments),
+            "memory_consolidate" => self.memory_consolidate(arguments),
             "memory_history" => self.memory_history(arguments),
             "memory_delete" => self.memory_delete(arguments),
             "memory_list" => self.memory_list(arguments),

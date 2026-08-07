@@ -16,6 +16,7 @@ okf-core = { path = "../okf-core" }
 hash-core = { path = "../hash-core" }
 conflict-core = { path = "../conflict-core" }
 ingest-core = { path = "../ingest-core" }
+consolidate-core = { path = "../consolidate-core" }
 
 [dev-dependencies]
 memory-store = { path = "../memory-store" }

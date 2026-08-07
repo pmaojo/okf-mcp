@@ -20,7 +20,7 @@ La referencia de API generada con `cargo doc` se publica en
 - ✅ **Hito 2:** transporte HTTP sin estado (`mcp-http`) + contrato ejecutable `MemoryRepository` + adaptador de Vercel (`vercel-entry`) + adaptador de base de datos PostgreSQL (`supabase-store`).
 - ✅ **Hito 3:** OAuth 2.1 (Resource Server, validación criptográfica de JWTs mediante firmas y JWKS).
 - ✅ **Hito 4:** Transactional Outbox (`outbox-worker` con procesamiento concurrente `SKIP LOCKED`, sincronización con GitHub y embeddings con `pgvector`).
-- ✅ **Hito 5:** MCP Apps — UI React interactiva ([`mcp-app/`](mcp-app/), tema brutalista) para las 17 herramientas, cada una con su propio recurso `ui:// ` (opcional, ver más abajo).
+- ✅ **Hito 5:** MCP Apps — UI React interactiva ([`mcp-app/`](mcp-app/), tema brutalista) para 17 de las 18 herramientas, cada una con su propio recurso `ui:// ` (opcional, ver más abajo).
 
 ## Arquitectura
 
@@ -37,7 +37,7 @@ La referencia de API generada con `cargo doc` se publica en
 ┌────────────────────────────────────────────────────────────────────┐
 │ mcp-core     JSON-RPC 2.0 + ciclo de vida MCP + despacho           │
 │ json-mini    parser/serializador JSON educativo                    │
-│ memory-tools  17 herramientas MCP genéricas sobre MemoryRepository │
+│ memory-tools  18 herramientas MCP genéricas sobre MemoryRepository │
 │ store-core   puerto MemoryRepository + contrato Liskov             │
 │ memory-model ConceptId, ContentId, Budget, Revision, Principal     │
 │ okf-core     frontmatter YAML (subconjunto) + enlaces [[...]]      │
@@ -46,6 +46,7 @@ La referencia de API generada con `cargo doc` se publica en
 │ hash-core    SHA-256 a mano (vectores NIST)                        │
 │ memory-store InMemoryStore para desarrollo y tests                 │
 │ ingest-core  detección/planificación de skill_ingest + puertos     │
+│ consolidate-core validación/render determinista de session-summary │
 └───────────────┬────────────────────────────────────────────────────┘
                 │
                 ▼
@@ -149,13 +150,14 @@ curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
 navegador se acepta; sin configurar, cualquier origin pasa — aceptable
 en desarrollo, nunca en producción.
 
-## Las 17 herramientas
+## Las 18 herramientas
 
 | Herramienta | Qué hace |
 | --- | --- |
 | `memory_search` | candidatos compactos de búsqueda híbrida (textual + semántica) |
 | `memory_resolve` | Markdown exacto + vecindario acotado del grafo de `[[enlaces]]` |
 | `memory_commit` | escritura con compare-and-swap (`expected_hash`) y `dry_run` |
+| `memory_consolidate` | consolidar una sesión (título/resumen/entidades/decisiones redactados por el agente) como `type: session-summary`, validado y renderizado a OKF sin LLM del lado del servidor |
 | `memory_history` | revisiones de más reciente a más antigua, paginadas |
 | `memory_delete` | borrado lógico con expected_hash |
 | `memory_list` | listar metadatos de conceptos bajo un prefijo sin leer contenido |
@@ -173,14 +175,18 @@ en desarrollo, nunca en producción.
 
 ## UI interactiva (`mcp-app/`)
 
-Las 17 herramientas (las 13 `memory_*` más `spec_propose`,
-`spec_tasks`, `spec_status` y `skill_ingest` cuando está anunciada)
-anuncian `ui_resource_uri: Some("ui://okf-memory/<nombre>")` — una URI
+17 de las 18 herramientas (las 13 `memory_*` originales más
+`spec_propose`, `spec_tasks`, `spec_status` y `skill_ingest` cuando
+está anunciada) anuncian `ui_resource_uri: Some("ui://okf-memory/<nombre>")`
+— una URI
 **propia por herramienta**, no una compartida: varios hosts MCP Apps
 reutilizan el iframe ya abierto cuando la URI no cambia entre una
 llamada y la siguiente, así que una URI por tool es lo que garantiza
 que cada invocación abra la vista correcta (ver capítulo 15 del
-tutorial, sección 6). Un cliente MCP Apps compatible renderiza esa URI
+tutorial, sección 6). `memory_consolidate` es la única sin vista propia
+(`ui_resource_uri: None`): su resultado es el mismo JSON compacto que
+`memory_commit`, sin nada que gane con un iframe dedicado. Un cliente
+MCP Apps compatible renderiza esa URI
 en un iframe en vez del JSON crudo.
 
 Esa vista es una app React independiente en [`mcp-app/`](mcp-app/)
