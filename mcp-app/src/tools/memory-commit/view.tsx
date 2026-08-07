@@ -67,7 +67,7 @@ export function MemoryCommitView({ app, toolResult }: ToolComponentProps) {
         description="Omit expected_hash to create; pass the hash from memory_resolve to update with conflict detection. Dry-run before you commit for real."
       />
       <ToolSplit>
-        <RunPanel>
+        <RunPanel defaultOpen={!toolResult}>
           <Field id="mc-id" label="concept_id">
             <Input
               id="mc-id"

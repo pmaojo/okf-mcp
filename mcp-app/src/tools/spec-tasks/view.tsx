@@ -81,7 +81,7 @@ export function SpecTasksView({ app, toolResult }: ToolComponentProps) {
         description="depends_on accepts another task's exact title from this same batch, or the concept_id of a task already committed (even from a previous spec_tasks call)."
       />
       <ToolSplit>
-        <RunPanel>
+        <RunPanel defaultOpen={!toolResult}>
           <Field id="st-spec-id" label="spec_id" hint="Created earlier with spec_propose.">
             <Input
               id="st-spec-id"

@@ -57,7 +57,7 @@ export function MemoryValidateView({ app, toolResult }: ToolComponentProps) {
         description="Scan the graph for broken [[links]], references to deleted concepts, and documents missing embeddings."
       />
 
-      <RunPanel>
+      <RunPanel defaultOpen={!toolResult}>
         <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
           <Field id="mv-prefix" label="Path prefix" hint="Optional, scope the scan.">
             <Input

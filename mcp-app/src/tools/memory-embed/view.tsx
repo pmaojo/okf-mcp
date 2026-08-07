@@ -44,7 +44,7 @@ export function MemoryEmbedView({ app, toolResult }: ToolComponentProps) {
         description="Runs one batch at a time — call again to keep draining the queue until 'remaining' hits zero."
       />
       <ToolSplit>
-        <RunPanel>
+        <RunPanel defaultOpen={!toolResult}>
           <Field id="me-prefix" label="Path prefix" hint="Optional, filters by logical path.">
             <Input
               id="me-prefix"

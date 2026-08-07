@@ -48,7 +48,7 @@ export function MemoryHistoryView({ app, toolResult }: ToolComponentProps) {
         description="Newest revisions first — pass before_seq (via a future call) to page further back."
       />
 
-      <RunPanel>
+      <RunPanel defaultOpen={!toolResult}>
         <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto]">
           <Field id="mh-id" label="concept_id">
             <Input

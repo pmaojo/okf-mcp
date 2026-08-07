@@ -50,7 +50,7 @@ export function MemorySearchView({ app, toolResult }: ToolComponentProps) {
         description="Compact candidates ranked by textual (and, when configured, semantic) match — resolve a hit with memory_resolve to get the full document."
       />
       <ToolSplit>
-        <RunPanel>
+        <RunPanel defaultOpen={!toolResult}>
           <Field id="ms-query" label="Query">
             <Input
               id="ms-query"

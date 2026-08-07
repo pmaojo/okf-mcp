@@ -57,7 +57,7 @@ export function MemoryBacklinksView({ app, toolResult }: ToolComponentProps) {
         description="Every concept that references this one via [[concept_id]] — click a source to walk backwards through the graph."
       />
 
-      <RunPanel>
+      <RunPanel defaultOpen={!toolResult}>
         <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
           <Field id="mb-id" label="concept_id">
             <Input
