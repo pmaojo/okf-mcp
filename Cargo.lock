@@ -580,6 +580,7 @@ dependencies = [
  "hash-core",
  "memory-model",
  "okf-core",
+ "ontology-core",
  "reqwest",
  "serde",
  "serde_json",
@@ -1119,6 +1120,7 @@ dependencies = [
  "hash-core",
  "memory-model",
  "okf-core",
+ "ontology-core",
  "store-core",
 ]
 
@@ -1136,6 +1138,7 @@ dependencies = [
  "memory-model",
  "memory-store",
  "okf-core",
+ "ontology-core",
  "store-core",
 ]
 
@@ -2060,6 +2063,7 @@ dependencies = [
  "graph-core",
  "memory-model",
  "okf-core",
+ "ontology-core",
 ]
 
 [[package]]
@@ -2089,6 +2093,7 @@ dependencies = [
  "hash-core",
  "memory-model",
  "okf-core",
+ "ontology-core",
  "pgvector",
  "reqwest",
  "serde",

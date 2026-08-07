@@ -13,3 +13,4 @@ hash-core = { path = "../hash-core" }
 okf-core = { path = "../okf-core" }
 graph-core = { path = "../graph-core" }
 conflict-core = { path = "../conflict-core" }
+ontology-core = { path = "../ontology-core" }

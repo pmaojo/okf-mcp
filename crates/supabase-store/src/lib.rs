@@ -15,6 +15,7 @@ macro_rules! block_on {
 mod repository;
 mod maintenance;
 mod neighbors;
+mod triples;
 
 use gemini_embeddings::{embed_document, Embedded, EmbeddingKeys};
 use pgvector::Vector;

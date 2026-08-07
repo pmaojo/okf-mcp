@@ -61,6 +61,22 @@ CREATE TABLE IF NOT EXISTS embeddings (
     embedding_model VARCHAR(64) NOT NULL DEFAULT 'gemini:gemini-embedding-001@768' -- qué proveedor+modelo+dims produjo `embedding`; la búsqueda semántica NUNCA compara contra un embedding_model distinto (mezclar espacios vectoriales de proveedores distintos no da error, da un ranking sin significado)
 );
 
+-- Triples que `memory_reason` derivó con ontology-core (asertados +
+-- inferidos por punto fijo). object_kind distingue si object_value
+-- es otro concept_id ('concept') o un literal de texto ('literal') —
+-- ver ontology_core::Object. Sin FK en object_value: igual que
+-- links.target_id, un triple puede apuntar a un concepto que todavía
+-- no existe (capítulo 5: "los enlaces rotos son datos, no errores").
+CREATE TABLE IF NOT EXISTS triples (
+    subject_id VARCHAR(255) NOT NULL REFERENCES heads(concept_id) ON DELETE CASCADE,
+    predicate VARCHAR(128) NOT NULL,
+    object_kind VARCHAR(16) NOT NULL,
+    object_value VARCHAR(255) NOT NULL,
+    PRIMARY KEY (subject_id, predicate, object_kind, object_value)
+);
+
+CREATE INDEX IF NOT EXISTS idx_triples_subject ON triples(subject_id);
+
 -- Migración en el arranque: este archivo se aplica con CREATE TABLE
 -- IF NOT EXISTS en cada cold start, así que las tablas pueden venir
 -- de una versión anterior sin las columnas nuevas. ADD COLUMN IF NOT

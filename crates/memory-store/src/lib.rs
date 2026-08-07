@@ -99,6 +99,12 @@ pub struct InMemoryStore {
     /// y se vacía en su borrado (un borrado deja de enlazar).
     links: BTreeMap<ConceptId, Vec<Link>>,
     next_seq: u64,
+    /// Triples que `memory_reason` guardó por sujeto — ver
+    /// [`store_core::TripleStore`]. Vacío hasta la primera llamada;
+    /// no se toca por `commit`/`delete`, así que un concepto
+    /// reescrito conserva su última clausura razonada hasta que
+    /// alguien vuelva a llamar a `memory_reason` sobre él.
+    triples: BTreeMap<ConceptId, Vec<ontology_core::Triple>>,
 }
 
 impl InMemoryStore {
@@ -576,6 +582,21 @@ impl NeighborSource for InMemoryStore {
             .live_head(id)
             .and_then(|h| self.blobs.get(&h.content_id))
             .map(|blob| blob.len()))
+    }
+}
+
+impl store_core::TripleStore for InMemoryStore {
+    fn save_triples(
+        &mut self,
+        subject: &ConceptId,
+        triples: &[ontology_core::Triple],
+    ) -> Result<(), StoreError> {
+        self.triples.insert(subject.clone(), triples.to_vec());
+        Ok(())
+    }
+
+    fn load_triples(&self, subject: &ConceptId) -> Result<Vec<ontology_core::Triple>, StoreError> {
+        Ok(self.triples.get(subject).cloned().unwrap_or_default())
     }
 }
 

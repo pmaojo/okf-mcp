@@ -192,3 +192,23 @@ where
         self.supabase.document_size(id)
     }
 }
+
+/// Igual que `NeighborSource` arriba: los triples son un índice
+/// derivado, no la fuente de verdad — delegan en Supabase, nunca en
+/// GitHub.
+impl<G, S> crate::TripleStore for IndexedStore<G, S>
+where
+    S: crate::TripleStore,
+{
+    fn save_triples(
+        &mut self,
+        subject: &ConceptId,
+        triples: &[ontology_core::Triple],
+    ) -> Result<(), StoreError> {
+        self.supabase.save_triples(subject, triples)
+    }
+
+    fn load_triples(&self, subject: &ConceptId) -> Result<Vec<ontology_core::Triple>, StoreError> {
+        self.supabase.load_triples(subject)
+    }
+}

@@ -1173,6 +1173,33 @@ impl graph_core::NeighborSource for GithubStore {
     }
 }
 
+/// GithubStore es un repositorio de git — commits y contenido, sin
+/// tabla de índices propia. `memory_reason` sigue funcionando (el
+/// razonamiento ocurre en `memory-tools`, sobre lo que `get`/`neighbors`
+/// ya devuelven); lo único que no hace este backend es RECORDAR la
+/// clausura entre llamadas. Igual que `neighbors`/`document_size`
+/// arriba degradan sin romper el recorrido, `save_triples` acepta la
+/// llamada y la descarta (con aviso) en vez de fallar la herramienta
+/// entera por un backend que nunca prometió persistencia de triples;
+/// `load_triples` devuelve vacío, coherente con "nunca se guardó
+/// nada aquí".
+impl store_core::TripleStore for GithubStore {
+    fn save_triples(
+        &mut self,
+        _subject: &ConceptId,
+        _triples: &[ontology_core::Triple],
+    ) -> Result<(), StoreError> {
+        eprintln!(
+            "GithubStore no persiste triples (sin índice propio) — usa IndexedStore<GithubStore, SupabaseStore> si necesitas que memory_reason recuerde su resultado entre llamadas"
+        );
+        Ok(())
+    }
+
+    fn load_triples(&self, _subject: &ConceptId) -> Result<Vec<ontology_core::Triple>, StoreError> {
+        Ok(Vec::new())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
