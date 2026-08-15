@@ -24,6 +24,11 @@ jobs:
       run: ./scripts/check-std-only.sh
     - name: Documentación como puerta de calidad
       run: ./scripts/check-docs.sh
+    # Capa "lint" del gauntlet de old-coder (github.com/AmazingAng/old-coder):
+    # cero warnings nuevos, con `-D warnings` para que la puerta falle
+    # (exit nonzero) en vez de solo reportar.
+    - name: Gauntlet — clippy sin warnings
+      run: cargo clippy --workspace --all-targets -- -D warnings
 
   # Criterio 2 de tutorial/la-rueda-de-serie.md: la seguridad de las
   # dependencias es un paso de workflow, como check-std-only.sh.

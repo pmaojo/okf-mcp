@@ -132,7 +132,14 @@ fn spec_status_agrega_el_progreso_de_las_tareas() {
     );
 
     // Avanza una tarea con memory_patch: mismo mecanismo que cualquier
-    // otro cambio de metadatos, sin tool nuevo para esto.
+    // otro cambio de metadatos, sin tool nuevo para esto. El paso a
+    // status-done exige evidencia ya comiteada en el cuerpo (gauntlet de
+    // old-coder).
+    add_evidence(
+        &mut tools,
+        "specs/mejor-busqueda/tasks/01-tarea-a",
+        "cargo test -p memory-tools: 3 passed; 0 failed; todo en verde.",
+    );
     let doc = call(
         &mut tools,
         "memory_resolve",
@@ -185,6 +192,9 @@ fn spec_status_sin_tareas_da_progreso_cero() {
 }
 
 fn set_status(tools: &mut MemoryTools<InMemoryStore>, concept_id: &str, new_status: &str) {
+    if new_status == "done" {
+        add_evidence(tools, concept_id, "cargo test -p memory-tools: 12 passed; 0 failed; todo en verde.");
+    }
     let doc = call(tools, "memory_resolve", &format!(r#"{{"concept_id":"{concept_id}"}}"#));
     let hash = doc.get("document").unwrap().get("hash").unwrap().as_str().unwrap().to_string();
     call(
@@ -192,6 +202,24 @@ fn set_status(tools: &mut MemoryTools<InMemoryStore>, concept_id: &str, new_stat
         "memory_patch",
         &format!(
             r#"{{"concept_id":"{concept_id}","expected_hash":"{hash}","remove_tags":["status-pending","status-in_progress"],"add_tags":["status-{new_status}"],"reason":"avance"}}"#
+        ),
+    );
+}
+
+/// Comitea una sección `## Evidencia` al cuerpo de una tarea — el
+/// gauntlet de old-coder (github.com/AmazingAng/old-coder) que
+/// `memory_patch` exige antes de aceptar `status-done`.
+fn add_evidence(tools: &mut MemoryTools<InMemoryStore>, concept_id: &str, results: &str) {
+    let doc = call(tools, "memory_resolve", &format!(r#"{{"concept_id":"{concept_id}"}}"#));
+    let markdown = doc.get("document").unwrap().get("markdown").unwrap().as_str().unwrap().to_string();
+    let hash = doc.get("document").unwrap().get("hash").unwrap().as_str().unwrap().to_string();
+    let updated = format!("{markdown}\n## Evidencia\n\n{results}\n");
+    call(
+        tools,
+        "memory_commit",
+        &format!(
+            r#"{{"concept_id":"{concept_id}","expected_hash":"{hash}","markdown":{markdown_json},"reason":"evidencia del gauntlet"}}"#,
+            markdown_json = json_mini::to_string(&Value::String(updated)),
         ),
     );
 }
@@ -247,6 +275,84 @@ fn depends_on_por_titulo_dentro_del_mismo_lote() {
         .collect();
     assert_eq!(next2, ["specs/migracion/tasks/02-migrar-datos"]);
     assert_eq!(as_f64(status2.get("waiting_on_dependencies").unwrap()), 0.0);
+}
+
+#[test]
+fn memory_patch_rechaza_status_done_sin_evidencia() {
+    let mut tools = tools();
+    call(
+        &mut tools,
+        "spec_propose",
+        r#"{"concept_id":"specs/mejor-busqueda","title":"Mejor búsqueda","requirements":"r","design":"d"}"#,
+    );
+    call(
+        &mut tools,
+        "spec_tasks",
+        r#"{"spec_id":"specs/mejor-busqueda","tasks":[{"title":"Tarea A"}]}"#,
+    );
+    let doc = call(
+        &mut tools,
+        "memory_resolve",
+        r#"{"concept_id":"specs/mejor-busqueda/tasks/01-tarea-a"}"#,
+    );
+    let hash = doc.get("document").unwrap().get("hash").unwrap().as_str().unwrap().to_string();
+
+    let args = json_mini::parse(&format!(
+        r#"{{"concept_id":"specs/mejor-busqueda/tasks/01-tarea-a","expected_hash":"{hash}","remove_tags":["status-pending"],"add_tags":["status-done"],"reason":"completada sin evidencia"}}"#
+    ))
+    .unwrap();
+    assert!(tools.call("memory_patch", &args).is_err());
+
+    // Una sección "## Evidencia" vacía tampoco cuenta: hace falta
+    // contenido real (comandos + resultados), no solo el título.
+    add_evidence(&mut tools, "specs/mejor-busqueda/tasks/01-tarea-a", "");
+    let doc2 = call(
+        &mut tools,
+        "memory_resolve",
+        r#"{"concept_id":"specs/mejor-busqueda/tasks/01-tarea-a"}"#,
+    );
+    let hash2 = doc2.get("document").unwrap().get("hash").unwrap().as_str().unwrap().to_string();
+    let args2 = json_mini::parse(&format!(
+        r#"{{"concept_id":"specs/mejor-busqueda/tasks/01-tarea-a","expected_hash":"{hash2}","remove_tags":["status-pending"],"add_tags":["status-done"],"reason":"completada con evidencia vacía"}}"#
+    ))
+    .unwrap();
+    assert!(tools.call("memory_patch", &args2).is_err());
+}
+
+#[test]
+fn memory_patch_acepta_status_done_con_evidencia() {
+    let mut tools = tools();
+    call(
+        &mut tools,
+        "spec_propose",
+        r#"{"concept_id":"specs/mejor-busqueda","title":"Mejor búsqueda","requirements":"r","design":"d"}"#,
+    );
+    call(
+        &mut tools,
+        "spec_tasks",
+        r#"{"spec_id":"specs/mejor-busqueda","tasks":[{"title":"Tarea A"}]}"#,
+    );
+    add_evidence(
+        &mut tools,
+        "specs/mejor-busqueda/tasks/01-tarea-a",
+        "cargo test -p memory-tools: 12 passed; 0 failed. coverage líneas cambiadas: 100%.",
+    );
+    let doc = call(
+        &mut tools,
+        "memory_resolve",
+        r#"{"concept_id":"specs/mejor-busqueda/tasks/01-tarea-a"}"#,
+    );
+    let hash = doc.get("document").unwrap().get("hash").unwrap().as_str().unwrap().to_string();
+    call(
+        &mut tools,
+        "memory_patch",
+        &format!(
+            r#"{{"concept_id":"specs/mejor-busqueda/tasks/01-tarea-a","expected_hash":"{hash}","remove_tags":["status-pending"],"add_tags":["status-done"],"reason":"completada con evidencia"}}"#
+        ),
+    );
+
+    let status = call(&mut tools, "spec_status", r#"{"spec_id":"specs/mejor-busqueda"}"#);
+    assert_eq!(as_f64(status.get("by_status").unwrap().get("done").unwrap()), 1.0);
 }
 
 #[test]

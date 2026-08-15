@@ -755,14 +755,38 @@ where
             .and_then(|v| v.as_array())
             .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
             .unwrap_or_default();
-        let add_tags = args.get("add_tags")
+        let add_tags: Vec<String> = args.get("add_tags")
             .and_then(|v| v.as_array())
             .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
             .unwrap_or_default();
-        let remove_tags = args.get("remove_tags")
+        let remove_tags: Vec<String> = args.get("remove_tags")
             .and_then(|v| v.as_array())
             .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
             .unwrap_or_default();
+
+        // Gauntlet de old-coder (github.com/AmazingAng/old-coder), aplicado
+        // a `type: task`: "failing gauntlet blocks done" — el patch que
+        // pondría `status-done` se rechaza si el cuerpo del documento no
+        // tiene ya una sección `## Evidencia` (comandos + resultados reales,
+        // añadida antes con `memory_commit`). `memory_patch` sigue sin tocar
+        // el cuerpo; solo lee el que ya está comiteado.
+        if current_view.doc_type == "task" {
+            let mut final_tags: Vec<&str> = current_view.tags.iter().map(String::as_str).collect();
+            final_tags.retain(|t| !remove_tags.iter().any(|r| r == t));
+            for t in &add_tags {
+                if !final_tags.contains(&t.as_str()) {
+                    final_tags.push(t);
+                }
+            }
+            if final_tags.contains(&"status-done") && !has_gauntlet_evidence(&current_view.raw) {
+                return Err(ToolError::InvalidArguments(
+                    "no se puede poner status-done en una tarea sin una sección '## Evidencia' \
+                     en el cuerpo (comandos ejecutados y resultados reales — gauntlet de \
+                     old-coder, github.com/AmazingAng/old-coder); añádela primero con \
+                     memory_commit y luego reintenta el patch".to_string(),
+                ));
+            }
+        }
 
         let patch = okf_core::FrontmatterPatch {
             set: set_fields,
@@ -1387,6 +1411,21 @@ fn status_tag(tags: &[String]) -> &str {
     tags.iter()
         .find_map(|t| t.strip_prefix("status-"))
         .unwrap_or("unknown")
+}
+
+/// El gauntlet de EVIDENCE de old-coder (github.com/AmazingAng/old-coder)
+/// aplicado a una `task`: hace falta una sección `## Evidencia` con
+/// contenido real (comandos ejecutados, resultados con números), no un
+/// título vacío. Heurística deliberadamente simple — igual que
+/// `spec_propose`/`spec_tasks`, pura convención sobre Markdown, sin
+/// esquema nuevo: cuenta los caracteres no vacíos entre el encabezado y
+/// el siguiente `## ` (o el final del documento).
+fn has_gauntlet_evidence(raw: &str) -> bool {
+    let Some(idx) = raw.find("## Evidencia") else { return false };
+    let after = &raw[idx..];
+    let body_start = after.find('\n').map(|i| i + 1).unwrap_or(after.len());
+    let section = after[body_start..].split("\n## ").next().unwrap_or("");
+    section.trim().chars().count() >= 40
 }
 
 /// Esquema JSON mínimo: `{"type":"object","properties":{...},"required":[...]}`.
