@@ -388,6 +388,40 @@ estado, el progreso (0-1), y dos listas separadas calculadas con `backlinks()`
   otra tarea. No aparecen en `next_pending` hasta que su dependencia se
   marque `done`.
 
+#### Gauntlet de evidencia antes de `status-done`
+
+El paso a `status-done` de una tarea está **enforced**, no solo documentado:
+`memory_patch` rechaza el patch si el cuerpo del documento no tiene ya una
+sección `## Evidencia` con contenido real (comandos ejecutados y resultados
+con números, no un título vacío). Es el patrón EVIDENCE de
+[old-coder](https://github.com/AmazingAng/old-coder) — "el humano no lee la
+implementación, su confianza viene de dos artefactos: una especificación
+ejecutable aprobada antes de escribir código, y un reporte de evidencia
+después" — aplicado sobre el flujo `spec_propose`/`spec_tasks`/`spec_status`
+ya existente, sin tool nuevo ni esquema nuevo: `spec_propose` ya cubre el
+gate SPEC (requisitos + diseño aprobados antes de implementar); este gate
+cubre EVIDENCE.
+
+```json
+{"name":"memory_commit","arguments":{
+  "concept_id":"specs/busqueda-hibrida-real/tasks/01-normalizar-coseno",
+  "expected_hash":"<hash del memory_resolve previo>",
+  "markdown":"<markdown existente>\n## Evidencia\n\ncargo test -p store-core: 12 passed; 0 failed. coverage líneas cambiadas: 100% (9/9).\n",
+  "reason":"evidencia del gauntlet"
+}}
+```
+
+Solo entonces acepta `memory_patch` el `add_tags: ["status-done"]`. La
+heurística es deliberadamente simple (cuenta caracteres no vacíos tras el
+encabezado) — no sustituye un gauntlet real de CI (tests, cobertura,
+mutación), solo evita que una tarea se marque `done` sin dejar rastro de
+por qué. El propio workflow de CI
+([`.github/workflows/rust.yml`](.github/workflows/rust.yml)) añade la capa
+de lint del gauntlet: `cargo clippy --workspace --all-targets -- -D
+warnings`, que falla (exit nonzero) en vez de solo reportar — la regla de
+old-coder de que "imprimir el % y salir con 0 es un reporte, no una
+restricción".
+
 ## Desplegar en Vercel
 
 1. En el dashboard de Vercel: **Add New Project** → importa
