@@ -71,6 +71,7 @@ pub fn run_all<R: MemoryRepository + StoreMaintenance>(mut mk: impl FnMut() -> R
     documento_invalido_no_deja_rastro(mk());
     inexistente_es_none_y_notfound(mk());
     busqueda_respeta_filtros_y_limite(mk());
+    busqueda_excluye_por_exclude_type(mk());
     historia_reciente_primero_y_paginada(mk());
     borrar_exige_cas_y_oculta_el_documento(mk());
     recrear_tras_borrar_continua_la_historia(mk());
@@ -157,6 +158,7 @@ pub fn busqueda_respeta_filtros_y_limite<R: MemoryRepository>(mut repo: R) {
     let q = |text: Option<&str>, ty: Option<&str>, tag: Option<&str>, limit: Option<usize>| SearchQuery {
         text: text.map(String::from),
         doc_type: ty.map(String::from),
+        exclude_type: None,
         tag: tag.map(String::from),
         path_prefix: None,
         limit,
@@ -166,6 +168,36 @@ pub fn busqueda_respeta_filtros_y_limite<R: MemoryRepository>(mut repo: R) {
     assert_eq!(repo.search(&q(None, None, Some("rust"), None), &budget).unwrap().len(), 1);
     assert_eq!(repo.search(&q(None, None, None, Some(1)), &budget).unwrap().len(), 1, "limit corta");
     assert!(repo.search(&q(Some("nada-de-esto"), None, None, None), &budget).unwrap().is_empty());
+}
+
+/// `exclude_type` es lo contrario de `doc_type`: descarta esa clase en
+/// vez de exigirla. Cubre la ausencia de "búsqueda por `not type:X`"
+/// sin requerir post-filtrado del lado del agente.
+pub fn busqueda_excluye_por_exclude_type<R: MemoryRepository>(mut repo: R) {
+    commit(&mut repo, "people/ana", None,
+        "---\ntype: person\ntitle: Ana\n---\nIngeniera\n").unwrap();
+    commit(&mut repo, "tasks/uno", None,
+        "---\ntype: task\ntitle: Uno\n---\nPendiente\n").unwrap();
+    commit(&mut repo, "tasks/dos", None,
+        "---\ntype: task\ntitle: Dos\n---\nPendiente\n").unwrap();
+
+    let budget = Budget::default();
+    let without_tasks = SearchQuery {
+        exclude_type: Some("task".to_string()),
+        ..SearchQuery::default()
+    };
+    let hits = repo.search(&without_tasks, &budget).unwrap();
+    assert_eq!(hits.len(), 1, "solo queda el 'person'");
+    assert_eq!(hits[0].concept_id, id("people/ana"));
+
+    // Combinado con AND: exigir 'task' y excluir 'task' a la vez nunca
+    // devuelve nada.
+    let contradictory = SearchQuery {
+        doc_type: Some("task".to_string()),
+        exclude_type: Some("task".to_string()),
+        ..SearchQuery::default()
+    };
+    assert!(repo.search(&contradictory, &budget).unwrap().is_empty());
 }
 
 /// La historia sale de más reciente a más antigua y `before_seq`

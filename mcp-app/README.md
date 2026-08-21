@@ -1,7 +1,7 @@
 # okf-memory MCP app
 
-Interactive UI for the 17 tools exposed by
-[`crates/memory-tools`](../crates/memory-tools) — the 13 `memory_*`
+Interactive UI for the 20 tools exposed by
+[`crates/memory-tools`](../crates/memory-tools) — the 16 `memory_*`
 tools plus `spec_propose`/`spec_tasks`/`spec_status`/`skill_ingest`.
 React + TypeScript + Vite, compiled to a single self-contained
 `dist/mcp-app.html` that the Rust server embeds at compile time via
@@ -51,8 +51,8 @@ deliberately not `app.sendMessage`, which would inject a visible fake
 user turn): when a human re-runs a write or diagnostic tool from
 inside the UI with arguments the model never saw
 (`memory_commit`/`memory_patch`/`memory_delete`/`memory_bulk_commit`/
-`memory_validate`/`spec_propose`/`spec_tasks`/`spec_status`/
-`skill_ingest`), that result only exists in the browser. This button
+`memory_bulk_patch`/`memory_validate`/`spec_propose`/`spec_tasks`/
+`spec_status`/`skill_ingest`), that result only exists in the browser. This button
 folds a summary into the model's context for its next turn, silently.
 It's gated on `useServerTool`'s `isManual` flag — it never fires for
 the initial host-provided result, since the model already has that
@@ -105,7 +105,7 @@ mcp-app/
 │   │       ├── provider/McpProvider.tsx  SDK bridge: host context, result cache, theme sync
 │   │       └── logger/          Toast + host log integration
 │   ├── lib/
-│   │   ├── mcp-types.ts         TS mirrors of the 17 tools' JSON response shapes
+│   │   ├── mcp-types.ts         TS mirrors of the tools' JSON response shapes
 │   │   └── tool-result.ts       Parses CallToolResult -> typed payload
 │   ├── shared/
 │   │   ├── components/ui/       shadcn-style primitives (Base UI under the hood)

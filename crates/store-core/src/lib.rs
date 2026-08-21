@@ -85,6 +85,13 @@ pub struct SearchQuery {
     pub text: Option<String>,
     /// Igualdad exacta sobre el campo `type` del frontmatter.
     pub doc_type: Option<String>,
+    /// Excluye los documentos cuyo `type` sea EXACTAMENTE este valor
+    /// (lo contrario de `doc_type`). Compatible con `not type:X` sin
+    /// necesitar post-filtrado del lado del agente — p. ej. buscar
+    /// todo menos `type: task`. Se combina con AND igual que el
+    /// resto: `doc_type` y `exclude_type` a la vez son válidos (y, si
+    /// coinciden, el resultado siempre está vacío).
+    pub exclude_type: Option<String>,
     /// Pertenencia exacta en la lista de tags.
     pub tag: Option<String>,
     /// Prefijo de ruta lógica, por segmentos completos: `people`
@@ -299,7 +306,10 @@ pub trait MemoryRepository {
     fn get(&self, id: &ConceptId) -> Result<Option<DocumentView>, StoreError>;
 
     /// Candidatos que cumplen TODOS los criterios de `query`,
-    /// nunca más de `budget.max_search_results`.
+    /// nunca más de `budget.max_search_results`. Los documentos
+    /// borrados lógicamente (ver [`MemoryRepository::delete`]) quedan
+    /// SIEMPRE excluidos, sin que el llamador tenga que pedirlo — es
+    /// responsabilidad del backend, no del agente ni del cliente MCP.
     fn search(&self, query: &SearchQuery, budget: &Budget) -> Result<Vec<SearchHit>, StoreError>;
 
     /// Escritura con compare-and-swap: valida el documento, compara
