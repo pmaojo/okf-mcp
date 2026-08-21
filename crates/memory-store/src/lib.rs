@@ -30,9 +30,11 @@ use memory_model::{Budget, ConceptId, ContentId, Principal, Revision};
 use okf_core::Link;
 use store_core::{
     matches_prefix, Backlink, BulkItem, BulkOutcome, CommitOutcome, CommitRequest, DeleteOutcome,
-    DocumentView, EmbedOutcome, GraphStats, LinkHealth, MemoryRepository, SearchHit, SearchQuery,
-    StoreError, StoreMaintenance, StoreStatus, ValidationReport,
+    DocHint, DocumentView, EmbedOutcome, GraphStats, HeadHintSource, HintedRepository, LinkHealth,
+    MemoryRepository, SearchHit, SearchQuery, StoreError, StoreMaintenance, StoreStatus,
+    ValidationReport,
 };
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap};
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -105,6 +107,13 @@ pub struct InMemoryStore {
     /// reescrito conserva su última clausura razonada hasta que
     /// alguien vuelva a llamar a `memory_reason` sobre él.
     triples: BTreeMap<ConceptId, Vec<ontology_core::Triple>>,
+    /// Contador para [`HeadHintSource::reserve_seq`]: solo existe para
+    /// que `IndexedStore<InMemoryStore, InMemoryStore>` (el contrato
+    /// de `IndexedStore` en los tests) tenga con qué implementar el
+    /// trait — `InMemoryStore` no tiene un backend caro que optimizar,
+    /// así que su `head_hint` siempre es `None` y este valor nunca
+    /// llega a usarse para decidir un CAS real.
+    hint_seq: Cell<u64>,
 }
 
 impl InMemoryStore {
@@ -422,6 +431,55 @@ impl MemoryRepository for InMemoryStore {
                 Ok(BulkOutcome { applied: false, items })
             }
         }
+    }
+}
+
+/// `InMemoryStore` no tiene un backend caro que optimizar (ver
+/// `GithubStore` para el caso real que motiva
+/// [`HintedRepository`]/[`HeadHintSource`]): implementa ambos traits
+/// de la forma más simple posible — sin pista nunca, delegando siempre
+/// en su propio `commit`/`delete` — solo para que
+/// `IndexedStore<InMemoryStore, InMemoryStore>` compile y el contrato
+/// de `IndexedStore` pueda ejercitarse en los tests sin necesitar
+/// GitHub ni Supabase de verdad.
+impl HeadHintSource for InMemoryStore {
+    fn head_hint(&self, _id: &ConceptId) -> Result<Option<DocHint>, StoreError> {
+        Ok(None)
+    }
+
+    fn set_write_token(&self, _id: &ConceptId, _token: &str) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    fn reserve_seq(&self) -> Result<u64, StoreError> {
+        let next = self.hint_seq.get() + 1;
+        self.hint_seq.set(next);
+        Ok(next)
+    }
+}
+
+impl HintedRepository for InMemoryStore {
+    fn commit_hinted(
+        &mut self,
+        request: CommitRequest,
+        actor: &Principal,
+        budget: &Budget,
+        _hint: Option<DocHint>,
+        _next_seq: u64,
+    ) -> Result<(CommitOutcome, Option<String>), StoreError> {
+        Ok((self.commit(request, actor, budget)?, None))
+    }
+
+    fn delete_hinted(
+        &mut self,
+        id: &ConceptId,
+        expected: ContentId,
+        actor: &Principal,
+        reason: String,
+        _hint: Option<DocHint>,
+        _next_seq: u64,
+    ) -> Result<DeleteOutcome, StoreError> {
+        self.delete(id, expected, actor, reason)
     }
 }
 

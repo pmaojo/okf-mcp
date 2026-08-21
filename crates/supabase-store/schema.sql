@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS heads (
     doc_type VARCHAR(100) NOT NULL,
     title VARCHAR(255),
     tags TEXT[] NOT NULL,
-    deleted_at TIMESTAMP WITH TIME ZONE -- borrado lógico: NULL = vivo
+    deleted_at TIMESTAMP WITH TIME ZONE, -- borrado lógico: NULL = vivo
+    github_file_sha VARCHAR(64) -- blob sha de git (token CAS de GithubStore); NULL = no capturado todavía
 );
 
 CREATE TABLE IF NOT EXISTS revisions (
@@ -82,6 +83,18 @@ CREATE INDEX IF NOT EXISTS idx_triples_subject ON triples(subject_id);
 -- de una versión anterior sin las columnas nuevas. ADD COLUMN IF NOT
 -- EXISTS es idempotente y no toca los datos existentes.
 ALTER TABLE heads ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE heads ADD COLUMN IF NOT EXISTS github_file_sha VARCHAR(64);
+
+-- Secuencia global para el `seq` de Memory-Rev: cuando GithubStore
+-- toma el camino barato (HintedRepository, ver store-core), no releo
+-- todo el historial de commits antes de escribir, así que dos
+-- escrituras concurrentes necesitan una fuente atómica compartida
+-- para no derivar el mismo número por separado — eso es justo lo que
+-- da una SEQUENCE de Postgres (nextval() es atómico bajo concurrencia
+-- por construcción). Los huecos que deje (reservas de commits que
+-- resultaron NoChange, o de una escritura que acabó cayendo al camino
+-- completo) son inofensivos: solo importa que nunca repita un número.
+CREATE SEQUENCE IF NOT EXISTS github_memory_rev_seq;
 ALTER TABLE links ADD COLUMN IF NOT EXISTS rel VARCHAR(64);
 ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS content_id VARCHAR(64);
 ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS embedding_model VARCHAR(64) NOT NULL DEFAULT 'gemini:gemini-embedding-001@768';

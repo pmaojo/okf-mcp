@@ -24,7 +24,30 @@
 //! sha de HEAD: si la rama no se movió, ninguna operación de lectura
 //! vuelve a la red. Tras una escritura propia el snapshot se
 //! actualiza en sitio. Esto es honesto con el coste real: sin un
-//! índice derivado, buscar en GitHub ES leerse el repo.
+//! índice derivado, buscar en GitHub ES leerse el repo — construir ese
+//! snapshot desde cero cuesta 1 GET del árbol + 1 GET por documento
+//! vivo + el historial completo de commits paginado.
+//!
+//! Estrategia de escritura bajo `IndexedStore<GithubStore,
+//! SupabaseStore>` ([`HintedRepository`]): pagar ese snapshot completo
+//! en CADA `commit`/`delete` es inviable en serverless, donde la
+//! caché en memoria de este proceso rara vez sobrevive entre
+//! invocaciones. Como Supabase ya mantiene una copia sincronizada de
+//! la cabeza de cada documento (`content_id`, `version`,
+//! `github_file_sha`), `IndexedStore` se la pasa como pista
+//! ([`DocHint`]) y este adaptador decide el CAS leyéndola en vez de
+//! reconstruirla — cae al snapshot completo solo si la pista falta,
+//! si el PUT/DELETE choca con un 409 real, o si Supabase no tiene fila
+//! todavía. El número de revisión (`seq`) para ese camino barato
+//! NUNCA se calcula aquí: lo reserva `IndexedStore` de una secuencia
+//! atómica en Postgres ANTES de escribir, precisamente porque el
+//! camino barato no relee el historial que normalmente coordinaría
+//! escrituras concurrentes — sin esa reserva compartida, dos
+//! escrituras a conceptos distintos podrían derivar el mismo `seq` por
+//! separado y corromper el orden que asume la reconstrucción de
+//! versiones. El camino completo trata ese valor como un SUELO, nunca
+//! como definitivo: nunca escribe por debajo de lo que su propio
+//! historial ya muestra.
 //!
 //! Limitaciones conocidas del prototipo (hallazgos, no descuidos):
 //! - los saltos de línea del `reason` se aplanan a espacios (viven en
@@ -34,7 +57,14 @@
 //!   ediciones humanas necesitaría sintetizar revisiones desde los
 //!   commits ajenos;
 //! - la búsqueda es textual: sin índice semántico, `embed_pending`
-//!   devuelve vacío igual que `InMemoryStore`.
+//!   devuelve vacío igual que `InMemoryStore`;
+//! - `commit_bulk` en modo atómico sigue calculando su `seq` por
+//!   replay local (no reserva de Supabase): una escritura simultánea
+//!   por el camino barato a un concepto distinto podría, en teoría,
+//!   coincidir con un número que ese replay calcule de forma
+//!   independiente — una ventana estrecha, y de todos modos el mismo
+//!   perfil de concurrencia que ya tenía cualquier escritor de git sin
+//!   lock distribuido.
 
 #![forbid(unsafe_code)]
 
@@ -49,8 +79,9 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use store_core::{
     matches_prefix, Backlink, BulkItem, BulkOutcome, CommitOutcome, CommitRequest, DeleteOutcome,
-    DocumentView, EmbedOutcome, GraphStats, LinkHealth, MemoryRepository, SearchHit, SearchQuery,
-    StoreError, StoreMaintenance, StoreStatus, ValidationReport,
+    DocHint, DocumentView, EmbedOutcome, GraphStats, HintedRepository, LinkHealth,
+    MemoryRepository, SearchHit, SearchQuery, StoreError, StoreMaintenance, StoreStatus,
+    ValidationReport,
 };
 
 fn block_on<F: std::future::Future>(fut: F) -> F::Output {
@@ -502,6 +533,7 @@ impl GithubStore {
         *self.cache.lock().unwrap() = Some(snap);
     }
 
+
     // ---- escrituras ---------------------------------------------------
 
     async fn put_file(
@@ -590,11 +622,18 @@ impl GithubStore {
     /// Decide un commit contra el snapshot SIN tocar la red: la misma
     /// lógica pura que `InMemoryStore`, compartida entre el commit
     /// individual y la simulación del lote atómico.
+    ///
+    /// `next_seq` es el número que llevará la revisión si hay
+    /// escritura — normalmente `snap.next_seq` (el propio historial
+    /// replay), pero el camino con pista externa
+    /// ([`HintedRepository`]) puede pasar un valor reservado
+    /// atómicamente en otro sitio (ver [`GithubStore::commit_with_seq`]).
     fn decide_commit(
         snap: &Snapshot,
         request: &CommitRequest,
         actor: &Principal,
         budget: &Budget,
+        next_seq: u64,
     ) -> Result<DecidedCommit, StoreError> {
         let doc = okf_core::parse_document(&request.markdown, budget)?;
         let incoming = ContentId(hash_core::sha256(request.markdown.as_bytes()));
@@ -623,7 +662,7 @@ impl GithubStore {
                     .unwrap_or(0);
                 let version = prev_version + 1;
                 let revision = Revision {
-                    seq: snap.next_seq,
+                    seq: next_seq,
                     concept_id: request.concept_id.clone(),
                     base,
                     result: incoming,
@@ -673,6 +712,103 @@ impl GithubStore {
         );
         snap.revisions.push(revision.clone());
         snap.next_seq = revision.seq + 1;
+    }
+
+    /// El cuerpo real de `commit`: decide y escribe usando
+    /// `max(snap.next_seq, min_seq)` como número de revisión — NUNCA
+    /// por debajo de lo que el propio historial de git ya muestra,
+    /// aunque `min_seq` (una reserva externa, ver
+    /// [`HintedRepository::commit_hinted`]) venga desactualizada.
+    /// Devuelve también el nuevo `file_sha` del archivo (si hubo
+    /// escritura) para que el llamador con pista externa pueda
+    /// reportarlo sin tener que fiarse de la caché.
+    fn commit_with_seq(
+        &mut self,
+        request: CommitRequest,
+        actor: &Principal,
+        budget: &Budget,
+        min_seq: u64,
+    ) -> Result<(CommitOutcome, Option<String>), StoreError> {
+        let mut snap = self.snapshot()?;
+        let seq = snap.next_seq.max(min_seq);
+        let decided = Self::decide_commit(&snap, &request, actor, budget, seq)?;
+        match &decided {
+            DecidedCommit::NoChange { outcome } => Ok((outcome.clone(), None)),
+            DecidedCommit::Write { created, version, revision, .. } => {
+                let path = self.doc_path(&request.concept_id);
+                let message = format!(
+                    "{}\n\n{}",
+                    revision.reason.replace(['\n', '\r'], " "),
+                    encode_rev(&RevOp::Commit, revision, *version)
+                );
+                let file_sha = snap.live.get(&request.concept_id).map(|d| d.file_sha.clone());
+                let resp = block_on(self.put_file(
+                    &path,
+                    &request.markdown,
+                    &message,
+                    file_sha.as_deref(),
+                ))?;
+                let outcome = CommitOutcome {
+                    revision: Some(revision.clone()),
+                    content_id: revision.result,
+                    version: *version,
+                    created: *created,
+                    no_change: false,
+                };
+                let new_file_sha = resp.content.map(|c| c.sha).unwrap_or_default();
+                Self::apply_write(&mut snap, &request.concept_id, &request.markdown, &decided, new_file_sha.clone());
+                snap.head_sha = resp.commit.sha;
+                self.store_cache(snap);
+                Ok((outcome, Some(new_file_sha)))
+            }
+        }
+    }
+
+    /// Igual que `delete`, pero con el mismo `max(snap.next_seq,
+    /// min_seq)` que [`Self::commit_with_seq`] — ver ahí el motivo.
+    fn delete_with_seq(
+        &mut self,
+        id: &ConceptId,
+        expected: ContentId,
+        actor: &Principal,
+        reason: String,
+        min_seq: u64,
+    ) -> Result<DeleteOutcome, StoreError> {
+        let mut snap = self.snapshot()?;
+        let Some(doc) = snap.live.get(id).cloned() else {
+            return Err(StoreError::NotFound(id.clone()));
+        };
+        if doc.content_id != expected {
+            return Err(StoreError::Conflict(Conflict {
+                expected: Some(expected),
+                current: Some(doc.content_id),
+                incoming: expected,
+            }));
+        }
+        let seq = snap.next_seq.max(min_seq);
+        let revision = Revision {
+            seq,
+            concept_id: id.clone(),
+            base: Some(doc.content_id),
+            result: doc.content_id,
+            actor: actor.clone(),
+            reason,
+        };
+        let message = format!(
+            "{}\n\n{}",
+            revision.reason.replace(['\n', '\r'], " "),
+            encode_rev(&RevOp::Delete, &revision, doc.version)
+        );
+        let resp = block_on(self.delete_file(&self.doc_path(id), &message, &doc.file_sha))?;
+
+        snap.live.remove(id);
+        snap.gone.insert(id.clone(), GoneDoc { version: doc.version });
+        snap.revisions.push(revision.clone());
+        snap.next_seq = revision.seq + 1;
+        snap.head_sha = resp.commit.sha;
+        self.store_cache(snap);
+
+        Ok(DeleteOutcome { content_id: doc.content_id, version: doc.version, revision })
     }
 }
 
@@ -748,38 +884,10 @@ impl MemoryRepository for GithubStore {
         actor: &Principal,
         budget: &Budget,
     ) -> Result<CommitOutcome, StoreError> {
-        let mut snap = self.snapshot()?;
-        let decided = Self::decide_commit(&snap, &request, actor, budget)?;
-        match &decided {
-            DecidedCommit::NoChange { outcome } => Ok(outcome.clone()),
-            DecidedCommit::Write { created, version, revision, .. } => {
-                let path = self.doc_path(&request.concept_id);
-                let message = format!(
-                    "{}\n\n{}",
-                    revision.reason.replace(['\n', '\r'], " "),
-                    encode_rev(&RevOp::Commit, revision, *version)
-                );
-                let file_sha = snap.live.get(&request.concept_id).map(|d| d.file_sha.clone());
-                let resp = block_on(self.put_file(
-                    &path,
-                    &request.markdown,
-                    &message,
-                    file_sha.as_deref(),
-                ))?;
-                let outcome = CommitOutcome {
-                    revision: Some(revision.clone()),
-                    content_id: revision.result,
-                    version: *version,
-                    created: *created,
-                    no_change: false,
-                };
-                let new_file_sha = resp.content.map(|c| c.sha).unwrap_or_default();
-                Self::apply_write(&mut snap, &request.concept_id, &request.markdown, &decided, new_file_sha);
-                snap.head_sha = resp.commit.sha;
-                self.store_cache(snap);
-                Ok(outcome)
-            }
-        }
+        // `min_seq = 0` no fuerza nada: `snap.next_seq` (>= 1 siempre)
+        // gana el `max` — este es el camino autosuficiente de siempre,
+        // que se calcula su propio `seq` recorriendo el historial.
+        Ok(self.commit_with_seq(request, actor, budget, 0)?.0)
     }
 
     fn history(
@@ -813,40 +921,7 @@ impl MemoryRepository for GithubStore {
         actor: &Principal,
         reason: String,
     ) -> Result<DeleteOutcome, StoreError> {
-        let mut snap = self.snapshot()?;
-        let Some(doc) = snap.live.get(id).cloned() else {
-            return Err(StoreError::NotFound(id.clone()));
-        };
-        if doc.content_id != expected {
-            return Err(StoreError::Conflict(Conflict {
-                expected: Some(expected),
-                current: Some(doc.content_id),
-                incoming: expected,
-            }));
-        }
-        let revision = Revision {
-            seq: snap.next_seq,
-            concept_id: id.clone(),
-            base: Some(doc.content_id),
-            result: doc.content_id,
-            actor: actor.clone(),
-            reason,
-        };
-        let message = format!(
-            "{}\n\n{}",
-            revision.reason.replace(['\n', '\r'], " "),
-            encode_rev(&RevOp::Delete, &revision, doc.version)
-        );
-        let resp = block_on(self.delete_file(&self.doc_path(id), &message, &doc.file_sha))?;
-
-        snap.live.remove(id);
-        snap.gone.insert(id.clone(), GoneDoc { version: doc.version });
-        snap.revisions.push(revision.clone());
-        snap.next_seq = revision.seq + 1;
-        snap.head_sha = resp.commit.sha;
-        self.store_cache(snap);
-
-        Ok(DeleteOutcome { content_id: doc.content_id, version: doc.version, revision })
+        self.delete_with_seq(id, expected, actor, reason, 0)
     }
 
     fn backlinks(&self, id: &ConceptId) -> Result<Vec<Backlink>, StoreError> {
@@ -891,7 +966,7 @@ impl MemoryRepository for GithubStore {
                 items.push(BulkItem::Skipped);
                 continue;
             }
-            match Self::decide_commit(&speculative, req, actor, budget) {
+            match Self::decide_commit(&speculative, req, actor, budget, speculative.next_seq) {
                 Err(e) => {
                     failed_at = Some(idx);
                     items.push(BulkItem::Failed(e));
@@ -1003,6 +1078,152 @@ impl MemoryRepository for GithubStore {
         // lógico del lote ya quedó confirmado en git.
         *self.cache.lock().unwrap() = None;
         Ok(BulkOutcome { applied: true, items })
+    }
+}
+
+/// Camino barato de `commit`/`delete`: decide el CAS contra la pista
+/// que `IndexedStore` lee de Supabase en vez de `self.snapshot()`. Sin
+/// pista (o si no se puede derivar el próximo `seq` de forma barata,
+/// o si la escritura choca con un 409 real) cae al camino completo de
+/// [`MemoryRepository`], que es honesto y siempre correcto — solo caro.
+impl GithubStore {
+}
+
+/// Camino barato de `commit`/`delete`: decide el CAS contra la pista
+/// que `IndexedStore` lee de Supabase, y numera la revisión con el
+/// `next_seq` que ese mismo llamador reservó ATÓMICAMENTE en Postgres
+/// (ver `HeadHintSource::reserve_seq`) — nunca calculándolo aquí. Sin
+/// eso, dos escrituras concurrentes por este camino (que a propósito
+/// NO releen el historial antes de escribir) podrían derivar el mismo
+/// `seq` de forma independiente y corromper el orden de
+/// reconstrucción de versiones que hace `build_snapshot`. Sin pista
+/// (o si la escritura choca con un 409 real) cae a
+/// `commit_with_seq`/`delete_with_seq` — el camino completo, que
+/// nunca escribe un `seq` por debajo de lo que su propio historial
+/// replay ya muestra, así que sigue siendo correcto aunque la reserva
+/// externa quedara desactualizada.
+impl HintedRepository for GithubStore {
+    fn commit_hinted(
+        &mut self,
+        request: CommitRequest,
+        actor: &Principal,
+        budget: &Budget,
+        hint: Option<DocHint>,
+        next_seq: u64,
+    ) -> Result<(CommitOutcome, Option<String>), StoreError> {
+        let Some(hint) = hint else {
+            return self.commit_with_seq(request, actor, budget, next_seq);
+        };
+
+        // Validar el documento y decidir el CAS con la cabeza que
+        // reporta la pista: ninguna de las dos cosas toca la red.
+        okf_core::parse_document(&request.markdown, budget)?;
+        let incoming = ContentId(hash_core::sha256(request.markdown.as_bytes()));
+        let decision = decide(hint.live_content_id, request.expected, incoming);
+
+        match decision {
+            CommitDecision::Conflict(c) => Err(StoreError::Conflict(c)),
+            CommitDecision::NoChange => Ok((
+                CommitOutcome {
+                    revision: None,
+                    content_id: hint.live_content_id.expect("NoChange implica cabeza viva"),
+                    version: hint.version,
+                    created: false,
+                    no_change: true,
+                },
+                None,
+            )),
+            CommitDecision::Create | CommitDecision::Update => {
+                let created = matches!(decision, CommitDecision::Create);
+                let version = hint.version + 1;
+                let revision = Revision {
+                    seq: next_seq,
+                    concept_id: request.concept_id.clone(),
+                    base: hint.live_content_id,
+                    result: incoming,
+                    actor: actor.clone(),
+                    reason: request.reason.clone(),
+                };
+                let message = format!(
+                    "{}\n\n{}",
+                    revision.reason.replace(['\n', '\r'], " "),
+                    encode_rev(&RevOp::Commit, &revision, version)
+                );
+                let path = self.doc_path(&request.concept_id);
+                match block_on(self.put_file(&path, &request.markdown, &message, hint.file_sha.as_deref())) {
+                    Ok(resp) => {
+                        // La caché en memoria (si algo la había repoblado en
+                        // esta misma instancia caliente) ya no refleja la
+                        // escritura que acabamos de confirmar sin pasar por
+                        // ella: se invalida para no servir un snapshot viejo.
+                        *self.cache.lock().unwrap() = None;
+                        let new_sha = resp.content.map(|c| c.sha).unwrap_or_default();
+                        Ok((
+                            CommitOutcome {
+                                revision: Some(revision),
+                                content_id: incoming,
+                                version,
+                                created,
+                                no_change: false,
+                            },
+                            Some(new_sha),
+                        ))
+                    }
+                    // La pista estaba obsoleta (branch avanzó bajo el file_sha
+                    // declarado, u otro fallo): el camino completo relee el
+                    // estado real y decide correctamente, sea un conflicto de
+                    // verdad o solo desincronía de Supabase. `next_seq` viaja
+                    // igual como suelo mínimo: `commit_with_seq` nunca lo usa
+                    // por debajo de lo que el propio replay ya muestra.
+                    Err(_) => self.commit_with_seq(request, actor, budget, next_seq),
+                }
+            }
+        }
+    }
+
+    fn delete_hinted(
+        &mut self,
+        id: &ConceptId,
+        expected: ContentId,
+        actor: &Principal,
+        reason: String,
+        hint: Option<DocHint>,
+        next_seq: u64,
+    ) -> Result<DeleteOutcome, StoreError> {
+        let Some(hint) = hint else {
+            return self.delete_with_seq(id, expected, actor, reason, next_seq);
+        };
+        let (Some(live_content_id), Some(file_sha)) = (hint.live_content_id, hint.file_sha.clone())
+        else {
+            return self.delete_with_seq(id, expected, actor, reason, next_seq);
+        };
+        if live_content_id != expected {
+            return Err(StoreError::Conflict(Conflict {
+                expected: Some(expected),
+                current: Some(live_content_id),
+                incoming: expected,
+            }));
+        }
+        let revision = Revision {
+            seq: next_seq,
+            concept_id: id.clone(),
+            base: Some(live_content_id),
+            result: live_content_id,
+            actor: actor.clone(),
+            reason: reason.clone(),
+        };
+        let message = format!(
+            "{}\n\n{}",
+            revision.reason.replace(['\n', '\r'], " "),
+            encode_rev(&RevOp::Delete, &revision, hint.version)
+        );
+        match block_on(self.delete_file(&self.doc_path(id), &message, &file_sha)) {
+            Ok(_resp) => {
+                *self.cache.lock().unwrap() = None;
+                Ok(DeleteOutcome { content_id: live_content_id, version: hint.version, revision })
+            }
+            Err(_) => self.delete_with_seq(id, expected, actor, reason, next_seq),
+        }
     }
 }
 
