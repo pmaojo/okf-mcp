@@ -4,8 +4,8 @@ use gemini_embeddings::embed_query;
 use hash_core::sha256;
 use memory_model::{Budget, ConceptId, ContentId, Principal, Revision};
 use store_core::{
-    Backlink, BulkItem, BulkOutcome, CommitOutcome, CommitRequest, DeleteOutcome, DocumentView,
-    MemoryRepository, SearchHit, SearchQuery, StoreError,
+    Backlink, BulkItem, BulkOutcome, CommitOutcome, CommitRequest, DeleteOutcome, DocHint,
+    DocumentView, HeadHintSource, MemoryRepository, SearchHit, SearchQuery, StoreError,
 };
 use sqlx::postgres::PgRow;
 use sqlx::{Postgres, Row, Transaction};
@@ -622,5 +622,73 @@ impl MemoryRepository for SupabaseStore {
         }?;
 
         Ok(res)
+    }
+}
+
+impl HeadHintSource for SupabaseStore {
+    fn head_hint(&self, id: &ConceptId) -> Result<Option<DocHint>, StoreError> {
+        let row = crate::block_on! {
+            pg_query(
+                "SELECT content_id, version, github_file_sha, (deleted_at IS NOT NULL) AS is_deleted
+                 FROM heads WHERE concept_id = $1",
+            )
+            .bind(id.as_str())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))
+        }?;
+
+        let Some(row) = row else {
+            // Sin fila: primera escritura de este concepto (o el índice
+            // todavía no la sincronizó) — sin pista, el backend de
+            // escritura debe recurrir a su camino completo.
+            return Ok(None);
+        };
+
+        let version: i64 = row.get("version");
+        let is_deleted: bool = row.get("is_deleted");
+        if is_deleted {
+            return Ok(Some(DocHint { live_content_id: None, version: version as u64, file_sha: None }));
+        }
+
+        // Una fila viva sin `github_file_sha` capturado (migrada desde
+        // antes de esta columna) no da un token CAS utilizable: sin él
+        // no hay pista barata posible, así que se pide el camino
+        // completo en vez de arriesgar un PUT sin sha contra un
+        // archivo que sí existe.
+        let file_sha: Option<String> = row.get("github_file_sha");
+        let Some(file_sha) = file_sha else { return Ok(None) };
+
+        let content_hex: String = row.get("content_id");
+        let content_id = ContentId::from_hex(&content_hex)
+            .ok_or_else(|| StoreError::Backend("hash de contenido corrupto en base de datos".to_string()))?;
+
+        Ok(Some(DocHint {
+            live_content_id: Some(content_id),
+            version: version as u64,
+            file_sha: Some(file_sha),
+        }))
+    }
+
+    fn set_write_token(&self, id: &ConceptId, token: &str) -> Result<(), StoreError> {
+        crate::block_on! {
+            pg_query("UPDATE heads SET github_file_sha = $1 WHERE concept_id = $2")
+                .bind(token)
+                .bind(id.as_str())
+                .execute(&self.pool)
+                .await
+                .map_err(|e| StoreError::Backend(e.to_string()))
+        }?;
+        Ok(())
+    }
+
+    fn reserve_seq(&self) -> Result<u64, StoreError> {
+        let seq: i64 = crate::block_on! {
+            pg_query_scalar::<i64>("SELECT nextval('github_memory_rev_seq')")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| StoreError::Backend(e.to_string()))
+        }?;
+        Ok(seq as u64)
     }
 }

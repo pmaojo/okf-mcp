@@ -370,6 +370,108 @@ pub trait MemoryRepository {
     ) -> Result<BulkOutcome, StoreError>;
 }
 
+/// Estado mínimo de un documento tal y como lo ve el índice de
+/// lectura (Supabase en `IndexedStore`), para que el backend de
+/// escritura pueda decidir un commit/delete sin releerse el repo
+/// entero. Cualquier campo que el índice no pueda garantizar al día
+/// se traduce en `None` desde [`HeadHintSource::head_hint`] — nunca en
+/// un valor adivinado.
+#[derive(Debug, Clone)]
+pub struct DocHint {
+    /// Hash de la cabeza viva; `None` si el concepto no existe o está
+    /// borrado lógicamente.
+    pub live_content_id: Option<ContentId>,
+    /// Última versión conocida (0 si el concepto nunca existió).
+    pub version: u64,
+    /// Token CAS de la escritura subyacente (p. ej. el blob sha de
+    /// git); `None` si no hay cabeza viva, o si el índice nunca llegó
+    /// a capturarlo.
+    pub file_sha: Option<String>,
+}
+
+/// Camino barato de escritura para un backend cuyo `commit`/`delete`
+/// normales (los de [`MemoryRepository`]) tienen un coste de red que
+/// crece con el tamaño del repositorio entero (el caso de
+/// `GithubStore`, que sin esto tendría que recorrerse todo el árbol y
+/// el historial de commits en cada escritura). Con la pista de un
+/// índice de lectura ya sincronizado ([`DocHint`]), el backend decide
+/// el compare-and-swap leyendo solo la cabeza — y recurre al camino
+/// completo de [`MemoryRepository`] cuando `hint` es `None`, cuando la
+/// pista resulta obsoleta (la rama avanzó por debajo) o cuando no
+/// puede derivar de forma barata lo que le falta.
+///
+/// `next_seq` (reservado por el llamador con
+/// [`HeadHintSource::reserve_seq`], NUNCA calculado aquí) es lo que
+/// hace seguro saltarse la relectura del historial: dos escrituras
+/// concurrentes por este camino no leen nada que las coordine entre
+/// sí, así que sin un contador compartido y atómico ambas podrían
+/// derivar el mismo número de forma independiente y corromper el
+/// orden que asume la reconstrucción de versiones a partir de los
+/// trailers `Memory-Rev:`. Un backend que además tiene que recurrir a
+/// su historial (porque la pista falta o resultó obsoleta) trata
+/// `next_seq` como un SUELO, nunca como el valor final: nunca escribe
+/// una revisión por debajo de lo que su propio historial ya muestra,
+/// así que sigue siendo correcto incluso con una reserva
+/// desactualizada.
+pub trait HintedRepository {
+    /// Igual que [`MemoryRepository::commit`], pero además de la
+    /// salida habitual devuelve el nuevo token CAS de la escritura
+    /// (p. ej. el blob sha) cuando el commit cambió el archivo —
+    /// `None` si no hubo escritura o si se recurrió al camino
+    /// completo. El llamador ([`indexed_store::IndexedStore`]) lo
+    /// persiste en el índice para que el PRÓXIMO commit pueda volver a
+    /// tomar este camino barato.
+    fn commit_hinted(
+        &mut self,
+        request: CommitRequest,
+        actor: &Principal,
+        budget: &Budget,
+        hint: Option<DocHint>,
+        next_seq: u64,
+    ) -> Result<(CommitOutcome, Option<String>), StoreError>;
+
+    /// Igual que [`MemoryRepository::delete`], con la misma pista, el
+    /// mismo `next_seq` reservado y el mismo criterio de cuándo
+    /// recurrir al camino completo.
+    fn delete_hinted(
+        &mut self,
+        id: &ConceptId,
+        expected: ContentId,
+        actor: &Principal,
+        reason: String,
+        hint: Option<DocHint>,
+        next_seq: u64,
+    ) -> Result<DeleteOutcome, StoreError>;
+}
+
+/// Fuente de pistas para [`HintedRepository`]: el índice de lectura
+/// que `IndexedStore` ya mantiene sincronizado con cada escritura
+/// (best-effort) y que por tanto puede responder por la cabeza de un
+/// concepto, y coordinar la numeración de revisiones, sin tocar el
+/// backend de escritura.
+pub trait HeadHintSource {
+    /// La pista vigente para `id`, o `None` si el índice no tiene fila
+    /// para ese concepto todavía (primera escritura, o el índice nunca
+    /// llegó a sincronizarla) — la señal para que el backend de
+    /// escritura recurra al camino completo.
+    fn head_hint(&self, id: &ConceptId) -> Result<Option<DocHint>, StoreError>;
+
+    /// Persiste el nuevo token CAS de una escritura ya confirmada por
+    /// el backend de escritura, para que el PRÓXIMO `head_hint` pueda
+    /// ofrecerlo.
+    fn set_write_token(&self, id: &ConceptId, token: &str) -> Result<(), StoreError>;
+
+    /// Reserva ATÓMICAMENTE el próximo número de una secuencia global
+    /// compartida por todos los escritores que pasan por este índice
+    /// (p. ej. una `SEQUENCE` de Postgres) — ver [`HintedRepository`]
+    /// para por qué esto, y no un cálculo local, es lo que hace seguro
+    /// el camino barato bajo concurrencia. Los huecos (números
+    /// reservados que terminan sin usarse, p. ej. por un commit que
+    /// resultó `NoChange`) son inofensivos: lo único que importa es
+    /// que dos llamadas nunca devuelvan el mismo número.
+    fn reserve_seq(&self) -> Result<u64, StoreError>;
+}
+
 /// Mantenimiento y observabilidad del almacén: validación del grafo,
 /// métricas, estado de salud e indexación semántica bajo demanda.
 ///

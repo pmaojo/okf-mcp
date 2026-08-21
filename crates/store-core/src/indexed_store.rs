@@ -1,7 +1,7 @@
 use crate::{
     Backlink, Budget, BulkOutcome, CommitOutcome, CommitRequest, DeleteOutcome, DocumentView,
-    GraphStats, LinkHealth, MemoryRepository, SearchHit, SearchQuery, StoreError, StoreMaintenance,
-    StoreStatus, ValidationReport, EmbedOutcome,
+    GraphStats, HeadHintSource, HintedRepository, LinkHealth, MemoryRepository, SearchHit,
+    SearchQuery, StoreError, StoreMaintenance, StoreStatus, ValidationReport, EmbedOutcome,
 };
 use memory_model::{ConceptId, ContentId, Principal, Revision};
 use graph_core::NeighborSource;
@@ -35,8 +35,8 @@ impl<G, S> IndexedStore<G, S> {
 
 impl<G, S> MemoryRepository for IndexedStore<G, S>
 where
-    G: MemoryRepository,
-    S: MemoryRepository,
+    G: MemoryRepository + HintedRepository,
+    S: MemoryRepository + HeadHintSource,
 {
     fn get(&self, id: &ConceptId) -> Result<Option<DocumentView>, StoreError> {
         // Las lecturas puntuales van a Supabase por rendimiento e indexación
@@ -69,17 +69,46 @@ where
         actor: &Principal,
         budget: &Budget,
     ) -> Result<CommitOutcome, StoreError> {
+        let concept_id = request.concept_id.clone();
         let req_for_supabase = request.clone();
-        
-        // 1. Escribir en la fuente de verdad (GitHub)
-        let outcome = self.github.commit(request, actor, budget)?;
+
+        // 1. Escribir en la fuente de verdad (GitHub). El camino
+        // barato (HintedRepository) exige DOS cosas del índice de
+        // lectura antes de intentarlo:
+        //   - la cabeza conocida (`head_hint`), para decidir el CAS
+        //     sin recorrerse el repo entero;
+        //   - un `next_seq` reservado ATÓMICAMENTE (`reserve_seq`),
+        //     para que dos escrituras concurrentes por este camino no
+        //     deriven el mismo número por separado (el camino barato,
+        //     a propósito, no relee el historial para coordinarse).
+        // Sin una reserva (Supabase caído) no hay forma segura de
+        // coordinar esa numeración: se cae al `commit` autosuficiente
+        // de GitHub, que se calcula su propio `seq` recorriendo su
+        // historial.
+        let (outcome, new_token) = match self.supabase.reserve_seq() {
+            Ok(next_seq) => {
+                let hint = self.supabase.head_hint(&concept_id).unwrap_or(None);
+                self.github.commit_hinted(request, actor, budget, hint, next_seq)?
+            }
+            Err(_) => (self.github.commit(request, actor, budget)?, None),
+        };
 
         // 2. Sincronizar en el momento con Supabase (best effort)
-        if let Err(e) = self.supabase.commit(req_for_supabase, actor, budget) {
-            eprintln!(
+        match self.supabase.commit(req_for_supabase, actor, budget) {
+            Err(e) => eprintln!(
                 "IndexedStore: Best-effort commit to Supabase failed (reconciler will repair): {}",
                 e
-            );
+            ),
+            Ok(_) => {
+                if let Some(token) = new_token {
+                    if let Err(e) = self.supabase.set_write_token(&concept_id, &token) {
+                        eprintln!(
+                            "IndexedStore: no se pudo guardar el token CAS en Supabase (el reconciler lo reparará): {}",
+                            e
+                        );
+                    }
+                }
+            }
         }
 
         Ok(outcome)
@@ -92,8 +121,15 @@ where
         actor: &Principal,
         reason: String,
     ) -> Result<DeleteOutcome, StoreError> {
-        // 1. Borrar de la fuente de verdad (GitHub)
-        let outcome = self.github.delete(id, expected, actor, reason.clone())?;
+        // 1. Borrar de la fuente de verdad (GitHub) — misma lógica de
+        // pista + reserva que en `commit`.
+        let outcome = match self.supabase.reserve_seq() {
+            Ok(next_seq) => {
+                let hint = self.supabase.head_hint(id).unwrap_or(None);
+                self.github.delete_hinted(id, expected, actor, reason.clone(), hint, next_seq)?
+            }
+            Err(_) => self.github.delete(id, expected, actor, reason.clone())?,
+        };
 
         // 2. Borrar de Supabase (best effort)
         if let Err(e) = self.supabase.delete(id, expected, actor, reason) {
@@ -134,7 +170,6 @@ where
 
 impl<G, S> StoreMaintenance for IndexedStore<G, S>
 where
-    G: StoreMaintenance,
     S: StoreMaintenance,
 {
     fn link_health(&self, id: &ConceptId) -> Result<LinkHealth, StoreError> {
@@ -154,18 +189,11 @@ where
     }
 
     fn status(&self) -> Result<StoreStatus, StoreError> {
-        // Combinamos estados de observabilidad
-        let mut status = self.supabase.status()?;
-        
-        // Si hay discrepancias del outbox en Supabase, las mostramos.
-        // Pero en IndexedStore, el outbox_pending de GitHub es 0 (no tiene).
-        // Queremos reflejar que los documentos provienen de GitHub:
-        if let Ok(github_status) = self.github.status() {
-            status.documents = github_status.documents;
-            status.deleted_documents = github_status.deleted_documents;
-        }
-        
-        Ok(status)
+        // Supabase es el índice que IndexedStore mantiene sincronizado
+        // con cada escritura: sus recuentos de documentos ya reflejan
+        // el estado de GitHub sin tener que preguntarle (eso costaría
+        // recorrerse el repo entero por cada ping — ver GithubStore::snapshot).
+        self.supabase.status()
     }
 
     fn embed_pending(
