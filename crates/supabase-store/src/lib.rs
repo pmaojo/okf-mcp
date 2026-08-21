@@ -150,6 +150,7 @@ impl SupabaseStore {
                    b.raw ILIKE $5 OR
                    EXISTS (SELECT 1 FROM unnest(h.tags) t WHERE t ILIKE $5)
                ))
+               AND ($7::text IS NULL OR h.doc_type <> $7)
              ORDER BY h.concept_id
              LIMIT $6",
         )
@@ -159,6 +160,7 @@ impl SupabaseStore {
         .bind(query.text.as_deref())
         .bind(query.text.as_ref().map(|t| format!("%{}%", t)).as_deref())
         .bind(limit)
+        .bind(query.exclude_type.as_deref())
         .fetch_all(&self.pool)
         .await
         .map_err(|e| StoreError::Backend(e.to_string()))
@@ -195,6 +197,7 @@ impl SupabaseStore {
                AND ($2::text IS NULL OR h.doc_type = $2)
                AND ($3::text IS NULL OR $3 = ANY(h.tags))
                AND ($4::text IS NULL OR h.concept_id = $4 OR h.concept_id LIKE $4 || '/%')
+               AND ($7::text IS NULL OR h.doc_type <> $7)
              ORDER BY e.embedding <=> $5
              LIMIT $6",
         )
@@ -204,6 +207,7 @@ impl SupabaseStore {
         .bind(query.path_prefix.as_deref())
         .bind(vector)
         .bind(limit)
+        .bind(query.exclude_type.as_deref())
         .fetch_all(&self.pool)
         .await
         .map_err(|e| StoreError::Backend(e.to_string()))

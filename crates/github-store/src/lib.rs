@@ -856,6 +856,11 @@ impl MemoryRepository for GithubStore {
                     continue;
                 }
             }
+            if let Some(t) = &query.exclude_type {
+                if doc.doc_type == *t {
+                    continue;
+                }
+            }
             if let Some(tag) = &query.tag {
                 if !doc.tags.iter().any(|x| x == tag) {
                     continue;

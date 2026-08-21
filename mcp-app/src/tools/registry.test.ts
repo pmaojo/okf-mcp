@@ -13,6 +13,7 @@ const EXPECTED_SLUGS = [
   "memory_embed",
   "memory_patch",
   "memory_bulk_commit",
+  "memory_bulk_patch",
   "memory_validate",
   "memory_status",
   "memory_stats",

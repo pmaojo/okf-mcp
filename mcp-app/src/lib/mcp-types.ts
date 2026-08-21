@@ -1,5 +1,5 @@
 /**
- * TypeScript mirrors of the JSON shapes returned by the 13 `memory_*`
+ * TypeScript mirrors of the JSON shapes returned by the `memory_*`
  * tools in `crates/memory-tools/src/lib.rs`. Kept hand-written (no
  * codegen) because the Rust side has no schema export yet — if a field
  * name changes there, it must change here too.
@@ -142,6 +142,28 @@ export type BulkCommitItem =
 export interface MemoryBulkCommitResult {
   applied: boolean;
   items: BulkCommitItem[];
+}
+
+export type BulkPatchItem =
+  | {
+      status: "done";
+      hash: string;
+      version: number;
+      created: boolean;
+      no_change: boolean;
+    }
+  | {
+      status: "failed";
+      error:
+        | { kind: "revision_conflict"; expected_hash: string | null; current_hash: string | null }
+        | { kind: "invalid_patch"; detail: string }
+        | { kind: "error"; detail: string };
+    }
+  | { status: "skipped" };
+
+export interface MemoryBulkPatchResult {
+  applied: boolean;
+  items: BulkPatchItem[];
 }
 
 export interface MemoryValidateResult {

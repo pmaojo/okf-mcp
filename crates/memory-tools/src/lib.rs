@@ -170,6 +170,7 @@ where
         let query = SearchQuery {
             text: Self::arg_str(args, "query"),
             doc_type: Self::arg_str(args, "type"),
+            exclude_type: Self::arg_str(args, "not_type"),
             tag: Self::arg_str(args, "tag"),
             path_prefix: Self::arg_str(args, "path_prefix"),
             limit: Self::arg_usize(args, "limit")?,
@@ -648,6 +649,7 @@ where
         let query = SearchQuery {
             text: None,
             doc_type: None,
+            exclude_type: None,
             tag: None,
             path_prefix: Self::arg_str(args, "path_prefix"),
             limit: Self::arg_usize(args, "limit")?,
@@ -710,17 +712,13 @@ where
         ]))
     }
 
-    fn memory_patch(&mut self, args: &Value) -> Result<Value, ToolError> {
-        let id = Self::concept_id(&Self::require_str(args, "concept_id")?)?;
-        let expected_hex = Self::require_str(args, "expected_hash")?;
-        let expected = ContentId::from_hex(&expected_hex)
-            .ok_or_else(|| ToolError::InvalidArguments("expected_hash inválido".to_string()))?;
-        let reason = Self::require_str(args, "reason")?;
-        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
-
-        let current_view = self.repo.get(&id).map_err(Self::domain_error)?
-            .ok_or_else(|| ToolError::Failed(format!("no se encontró el documento {id} para aplicar el patch")))?;
-
+    /// Traduce `set`/`remove`/`add_tags`/`remove_tags` de un objeto de
+    /// argumentos (los de `memory_patch`, o los de un elemento del
+    /// array `patches` de `memory_bulk_patch` — misma forma en ambos)
+    /// a un [`okf_core::FrontmatterPatch`]. Errores de forma (p. ej.
+    /// `set` no es un objeto) son de ARGUMENTOS: abortan la llamada
+    /// entera, no un item aislado de un lote.
+    fn parse_frontmatter_patch(args: &Value) -> Result<okf_core::FrontmatterPatch, ToolError> {
         let mut set_fields = Vec::new();
         if let Some(set_val) = args.get("set") {
             if let Some(obj_map) = set_val.as_object() {
@@ -764,36 +762,54 @@ where
             .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
             .unwrap_or_default();
 
-        // Gauntlet de old-coder (github.com/AmazingAng/old-coder), aplicado
-        // a `type: task`: "failing gauntlet blocks done" — el patch que
-        // pondría `status-done` se rechaza si el cuerpo del documento no
-        // tiene ya una sección `## Evidencia` (comandos + resultados reales,
-        // añadida antes con `memory_commit`). `memory_patch` sigue sin tocar
-        // el cuerpo; solo lee el que ya está comiteado.
-        if current_view.doc_type == "task" {
-            let mut final_tags: Vec<&str> = current_view.tags.iter().map(String::as_str).collect();
-            final_tags.retain(|t| !remove_tags.iter().any(|r| r == t));
-            for t in &add_tags {
-                if !final_tags.contains(&t.as_str()) {
-                    final_tags.push(t);
-                }
-            }
-            if final_tags.contains(&"status-done") && !has_gauntlet_evidence(&current_view.raw) {
-                return Err(ToolError::InvalidArguments(
-                    "no se puede poner status-done en una tarea sin una sección '## Evidencia' \
-                     en el cuerpo (comandos ejecutados y resultados reales — gauntlet de \
-                     old-coder, github.com/AmazingAng/old-coder); añádela primero con \
-                     memory_commit y luego reintenta el patch".to_string(),
-                ));
+        Ok(okf_core::FrontmatterPatch { set: set_fields, remove, add_tags, remove_tags })
+    }
+
+    /// Gauntlet de old-coder (github.com/AmazingAng/old-coder), aplicado
+    /// a `type: task`: "failing gauntlet blocks done" — un patch que
+    /// pondría `status-done` se rechaza si el cuerpo del documento no
+    /// tiene ya una sección `## Evidencia` (comandos + resultados reales,
+    /// añadida antes con `memory_commit`). `memory_patch`/`memory_bulk_patch`
+    /// siguen sin tocar el cuerpo; solo leen el que ya está comiteado.
+    /// `Some(reason)` si el patch queda bloqueado; `None` si pasa.
+    fn gauntlet_violation(current: &store_core::DocumentView, patch: &okf_core::FrontmatterPatch) -> Option<String> {
+        if current.doc_type != "task" {
+            return None;
+        }
+        let mut final_tags: Vec<&str> = current.tags.iter().map(String::as_str).collect();
+        final_tags.retain(|t| !patch.remove_tags.iter().any(|r| r == t));
+        for t in &patch.add_tags {
+            if !final_tags.contains(&t.as_str()) {
+                final_tags.push(t);
             }
         }
+        if final_tags.contains(&"status-done") && !has_gauntlet_evidence(&current.raw) {
+            Some(
+                "no se puede poner status-done en una tarea sin una sección '## Evidencia' \
+                 en el cuerpo (comandos ejecutados y resultados reales — gauntlet de \
+                 old-coder, github.com/AmazingAng/old-coder); añádela primero con \
+                 memory_commit y luego reintenta el patch".to_string(),
+            )
+        } else {
+            None
+        }
+    }
 
-        let patch = okf_core::FrontmatterPatch {
-            set: set_fields,
-            remove,
-            add_tags,
-            remove_tags,
-        };
+    fn memory_patch(&mut self, args: &Value) -> Result<Value, ToolError> {
+        let id = Self::concept_id(&Self::require_str(args, "concept_id")?)?;
+        let expected_hex = Self::require_str(args, "expected_hash")?;
+        let expected = ContentId::from_hex(&expected_hex)
+            .ok_or_else(|| ToolError::InvalidArguments("expected_hash inválido".to_string()))?;
+        let reason = Self::require_str(args, "reason")?;
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+        let patch = Self::parse_frontmatter_patch(args)?;
+
+        let current_view = self.repo.get(&id).map_err(Self::domain_error)?
+            .ok_or_else(|| ToolError::Failed(format!("no se encontró el documento {id} para aplicar el patch")))?;
+
+        if let Some(reason) = Self::gauntlet_violation(&current_view, &patch) {
+            return Err(ToolError::InvalidArguments(reason));
+        }
 
         let patched_markdown = okf_core::patch_frontmatter(&current_view.raw, &patch, &self.budget)
             .map_err(|e| ToolError::Failed(format!("error aplicando el patch: {e}")))?;
@@ -863,30 +879,110 @@ where
         let outcome = self.repo.commit_bulk(requests, atomic, &self.actor, &self.budget)
             .map_err(Self::domain_error)?;
 
-        let items: Vec<Value> = outcome.items.iter().map(|item| {
-            match item {
-                store_core::BulkItem::Done(out) => obj([
-                    ("status", s("done")),
-                    ("hash", s(&out.content_id.to_hex())),
-                    ("version", n(out.version as f64)),
-                    ("created", Value::Bool(out.created)),
-                    ("no_change", Value::Bool(out.no_change)),
-                ]),
-                store_core::BulkItem::Failed(err) => {
-                    let err_val = match err {
-                        StoreError::Conflict(c) => obj([
-                            ("kind", s("revision_conflict")),
-                            ("expected_hash", opt_hash(c.expected)),
-                            ("current_hash", opt_hash(c.current)),
-                        ]),
-                        _ => obj([
-                            ("kind", s("error")),
-                            ("detail", s(&err.to_string())),
-                        ]),
-                    };
-                    obj([("status", s("failed")), ("error", err_val)])
+        let items: Vec<Value> = outcome.items.iter().map(render_bulk_item).collect();
+
+        Ok(obj([
+            ("applied", Value::Bool(outcome.applied)),
+            ("items", arr(items)),
+        ]))
+    }
+
+    /// Igual que `memory_bulk_commit`, pero cada item es un PATCH de
+    /// frontmatter (mismos campos que `memory_patch`: `set`, `remove`,
+    /// `add_tags`, `remove_tags`) en vez de un `markdown` completo —
+    /// para patchear muchos conceptos atómicamente sin la sobrecarga de
+    /// reenviar el documento entero por cada uno vía
+    /// `memory_bulk_commit`.
+    ///
+    /// Cada patch necesita leer su documento actual para poder
+    /// aplicarlo (igual que `memory_patch`) — esa lectura ocurre ANTES
+    /// de tocar el backend, en una pasada de pre-resolución. Un fallo
+    /// ahí (documento inexistente, gauntlet de `type: task`, patch
+    /// inválido) es un fallo DE ESE ITEM, nunca de argumentos: con
+    /// `atomic: true` (por defecto) ningún item pre-fallido deja
+    /// escribir NADA del lote (todos quedan `failed`/`skipped`, igual
+    /// que un conflicto de CAS en `memory_bulk_commit`); con
+    /// `atomic: false` los items pre-fallidos se marcan `failed` y el
+    /// resto se aplica igual, cada uno por su cuenta.
+    fn memory_bulk_patch(&mut self, args: &Value) -> Result<Value, ToolError> {
+        let patches_arr = args.get("patches")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ToolError::InvalidArguments("falta el argumento 'patches' (array)".to_string()))?;
+        let atomic = args.get("atomic").and_then(|v| v.as_bool()).unwrap_or(true);
+
+        struct Parsed {
+            concept_id: ConceptId,
+            expected: ContentId,
+            reason: String,
+            patch: okf_core::FrontmatterPatch,
+        }
+        let mut parsed = Vec::with_capacity(patches_arr.len());
+        for val in patches_arr {
+            let concept_id = Self::concept_id(&Self::require_str(val, "concept_id")?)?;
+            let expected_hex = Self::require_str(val, "expected_hash")?;
+            let expected = ContentId::from_hex(&expected_hex)
+                .ok_or_else(|| ToolError::InvalidArguments(format!("expected_hash inválido para {concept_id}")))?;
+            let reason = Self::require_str(val, "reason")?;
+            let patch = Self::parse_frontmatter_patch(val)?;
+            parsed.push(Parsed { concept_id, expected, reason, patch });
+        }
+
+        // Pre-resolución: `None` = listo para commitear, `Some(razón)`
+        // = fallo propio del item (no bloquea la construcción de los
+        // demás, solo si el lote es atómico).
+        let mut pre_failed: Vec<Option<String>> = Vec::with_capacity(parsed.len());
+        let mut requests: Vec<CommitRequest> = Vec::new();
+        let mut ready_idx: Vec<usize> = Vec::new();
+        for (i, p) in parsed.iter().enumerate() {
+            let current = match self.repo.get(&p.concept_id).map_err(Self::domain_error)? {
+                Some(doc) => doc,
+                None => {
+                    pre_failed.push(Some(format!("no se encontró el documento {} para aplicar el patch", p.concept_id)));
+                    continue;
                 }
-                store_core::BulkItem::Skipped => obj([("status", s("skipped"))]),
+            };
+            if let Some(reason) = Self::gauntlet_violation(&current, &p.patch) {
+                pre_failed.push(Some(reason));
+                continue;
+            }
+            match okf_core::patch_frontmatter(&current.raw, &p.patch, &self.budget) {
+                Ok(markdown) => {
+                    pre_failed.push(None);
+                    ready_idx.push(i);
+                    requests.push(CommitRequest {
+                        concept_id: p.concept_id.clone(),
+                        expected: Some(p.expected),
+                        markdown,
+                        reason: p.reason.clone(),
+                    });
+                }
+                Err(e) => pre_failed.push(Some(format!("error aplicando el patch: {e}"))),
+            }
+        }
+
+        let render_pre_failed = |reason: &str| {
+            obj([("status", s("failed")), ("error", obj([("kind", s("invalid_patch")), ("detail", s(reason))]))])
+        };
+
+        if atomic && pre_failed.iter().any(Option::is_some) {
+            // Nada se persiste: ni siquiera se llama al backend.
+            let items: Vec<Value> = pre_failed.iter().map(|x| match x {
+                Some(reason) => render_pre_failed(reason),
+                None => obj([("status", s("skipped"))]),
+            }).collect();
+            return Ok(obj([("applied", Value::Bool(false)), ("items", arr(items))]));
+        }
+
+        let outcome = self.repo.commit_bulk(requests, atomic, &self.actor, &self.budget)
+            .map_err(Self::domain_error)?;
+
+        let mut store_results: std::collections::HashMap<usize, Value> =
+            ready_idx.into_iter().zip(outcome.items.iter().map(render_bulk_item)).collect();
+
+        let items: Vec<Value> = pre_failed.iter().enumerate().map(|(i, maybe_reason)| {
+            match maybe_reason {
+                Some(reason) => render_pre_failed(reason),
+                None => store_results.remove(&i).expect("cada item listo tiene un resultado del backend"),
             }
         }).collect();
 
@@ -1381,6 +1477,35 @@ fn opt_hash(h: Option<ContentId>) -> Value {
     h.map(|h| s(&h.to_hex())).unwrap_or(Value::Null)
 }
 
+/// Renderiza un [`store_core::BulkItem`] al mismo JSON compacto que
+/// comparten `memory_bulk_commit` y `memory_bulk_patch`.
+fn render_bulk_item(item: &store_core::BulkItem) -> Value {
+    match item {
+        store_core::BulkItem::Done(out) => obj([
+            ("status", s("done")),
+            ("hash", s(&out.content_id.to_hex())),
+            ("version", n(out.version as f64)),
+            ("created", Value::Bool(out.created)),
+            ("no_change", Value::Bool(out.no_change)),
+        ]),
+        store_core::BulkItem::Failed(err) => {
+            let err_val = match err {
+                StoreError::Conflict(c) => obj([
+                    ("kind", s("revision_conflict")),
+                    ("expected_hash", opt_hash(c.expected)),
+                    ("current_hash", opt_hash(c.current)),
+                ]),
+                _ => obj([
+                    ("kind", s("error")),
+                    ("detail", s(&err.to_string())),
+                ]),
+            };
+            obj([("status", s("failed")), ("error", err_val)])
+        }
+        store_core::BulkItem::Skipped => obj([("status", s("skipped"))]),
+    }
+}
+
 fn opt_str(v: Option<&str>) -> Value {
     v.map(s).unwrap_or(Value::Null)
 }
@@ -1465,6 +1590,7 @@ where
                     [
                         ("query", "string", "subcadena a buscar en id, título, tags y cuerpo"),
                         ("type", "string", "filtra por el campo 'type' del frontmatter"),
+                        ("not_type", "string", "excluye el campo 'type' del frontmatter (lo contrario de 'type'); los documentos borrados lógicamente YA se excluyen siempre, sin necesidad de este ni ningún otro filtro"),
                         ("tag", "string", "filtra por tag exacto"),
                         ("path_prefix", "string", "filtra por prefijo de ruta lógica (ej. 'people')"),
                         ("limit", "integer", "máximo de resultados"),
@@ -1628,6 +1754,18 @@ where
                 ui_resource_uri: Some("ui://okf-memory/memory_bulk_commit"),
             },
             ToolSpec {
+                name: "memory_bulk_patch",
+                description: include_str!("../assets/memory_bulk_patch.txt"),
+                input_schema: schema(
+                    [
+                        ("patches", "array", "lista de patches (cada uno con concept_id, expected_hash, reason, y opcionalmente set/remove/add_tags/remove_tags — mismos campos que memory_patch)"),
+                        ("atomic", "boolean", "si es true (por defecto), no persiste NADA si algún item falla (pre-validación o CAS); si es false, cada item se aplica o falla por su cuenta"),
+                    ],
+                    ["patches"],
+                ),
+                ui_resource_uri: Some("ui://okf-memory/memory_bulk_patch"),
+            },
+            ToolSpec {
                 name: "memory_validate",
                 description: include_str!("../assets/memory_validate.txt"),
                 input_schema: schema(
@@ -1737,6 +1875,7 @@ where
             UiResource { uri: "ui://okf-memory/memory_embed", name: "okf-memory · Embeddings", description: DESCRIPTION, html: APP_HTML },
             UiResource { uri: "ui://okf-memory/memory_patch", name: "okf-memory · Patch", description: DESCRIPTION, html: APP_HTML },
             UiResource { uri: "ui://okf-memory/memory_bulk_commit", name: "okf-memory · Commit en lote", description: DESCRIPTION, html: APP_HTML },
+            UiResource { uri: "ui://okf-memory/memory_bulk_patch", name: "okf-memory · Patch en lote", description: DESCRIPTION, html: APP_HTML },
             UiResource { uri: "ui://okf-memory/memory_validate", name: "okf-memory · Validar", description: DESCRIPTION, html: APP_HTML },
             UiResource { uri: "ui://okf-memory/memory_status", name: "okf-memory · Estado", description: DESCRIPTION, html: APP_HTML },
             UiResource { uri: "ui://okf-memory/memory_stats", name: "okf-memory · Estadísticas", description: DESCRIPTION, html: APP_HTML },
@@ -1772,6 +1911,7 @@ where
             "memory_embed" => self.memory_embed(arguments),
             "memory_patch" => self.memory_patch(arguments),
             "memory_bulk_commit" => self.memory_bulk_commit(arguments),
+            "memory_bulk_patch" => self.memory_bulk_patch(arguments),
             "skill_ingest" => self.skill_ingest(arguments),
             "memory_validate" => self.memory_validate(arguments),
             "memory_status" => self.memory_status(arguments),

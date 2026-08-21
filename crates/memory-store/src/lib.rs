@@ -190,6 +190,11 @@ impl MemoryRepository for InMemoryStore {
                     continue;
                 }
             }
+            if let Some(t) = &query.exclude_type {
+                if view.doc_type == *t {
+                    continue;
+                }
+            }
             if let Some(tag) = &query.tag {
                 if !view.tags.iter().any(|x| x == tag) {
                     continue;
@@ -756,6 +761,7 @@ mod tests {
         let q = |text: Option<&str>, doc_type: Option<&str>, tag: Option<&str>| SearchQuery {
             text: text.map(String::from),
             doc_type: doc_type.map(String::from),
+            exclude_type: None,
             tag: tag.map(String::from),
             path_prefix: None,
             limit: None,

@@ -169,11 +169,11 @@ abajo — no un paso de instalación del plugin: el servidor no viene
 con skills precargadas, las trae el agente desde la fuente que
 necesite en cada sesión.
 
-## Las 19 herramientas
+## Las 20 herramientas
 
 | Herramienta | Qué hace |
 | --- | --- |
-| `memory_search` | candidatos compactos de búsqueda híbrida (textual + semántica) |
+| `memory_search` | candidatos compactos de búsqueda híbrida (textual + semántica); `not_type` excluye un `type`, y los borrados lógicamente quedan siempre fuera sin pedirlo |
 | `memory_resolve` | Markdown exacto + vecindario acotado del grafo de `[[enlaces]]` |
 | `memory_reason` | razonamiento OWL-RL/RDFS acotado (`ontology-core`) sobre el vecindario: subclases, transitividad, simetría, propiedades inversas |
 | `memory_commit` | escritura con compare-and-swap (`expected_hash`) y `dry_run` |
@@ -185,6 +185,7 @@ necesite en cada sesión.
 | `memory_embed` | forzar generación e indexación de embeddings pendientes |
 | `memory_patch` | actualizar campos de frontmatter selectivamente sin alterar el cuerpo |
 | `memory_bulk_commit` | commits en lote, con opción de atómico (rollback completo) |
+| `memory_bulk_patch` | patchea frontmatter de varios conceptos en lote (set/remove/add_tags/remove_tags), con opción de atómico |
 | `memory_validate` | reportar enlaces rotos, referencias a borrados y embeddings obsoletos |
 | `memory_status` | resumen operativo rápido de la salud del sistema |
 | `memory_stats` | estadísticas del grafo (hubs, huérfanos, recuentos de tipos/tags) |
@@ -195,9 +196,9 @@ necesite en cada sesión.
 
 ## UI interactiva (`mcp-app/`)
 
-18 de las 19 herramientas (las 13 `memory_*` originales más
-`memory_reason`, `spec_propose`, `spec_tasks`, `spec_status` y
-`skill_ingest` cuando está anunciada) anuncian
+19 de las 20 herramientas (las 13 `memory_*` originales más
+`memory_reason`, `memory_bulk_patch`, `spec_propose`, `spec_tasks`,
+`spec_status` y `skill_ingest` cuando está anunciada) anuncian
 `ui_resource_uri: Some("ui://okf-memory/<nombre>")`
 — una URI
 **propia por herramienta**, no una compartida: varios hosts MCP Apps
@@ -236,8 +237,9 @@ visor:
 - **`app.updateModelContext`** (`AddContextButton`, NO
   `app.sendMessage`): cuando el HUMANO re-ejecuta una herramienta de
   escritura/diagnóstico desde la UI (`memory_commit`, `memory_patch`,
-  `memory_delete`, `memory_bulk_commit`, `memory_validate`,
-  `spec_propose`, `spec_tasks`, `spec_status`, `skill_ingest`) con
+  `memory_delete`, `memory_bulk_commit`, `memory_bulk_patch`,
+  `memory_validate`, `spec_propose`, `spec_tasks`, `spec_status`,
+  `skill_ingest`) con
   argumentos que el modelo nunca vio, ese resultado solo existe en el
   navegador — nada se lo cuenta al modelo salvo que la UI lo haga
   explícitamente. `updateModelContext` se lo entrega de forma

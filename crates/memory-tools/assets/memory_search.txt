@@ -1,1 +1,5 @@
 Busca conceptos en la memoria de manera híbrida: primero coincidencias exactas por subcadena, luego similitud semántica. Devuelve candidatos compactos con su hash y URI. REGLA OPERATIVA: Antes de intentar editar o borrar cualquier concepto retornado por la búsqueda, debes consultar su contenido exacto e expected_hash llamando a `memory_resolve`.
+
+Los documentos borrados lógicamente (por `memory_delete`) NUNCA aparecen en los resultados — el servidor los excluye siempre, en todos los backends; no hace falta pasar ningún filtro para conseguir ese comportamiento ni post-filtrarlos tú mismo.
+
+`type` exige ese valor exacto; `not_type` excluye ese valor exacto (lo contrario). No hay "not type:X" como sintaxis dentro de `query`: usa el argumento `not_type` para eso. Ambos se combinan con el resto de filtros por AND, y entre sí solo tiene sentido usar uno u otro (usar los dos con el mismo valor da siempre 0 resultados). Si necesitas excluir MÁS de un `type`, hazlo con búsquedas separadas o con un post-filtro sobre `results` — el servidor solo garantiza una exclusión por llamada.

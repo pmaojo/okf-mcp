@@ -23,6 +23,7 @@ import { memoryBacklinksManifest } from "./memory-backlinks/manifest";
 import { memoryEmbedManifest } from "./memory-embed/manifest";
 import { memoryPatchManifest } from "./memory-patch/manifest";
 import { memoryBulkCommitManifest } from "./memory-bulk-commit/manifest";
+import { memoryBulkPatchManifest } from "./memory-bulk-patch/manifest";
 import { memoryValidateManifest } from "./memory-validate/manifest";
 import { memoryStatusManifest } from "./memory-status/manifest";
 import { memoryStatsManifest } from "./memory-stats/manifest";
@@ -32,7 +33,7 @@ import { specStatusManifest } from "./spec-status/manifest";
 import { skillIngestManifest } from "./skill-ingest/manifest";
 
 /**
- * Array of all actively registered tool manifests — the 14 `memory_*`
+ * Array of all actively registered tool manifests — the 15 `memory_*`
  * tools plus `spec_propose`/`spec_tasks`/`spec_status`/`skill_ingest`
  * from `crates/memory-tools`. Slugs must match the server-side tool
  * names exactly (see `ToolSpec::name` in
@@ -50,6 +51,7 @@ const manifests: ToolManifest[] = [
   memoryEmbedManifest,
   memoryPatchManifest,
   memoryBulkCommitManifest,
+  memoryBulkPatchManifest,
   memoryValidateManifest,
   memoryStatusManifest,
   memoryStatsManifest,
