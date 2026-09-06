@@ -156,6 +156,30 @@ impl InMemoryStore {
     }
 }
 
+/// Relevancia de `view` para la subcadena `needle` (ya en minúsculas),
+/// o `None` si no aparece en ningún campo — mismos campos y misma
+/// semántica de subcadena que el contrato (`id`, `título`, `tags`,
+/// `cuerpo`), pero ponderados por campo en vez de un booleano plano:
+/// una coincidencia en el título pesa más que una en el cuerpo, así
+/// que el resultado más relevante sale primero en vez de por orden de
+/// `id`. El cuerpo se acota a 5 apariciones para que un documento
+/// largo no gane solo por repetir el término muchas veces.
+fn text_relevance(view: &DocumentView, needle: &str) -> Option<f64> {
+    let count = |haystack: &str| haystack.matches(needle).count() as f64;
+
+    let id_hits = count(view.concept_id.as_str());
+    let title_hits = view.title.as_deref().map(|t| count(&t.to_lowercase())).unwrap_or(0.0);
+    let tags_hits = count(&view.tags.join(" ").to_lowercase());
+    let body_hits = count(&view.raw.to_lowercase());
+
+    let score = title_hits * 4.0 + tags_hits * 3.0 + id_hits * 2.0 + body_hits.min(5.0);
+    if score > 0.0 {
+        Some(score)
+    } else {
+        None
+    }
+}
+
 impl MemoryRepository for InMemoryStore {
     fn get(&self, id: &ConceptId) -> Result<Option<DocumentView>, StoreError> {
         match self.live_head(id) {
@@ -170,12 +194,13 @@ impl MemoryRepository for InMemoryStore {
             .unwrap_or(budget.max_search_results)
             .min(budget.max_search_results);
         let needle = query.text.as_ref().map(|t| t.to_lowercase());
-        let mut hits = Vec::new();
+        // (hit, relevancia): sin `needle` la relevancia queda en 0.0
+        // para todos y el orden de salida es el de `BTreeMap` (por
+        // `id`), que es lo que exige el contrato en
+        // `busca_por_prefijo_ordenado_por_id`.
+        let mut hits: Vec<(SearchHit, f64)> = Vec::new();
 
         for (id, head) in &self.heads {
-            if hits.len() >= limit {
-                break;
-            }
             if head.deleted {
                 continue;
             }
@@ -200,27 +225,36 @@ impl MemoryRepository for InMemoryStore {
                     continue;
                 }
             }
-            if let Some(needle) = &needle {
-                let in_id = view.concept_id.as_str().contains(needle.as_str());
-                let in_title = view
-                    .title
-                    .as_deref()
-                    .is_some_and(|t| t.to_lowercase().contains(needle.as_str()));
-                let in_tags = view.tags.iter().any(|t| t.to_lowercase().contains(needle.as_str()));
-                let in_body = view.raw.to_lowercase().contains(needle.as_str());
-                if !(in_id || in_title || in_tags || in_body) {
-                    continue;
-                }
-            }
-            hits.push(SearchHit {
-                concept_id: view.concept_id,
-                content_id: view.content_id,
-                doc_type: view.doc_type,
-                title: view.title,
-                tags: view.tags,
+            let score = match &needle {
+                None => 0.0,
+                Some(needle) => match text_relevance(&view, needle) {
+                    Some(score) => score,
+                    None => continue,
+                },
+            };
+            hits.push((
+                SearchHit {
+                    concept_id: view.concept_id,
+                    content_id: view.content_id,
+                    doc_type: view.doc_type,
+                    title: view.title,
+                    tags: view.tags,
+                },
+                score,
+            ));
+        }
+
+        if needle.is_some() {
+            // Empate en relevancia se rompe por `id` para que el
+            // orden sea determinista entre llamadas.
+            hits.sort_by(|(a, sa), (b, sb)| {
+                sb.partial_cmp(sa)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.concept_id.as_str().cmp(b.concept_id.as_str()))
             });
         }
-        Ok(hits)
+        hits.truncate(limit);
+        Ok(hits.into_iter().map(|(hit, _)| hit).collect())
     }
 
     fn commit(
@@ -772,6 +806,25 @@ mod tests {
         assert_eq!(s.search(&q(None, None, Some("rust")), &budget).unwrap().len(), 1);
         assert_eq!(s.search(&q(Some("ingeniera"), None, None), &budget).unwrap().len(), 1);
         assert_eq!(s.search(&q(Some("nada-de-esto"), None, None), &budget).unwrap().len(), 0);
+    }
+
+    /// Una coincidencia en el título sale antes que una solo en el
+    /// cuerpo, aunque el documento del cuerpo se haya escrito antes
+    /// (orden por `id` no explica el resultado).
+    #[test]
+    fn busqueda_ordena_por_relevancia() {
+        let mut s = InMemoryStore::new();
+        commit(&mut s, "a/solo-cuerpo", None, &doc("Sin relación", "rust rust")).unwrap();
+        commit(&mut s, "z/titulo-rust", None, &doc("Guía de Rust", "manual")).unwrap();
+
+        let hits = s
+            .search(
+                &SearchQuery { text: Some("rust".to_string()), ..SearchQuery::default() },
+                &Budget::default(),
+            )
+            .unwrap();
+        let ids: Vec<&str> = hits.iter().map(|h| h.concept_id.as_str()).collect();
+        assert_eq!(ids, vec!["z/titulo-rust", "a/solo-cuerpo"]);
     }
 
     #[test]

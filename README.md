@@ -16,12 +16,13 @@ Spanish). Generated API docs (`cargo doc`) are published at
 
 ## Status
 
-- ✅ **Milestone 1:** `std`-only core + stdio MCP server.
-- ✅ **Milestone 2:** stateless HTTP transport (`mcp-http`) + an executable `MemoryRepository` contract + a Vercel adapter (`vercel-entry`) + a PostgreSQL adapter (`supabase-store`).
-- ✅ **Milestone 3:** OAuth 2.1 (Resource Server, cryptographic JWT validation via signatures and JWKS).
-- ✅ **Milestone 4:** Transactional Outbox (`outbox-worker` with concurrent `SKIP LOCKED` processing, GitHub sync, and `pgvector` embeddings).
-- ✅ **Milestone 5:** MCP Apps — an interactive React UI ([`mcp-app/`](mcp-app/), brutalist theme) for 18 of the 19 tools, each with its own `ui://` resource (optional — see below).
-- ✅ **Milestone 7:** Lightweight reasoning (`ontology-core`, tutorial chapter 18) — triples derived from existing frontmatter/links, a bounded OWL-RL/RDFS fixed point, persisted via `TripleStore` (`triples` table in Supabase) with no `oxigraph` and no external dependencies. Ontologies are declared **once** as a `type: ontology` document and reused by `ontology_id` — `ToolHandler::instructions()` tells the agent this at `initialize`, before it invents axioms of its own.
+- `std`-only core + stdio MCP server.
+- Stateless HTTP transport (`mcp-http`) + an executable `MemoryRepository` contract + a Vercel adapter (`vercel-entry`) + a PostgreSQL adapter (`supabase-store`).
+- OAuth 2.1 (Resource Server, cryptographic JWT validation via signatures and JWKS).
+- Transactional Outbox (`outbox-worker` with concurrent `SKIP LOCKED` processing, GitHub sync, and `pgvector` embeddings).
+- MCP Apps — an interactive React UI ([`mcp-app/`](mcp-app/), brutalist theme) for 18 of the 19 tools, each with its own `ui://` resource (optional — see below).
+- Lightweight reasoning (`ontology-core`, tutorial chapter 18) — triples derived from existing frontmatter/links, a bounded OWL-RL/RDFS fixed point, persisted via `TripleStore` (`triples` table in Supabase) with no `oxigraph` and no external dependencies. Ontologies are declared **once** as a `type: ontology` document and reused by `ontology_id` — `ToolHandler::instructions()` tells the agent this at `initialize`, before it invents axioms of its own.
+- Ranked lexical search fallback (`memory-store`) — when no embeddings provider is configured, `memory_search` no longer returns unranked substring matches: hits are scored by field (title > tags > id > body, body capped so a long document can't win purely on repetition) so the most relevant concept surfaces first even without semantic search.
 
 ## Architecture
 

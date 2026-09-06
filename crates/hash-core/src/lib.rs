@@ -118,17 +118,15 @@ impl Sha256 {
         }
 
         // 2. Bloques completos directamente desde el slice, sin copiar:
-        //    `chunks_exact(64)` da un `&[u8]` de longitud 64; `try_into`
-        //    lo reinterpreta como `&[u8; 64]` (solo comprueba la
-        //    longitud en runtime), no mueve ni copia bytes.
-        let mut chunks = data.chunks_exact(64);
-        for block in &mut chunks {
-            let block: &[u8; 64] = block.try_into().unwrap();
+        //    `as_chunks::<64>()` ya devuelve `&[u8; 64]` por bloque
+        //    (la división en bloques de tamaño fijo se comprueba una
+        //    sola vez, no bloque a bloque como con `try_into`).
+        let (blocks, rest) = data.as_chunks::<64>();
+        for block in blocks {
             Self::compress(&mut self.state, block);
         }
 
         // 3. Guardar el resto.
-        let rest = chunks.remainder();
         self.buffer[..rest.len()].copy_from_slice(rest);
         self.buffer_len = rest.len();
     }
