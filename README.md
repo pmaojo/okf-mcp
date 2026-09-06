@@ -1,274 +1,265 @@
-# okf-mcp — Servidor MCP de memoria en Rust (núcleo `std`-only)
+# okf-mcp — a persistent-memory MCP server in Rust (`std`-only core)
 
-Un servidor de memoria persistente para agentes (protocolo MCP) con
-arquitectura hexagonal: el **motor de conocimiento** y los **puertos**
-están escritos con la biblioteca estándar de Rust, sin frameworks, sin
-`serde` y sin `tokio` en el núcleo. Las dependencias externas quedan
-aisladas en adaptadores de frontera e infraestructura como Vercel,
-Supabase, GitHub y los proveedores de LLM/embeddings (Gemini como
-primario, con fallback multi-proveedor).
+A persistent memory server for agents (MCP protocol) built with a
+hexagonal architecture: the **knowledge engine** and its **ports** are
+written against Rust's standard library only — no frameworks, no
+`serde`, no `tokio` in the core. External dependencies are confined to
+boundary/infrastructure adapters: Vercel, Supabase, GitHub, and
+LLM/embedding providers (Gemini as primary, with automatic
+multi-provider fallback).
 
-Este repositorio es a la vez un proyecto real y un **tutorial muy
-didáctico** de Rust y de principios SOLID: ver [`tutorial/`](tutorial/).
-La referencia de API generada con `cargo doc` se publica en
-**<https://pmaojo.github.io/okf-mcp/>** en cada push a `main`
-(capítulo 16 del tutorial).
+This repository is both a working project and a hands-on **Rust and
+SOLID-principles tutorial** — see [`tutorial/`](tutorial/) (in
+Spanish). Generated API docs (`cargo doc`) are published at
+**<https://pmaojo.github.io/okf-mcp/>** on every push to `main`
+(tutorial chapter 16).
 
-## Estado
+## Status
 
-- ✅ **Hito 1:** núcleo `std`-only + servidor MCP por stdio.
-- ✅ **Hito 2:** transporte HTTP sin estado (`mcp-http`) + contrato ejecutable `MemoryRepository` + adaptador de Vercel (`vercel-entry`) + adaptador de base de datos PostgreSQL (`supabase-store`).
-- ✅ **Hito 3:** OAuth 2.1 (Resource Server, validación criptográfica de JWTs mediante firmas y JWKS).
-- ✅ **Hito 4:** Transactional Outbox (`outbox-worker` con procesamiento concurrente `SKIP LOCKED`, sincronización con GitHub y embeddings con `pgvector`).
-- ✅ **Hito 5:** MCP Apps — UI React interactiva ([`mcp-app/`](mcp-app/), tema brutalista) para 18 de las 19 herramientas, cada una con su propio recurso `ui:// ` (opcional, ver más abajo).
-- ✅ **Hito 7:** Razonamiento ligero (`ontology-core`, capítulo 18 del tutorial) — triples derivados del frontmatter/enlaces existentes, punto fijo OWL-RL/RDFS acotado, persistidos vía `TripleStore` (`triples` en Supabase) sin `oxigraph` ni dependencias externas. Las ontologías se declaran UNA VEZ como documento `type: ontology` y se reutilizan por `ontology_id` — `ToolHandler::instructions()` se lo dice al agente en `initialize`, antes de que invente axiomas.
+- ✅ **Milestone 1:** `std`-only core + stdio MCP server.
+- ✅ **Milestone 2:** stateless HTTP transport (`mcp-http`) + an executable `MemoryRepository` contract + a Vercel adapter (`vercel-entry`) + a PostgreSQL adapter (`supabase-store`).
+- ✅ **Milestone 3:** OAuth 2.1 (Resource Server, cryptographic JWT validation via signatures and JWKS).
+- ✅ **Milestone 4:** Transactional Outbox (`outbox-worker` with concurrent `SKIP LOCKED` processing, GitHub sync, and `pgvector` embeddings).
+- ✅ **Milestone 5:** MCP Apps — an interactive React UI ([`mcp-app/`](mcp-app/), brutalist theme) for 18 of the 19 tools, each with its own `ui://` resource (optional — see below).
+- ✅ **Milestone 7:** Lightweight reasoning (`ontology-core`, tutorial chapter 18) — triples derived from existing frontmatter/links, a bounded OWL-RL/RDFS fixed point, persisted via `TripleStore` (`triples` table in Supabase) with no `oxigraph` and no external dependencies. Ontologies are declared **once** as a `type: ontology` document and reused by `ontology_id` — `ToolHandler::instructions()` tells the agent this at `initialize`, before it invents axioms of its own.
 
-## Arquitectura
+## Architecture
 
 ```text
-                       Adaptadores de entrada
+                          Inbound adapters
 ┌────────────────────────────────────────────────────────────────────┐
-│ mcp-stdio    bin local por stdin/stdout                            │
-│ mcp-http     bin HTTP/1.1 sin estado sobre TcpListener, POST /mcp  │
-│ vercel-entry función serverless Axum/Vercel → mcp_http::route()    │
+│ mcp-stdio    local binary over stdin/stdout                        │
+│ mcp-http     stateless HTTP/1.1 binary on TcpListener, POST /mcp   │
+│ vercel-entry Axum/Vercel serverless function → mcp_http::route()  │
 └───────────────┬────────────────────────────────────────────────────┘
                 │
                 ▼
-                     Núcleo y puertos `std`-only
+                      `std`-only core and ports
 ┌────────────────────────────────────────────────────────────────────┐
-│ mcp-core     JSON-RPC 2.0 + ciclo de vida MCP + despacho           │
-│ json-mini    parser/serializador JSON educativo                    │
-│ memory-tools  19 herramientas MCP genéricas sobre MemoryRepository │
-│ store-core   puerto MemoryRepository + contrato Liskov             │
+│ mcp-core     JSON-RPC 2.0 + MCP lifecycle + dispatch               │
+│ json-mini    educational JSON parser/serializer                    │
+│ memory-tools 19 generic MCP tools over MemoryRepository            │
+│ store-core   MemoryRepository port + Liskov contract               │
 │ memory-model ConceptId, ContentId, Budget, Revision, Principal     │
-│ okf-core     frontmatter YAML (subconjunto) + enlaces [[...]]      │
-│ graph-core   BFS acotado (trait NeighborSource)                    │
-│ conflict-core decisiones compare-and-swap puras                    │
-│ hash-core    SHA-256 a mano (vectores NIST)                        │
-│ memory-store InMemoryStore para desarrollo y tests                 │
-│ ingest-core  detección/planificación de skill_ingest + puertos     │
-│ consolidate-core validación/render determinista de session-summary │
+│ okf-core     YAML frontmatter (subset) + [[...]] links             │
+│ graph-core   bounded BFS (NeighborSource trait)                    │
+│ conflict-core pure compare-and-swap decisions                      │
+│ hash-core    hand-written SHA-256 (NIST vectors)                   │
+│ memory-store InMemoryStore for development and tests               │
+│ ingest-core  skill_ingest detection/planning + ports               │
+│ consolidate-core deterministic session-summary validation/render   │
 └───────────────┬────────────────────────────────────────────────────┘
                 │
                 ▼
-                    Adaptadores de salida / infraestructura
+                    Outbound / infrastructure adapters
 ┌────────────────────────────────────────────────────────────────────┐
-│ supabase-store    SupabaseStore implementa MemoryRepository        │
-│ outbox-worker     procesa outbox, GitHub y embeddings              │
-│ gemini-embeddings  embeddings, fallback multi-proveedor            │
-│ ingest-http        descarga de GitHub + detección de licencia      │
-│ github-store      PROTOTIPO: GitHub como fuente de verdad          │
+│ supabase-store    SupabaseStore implements MemoryRepository        │
+│ outbox-worker     processes the outbox, GitHub sync, embeddings    │
+│ gemini-embeddings  embeddings, automatic multi-provider fallback   │
+│ ingest-http        GitHub downloads + license detection            │
+│ github-store      PROTOTYPE: GitHub as source of truth             │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-La inversión de dependencias se mantiene en el límite hexagonal: las
-herramientas dependen del trait `MemoryRepository` definido en
-`store-core`, y tanto `InMemoryStore` como `SupabaseStore` implementan
-ese puerto. Así el núcleo no conoce PostgreSQL, Vercel, GitHub ni
-Gemini.
+Dependency inversion is enforced at the hexagonal boundary: tools
+depend on the `MemoryRepository` trait defined in `store-core`, and
+both `InMemoryStore` and `SupabaseStore` implement that port. The core
+never knows about PostgreSQL, Vercel, GitHub, or Gemini.
 
-### Regla de dependencias del workspace
+### Workspace dependency rule
 
-- **Núcleo y puertos sin dependencias externas de producción:**
+- **Core and ports with no external production dependencies:**
   `memory-model`, `hash-core`, `json-mini`, `okf-core`, `graph-core`,
   `conflict-core`, `store-core`, `memory-store`, `memory-tools`,
-  `mcp-core`, `mcp-stdio`, `mcp-http` e `ingest-core`.
-- **Adaptadores con dependencias externas permitidas:**
+  `mcp-core`, `mcp-stdio`, `mcp-http`, and `ingest-core`.
+- **Adapters allowed external dependencies:**
   - `vercel-entry`: `tokio`, `axum`, `tower`, `tower-http`,
-    `vercel_runtime`, `sqlx`, `jsonwebtoken`, `reqwest`, `serde` y
-    `serde_json` para la función serverless, CORS, OAuth/JWT y acceso a
-    PostgreSQL.
+    `vercel_runtime`, `sqlx`, `jsonwebtoken`, `reqwest`, `serde`, and
+    `serde_json` for the serverless function, CORS, OAuth/JWT, and
+    PostgreSQL access.
   - `supabase-store`: `tokio`, `sqlx`, `pgvector`, `serde`,
-    `serde_json`, `reqwest` y `gemini-embeddings` para persistencia
-    PostgreSQL/Supabase y búsqueda semántica opcional.
+    `serde_json`, `reqwest`, and `gemini-embeddings` for
+    PostgreSQL/Supabase persistence and optional semantic search.
   - `outbox-worker`: `tokio`, `sqlx`, `pgvector`, `serde`,
-    `serde_json`, `reqwest`, `base64` y `gemini-embeddings` para
-    procesar eventos pendientes y sincronizar con servicios externos.
-  - `gemini-embeddings`: `reqwest`, `serde` y `thiserror` para llamar a
-    la API de embeddings de Gemini, Mistral o Cohere (fallback
-    multi-proveedor con etiquetado de modelo, ver más abajo).
-  - `ingest-http`: `tokio`, `reqwest`, `serde` y `serde_json` para
-    descargar fuentes de GitHub y consultar su licencia (campo
-    `license.spdx_id` de la API de repos) para la herramienta
-    `skill_ingest` — sin cliente LLM: esa herramienta no sintetiza
-    contenido con ningún modelo.
-- `json-mini` aparece como *dev-dependency* en algunos crates solo para
-  parsear aserciones de tests.
+    `serde_json`, `reqwest`, `base64`, and `gemini-embeddings` to
+    process pending events and sync with external services.
+  - `gemini-embeddings`: `reqwest`, `serde`, and `thiserror` to call
+    the Gemini, Mistral, or Cohere embeddings API (automatic
+    multi-provider fallback with model tagging — see below).
+  - `ingest-http`: `tokio`, `reqwest`, `serde`, and `serde_json` to
+    download sources from GitHub and query their license
+    (`license.spdx_id` from the repos API) for the `skill_ingest`
+    tool — no LLM client: that tool never synthesizes content with a
+    model.
+- `json-mini` appears as a *dev-dependency* in a few crates purely to
+  parse test assertions.
 
-Las dependencias de los adaptadores se auditan en CI con `cargo deny`
-(advisories RUSTSEC, lista blanca de licencias, duplicados y fuentes;
-política en [`deny.toml`](deny.toml)) — es el criterio 2 del apéndice
-[la rueda de serie](tutorial/la-rueda-de-serie.md) convertido en paso
-de workflow.
+Adapter dependencies are audited in CI with `cargo deny` (RUSTSEC
+advisories, license allowlist, duplicates, and sources; policy in
+[`deny.toml`](deny.toml)) — this is criterion 2 of the
+[la rueda de serie](tutorial/la-rueda-de-serie.md) appendix turned
+into a workflow step.
 
-Todos los crates llevan `#![forbid(unsafe_code)]`. Si se usa
-`scripts/check-std-only.sh`, debe interpretarse como una comprobación
-del núcleo y de los puertos `std`-only, excluyendo explícitamente los
-adaptadores de frontera e infraestructura anteriores.
+Every crate declares `#![forbid(unsafe_code)]`. When run,
+`scripts/check-std-only.sh` should be understood as a check on the
+`std`-only core and ports, explicitly excluding the boundary and
+infrastructure adapters listed above.
 
-## Uso
+## Usage
 
 ```bash
-cargo test               # toda la suite (doctests incluidos)
-./scripts/check-docs.sh  # docs del núcleo sin warnings + doctests
-cargo doc --no-deps --open        # la referencia de API, en local
-cargo run -p mcp-stdio   # servidor MCP por stdio
-PORT=8787 cargo run -p mcp-http   # servidor MCP por HTTP (POST /mcp)
+cargo test               # full suite (doctests included)
+./scripts/check-docs.sh  # core docs with no warnings + doctests
+cargo doc --no-deps --open        # API reference, locally
+cargo run -p mcp-stdio   # MCP server over stdio
+PORT=8787 cargo run -p mcp-http   # MCP server over HTTP (POST /mcp)
 ```
 
-Ejemplo de sesión manual (una petición JSON por línea):
+Example manual session (one JSON request per line):
 
 ```bash
 cargo run -p mcp-stdio <<'EOF'
 {"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"manual","version":"0"}}}
 {"jsonrpc":"2.0","method":"notifications/initialized"}
-{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_commit","arguments":{"concept_id":"people/alice","reason":"alta","markdown":"---\ntype: person\ntitle: Alice\n---\nTrabaja en [[projects/okf-mcp]].\n"}}}
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_commit","arguments":{"concept_id":"people/alice","reason":"created","markdown":"---\ntype: person\ntitle: Alice\n---\nWorks at [[projects/okf-mcp]].\n"}}}
 {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory_resolve","arguments":{"concept_id":"people/alice"}}}
 EOF
 ```
 
-Para conectarlo a Claude Code como servidor MCP local:
+To register it as a local MCP server in Claude Code:
 
 ```bash
 claude mcp add okf-memory -- cargo run -q -p mcp-stdio
 ```
 
-En local, `mcp-stdio` y `mcp-http` usan `InMemoryStore`: la memoria
-vive en RAM y cada proceso empieza vacío. La persistencia de producción
-existe en `SupabaseStore`, que usa PostgreSQL/Supabase desde el
-adaptador `vercel-entry` cuando está configurada la variable
-`POSTGRES_URL`.
+Locally, `mcp-stdio` and `mcp-http` use `InMemoryStore`: memory lives
+in RAM and each process starts empty. Production persistence is
+`SupabaseStore`, used by the `vercel-entry` adapter via
+PostgreSQL/Supabase once the `POSTGRES_URL` variable is configured.
 
-Lo mismo por HTTP local:
+Same thing over local HTTP:
 
 ```bash
 PORT=8787 cargo run -q -p mcp-http &
 curl -s -X POST http://127.0.0.1:8787/mcp -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_commit","arguments":{"concept_id":"people/alice","reason":"alta","markdown":"---\ntype: person\ntitle: Alice\n---\nhola\n"}}}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_commit","arguments":{"concept_id":"people/alice","reason":"created","markdown":"---\ntype: person\ntitle: Alice\n---\nhello\n"}}}'
 ```
 
-`ALLOWED_ORIGINS` (lista separada por comas) restringe qué `Origin` de
-navegador se acepta; sin configurar, cualquier origin pasa — aceptable
-en desarrollo, nunca en producción.
+`ALLOWED_ORIGINS` (comma-separated list) restricts which browser
+`Origin` is accepted; if unset, any origin is allowed — fine for
+development, never for production.
 
-## Instalación como Agent Plugin
+## Installing as an Agent Plugin
 
-`plugin.json` y `mcp.json` en la raíz siguen la
+`plugin.json` and `mcp.json` at the repo root follow the
 [Agent Plugins Specification 1.0.0](https://github.com/agentplugins/agent-plugins-spec):
-cualquier cliente compatible descubre el servidor MCP (`cargo run
---release -p mcp-stdio`, sin variables de entorno obligatorias — usa
-`InMemoryStore` por defecto) leyendo esos dos archivos, sin
-configuración manual. `OKF_STORE=github` o `OKF_STORE=supabase`
-cambian el backend (variables de entorno documentadas en
-`crates/mcp-stdio/src/main.rs`); `mcp.json` deliberadamente no las
-fija, porque son credenciales/despliegue, no parte del manifiesto.
+any compatible client discovers the MCP server (`cargo run --release
+-p mcp-stdio`, no required environment variables — defaults to
+`InMemoryStore`) by reading those two files, with no manual
+configuration. `OKF_STORE=github` or `OKF_STORE=supabase` switch the
+backend (env vars documented in `crates/mcp-stdio/src/main.rs`);
+`mcp.json` deliberately doesn't set them, since they're
+credentials/deployment concerns, not part of the manifest.
 
-Instalar SKILLS (contenido, no el servidor) es una llamada a la
-herramienta `skill_ingest` en tiempo de ejecución — ver la tabla de
-abajo — no un paso de instalación del plugin: el servidor no viene
-con skills precargadas, las trae el agente desde la fuente que
-necesite en cada sesión.
+Installing SKILLS (content, not the server) is a call to the
+`skill_ingest` tool at runtime — see the table below — not a plugin
+installation step: the server ships with no preloaded skills; the
+agent pulls them from whatever source it needs, per session.
 
-## Las 20 herramientas
+## The 20 tools
 
-| Herramienta | Qué hace |
+| Tool | What it does |
 | --- | --- |
-| `memory_search` | candidatos compactos de búsqueda híbrida (textual + semántica); `not_type` excluye un `type`, y los borrados lógicamente quedan siempre fuera sin pedirlo |
-| `memory_resolve` | Markdown exacto + vecindario acotado del grafo de `[[enlaces]]` |
-| `memory_reason` | razonamiento OWL-RL/RDFS acotado (`ontology-core`) sobre el vecindario: subclases, transitividad, simetría, propiedades inversas |
-| `memory_commit` | escritura con compare-and-swap (`expected_hash`) y `dry_run` |
-| `memory_consolidate` | consolidar una sesión (título/resumen/entidades/decisiones redactados por el agente) como `type: session-summary`, validado y renderizado a OKF sin LLM del lado del servidor |
-| `memory_history` | revisiones de más reciente a más antigua, paginadas |
-| `memory_delete` | borrado lógico con expected_hash |
-| `memory_list` | listar metadatos de conceptos bajo un prefijo sin leer contenido |
-| `memory_backlinks` | obtener enlaces entrantes hacia un concepto |
-| `memory_embed` | forzar generación e indexación de embeddings pendientes |
-| `memory_patch` | actualizar campos de frontmatter selectivamente sin alterar el cuerpo |
-| `memory_bulk_commit` | commits en lote, con opción de atómico (rollback completo) |
-| `memory_bulk_patch` | patchea frontmatter de varios conceptos en lote (set/remove/add_tags/remove_tags), con opción de atómico |
-| `memory_validate` | reportar enlaces rotos, referencias a borrados y embeddings obsoletos |
-| `memory_status` | resumen operativo rápido de la salud del sistema |
-| `memory_stats` | estadísticas del grafo (hubs, huérfanos, recuentos de tipos/tags) |
-| `spec_propose` | crear un `spec` (requisitos + diseño) spec-driven, antes de implementar |
-| `spec_tasks` | descomponer un spec ya propuesto en tareas enlazadas y rastreables |
-| `spec_status` | progreso de un spec en una sola llamada (retomar trabajo, o que otro agente pregunte) |
-| `skill_ingest` | ingerir skills de un repo/carpeta/archivo externo del lado del servidor |
+| `memory_search` | compact hybrid-search candidates (text + semantic); `not_type` excludes a `type`, and logically deleted items are always excluded without asking |
+| `memory_resolve` | exact Markdown + a bounded neighborhood of `[[links]]` |
+| `memory_reason` | bounded OWL-RL/RDFS reasoning (`ontology-core`) over the neighborhood: subclasses, transitivity, symmetry, inverse properties |
+| `memory_commit` | compare-and-swap write (`expected_hash`) with `dry_run` |
+| `memory_consolidate` | consolidate a session (title/summary/entities/decisions authored by the agent) as `type: session-summary`, validated and rendered to OKF with no server-side LLM |
+| `memory_history` | revisions newest to oldest, paginated |
+| `memory_delete` | logical deletion with `expected_hash` |
+| `memory_list` | list concept metadata under a prefix without reading content |
+| `memory_backlinks` | get inbound links to a concept |
+| `memory_embed` | force generation and indexing of pending embeddings |
+| `memory_patch` | selectively update frontmatter fields without touching the body |
+| `memory_bulk_commit` | batch commits, with an optional atomic mode (full rollback) |
+| `memory_bulk_patch` | batch-patch frontmatter across multiple concepts (set/remove/add_tags/remove_tags), with an optional atomic mode |
+| `memory_validate` | report broken links, references to deleted concepts, and stale embeddings |
+| `memory_status` | quick operational summary of system health |
+| `memory_stats` | graph statistics (hubs, orphans, type/tag counts) |
+| `spec_propose` | create a spec-driven `spec` (requirements + design) before implementing |
+| `spec_tasks` | break a proposed spec into linked, trackable tasks |
+| `spec_status` | a spec's progress in one call (resume work, or let another agent ask) |
+| `skill_ingest` | ingest skills from an external repo/folder/file, server-side |
 
-## UI interactiva (`mcp-app/`)
+## Interactive UI (`mcp-app/`)
 
-19 de las 20 herramientas (las 13 `memory_*` originales más
+19 of the 20 tools (the 13 original `memory_*` tools plus
 `memory_reason`, `memory_bulk_patch`, `spec_propose`, `spec_tasks`,
-`spec_status` y `skill_ingest` cuando está anunciada) anuncian
-`ui_resource_uri: Some("ui://okf-memory/<nombre>")`
-— una URI
-**propia por herramienta**, no una compartida: varios hosts MCP Apps
-reutilizan el iframe ya abierto cuando la URI no cambia entre una
-llamada y la siguiente, así que una URI por tool es lo que garantiza
-que cada invocación abra la vista correcta (ver capítulo 15 del
-tutorial, sección 6). `memory_consolidate` es la única sin vista propia
-(`ui_resource_uri: None`): su resultado es el mismo JSON compacto que
-`memory_commit`, sin nada que gane con un iframe dedicado. Un cliente
-MCP Apps compatible renderiza esa URI
-en un iframe en vez del JSON crudo.
+`spec_status`, and `skill_ingest` when advertised) return
+`ui_resource_uri: Some("ui://okf-memory/<name>")` — a URI **unique per
+tool**, not a shared one: several MCP Apps hosts reuse an already-open
+iframe when the URI doesn't change between calls, so a per-tool URI is
+what guarantees each invocation opens the right view (see tutorial
+chapter 15, section 6). `memory_consolidate` is the only one without
+its own view (`ui_resource_uri: None`): its result is the same compact
+JSON as `memory_commit`, with nothing to gain from a dedicated iframe.
+A compliant MCP Apps client renders that URI in an iframe instead of
+raw JSON.
 
-Esa vista es una app React independiente en [`mcp-app/`](mcp-app/)
-(Vite + shadcn + `@modelcontextprotocol/ext-apps`, tema
-**brutalista**: negro/blanco, un acento amarillo eléctrico, cero
-radio de esquina, sombras duras, monoespaciada), con un componente por
-herramienta (`mcp-app/src/tools/<nombre>/`) enrutado en tiempo de
-ejecución por el `toolName` que inyecta el host — el mismo patrón de
-"micro-manifest" del starter, envuelto en un `ErrorBoundary` propio
-por herramienta para que un fallo de render no deje la pantalla en
-blanco. Piezas que hacen la UI interactiva de verdad, no solo un
-visor:
+That view is a standalone React app in [`mcp-app/`](mcp-app/) (Vite +
+shadcn + `@modelcontextprotocol/ext-apps`, **brutalist** theme:
+black/white, one electric-yellow accent, zero corner radius, hard
+shadows, monospace), with one component per tool
+(`mcp-app/src/tools/<name>/`) routed at runtime by the `toolName` the
+host injects — the same "micro-manifest" pattern as the starter kit,
+wrapped in a per-tool `ErrorBoundary` so a render failure never blanks
+the whole screen. Pieces that make the UI genuinely interactive, not
+just a viewer:
 
-- **[React Flow](https://reactflow.dev/ui)** (`@xyflow/react`) para
-  `memory_resolve` (vecindario) y `memory_backlinks` (enlaces
-  entrantes): layout radial determinista, click en un nodo vuelve a
-  llamar a la herramienta con ese `concept_id` y recentra el grafo.
-- **[Recharts](https://ui.shadcn.com/charts)** para `memory_stats`,
-  `memory_history` y `memory_validate` (conteos por tipo/tag, hubs,
-  revisiones por actor, salud del grafo).
-- **Llamadas cruzadas a otras herramientas** (`usePeekTool`, via
-  `app.callServerTool`): `spec_status` resuelve una tarea `next_pending`
-  con `memory_resolve` sin salir de la vista; `spec_propose` puede
-  encadenar `spec_tasks`; `skill_ingest` resuelve cada skill recién
-  importada.
-- **`app.updateModelContext`** (`AddContextButton`, NO
-  `app.sendMessage`): cuando el HUMANO re-ejecuta una herramienta de
-  escritura/diagnóstico desde la UI (`memory_commit`, `memory_patch`,
-  `memory_delete`, `memory_bulk_commit`, `memory_bulk_patch`,
-  `memory_validate`, `spec_propose`, `spec_tasks`, `spec_status`,
-  `skill_ingest`) con
-  argumentos que el modelo nunca vio, ese resultado solo existe en el
-  navegador — nada se lo cuenta al modelo salvo que la UI lo haga
-  explícitamente. `updateModelContext` se lo entrega de forma
-  diferida (sin interrumpir, sin disparar una respuesta inmediata) para
-  el siguiente turno; por eso solo aparece cuando `useServerTool`
-  reporta `isManual` (un re-run disparado desde la UI), nunca para el
-  resultado inicial que ya inyectó el host — ese ya está en el
-  contexto del modelo porque fue SU llamada.
+- **[React Flow](https://reactflow.dev/ui)** (`@xyflow/react`) for
+  `memory_resolve` (neighborhood) and `memory_backlinks` (inbound
+  links): deterministic radial layout; clicking a node re-calls the
+  tool with that `concept_id` and recenters the graph.
+- **[Recharts](https://ui.shadcn.com/charts)** for `memory_stats`,
+  `memory_history`, and `memory_validate` (counts by type/tag, hubs,
+  revisions by actor, graph health).
+- **Cross-tool calls** (`usePeekTool`, via `app.callServerTool`):
+  `spec_status` resolves a `next_pending` task with `memory_resolve`
+  without leaving the view; `spec_propose` can chain into
+  `spec_tasks`; `skill_ingest` resolves each newly imported skill.
+- **`app.updateModelContext`** (`AddContextButton`, **not**
+  `app.sendMessage`): when a HUMAN re-runs a write/diagnostic tool
+  from the UI (`memory_commit`, `memory_patch`, `memory_delete`,
+  `memory_bulk_commit`, `memory_bulk_patch`, `memory_validate`,
+  `spec_propose`, `spec_tasks`, `spec_status`, `skill_ingest`) with
+  arguments the model never saw, that result exists only in the
+  browser — the model learns nothing about it unless the UI says so
+  explicitly. `updateModelContext` delivers it deferred (no
+  interruption, no immediate response triggered) for the next turn;
+  that's why it only fires when `useServerTool` reports `isManual` (a
+  UI-triggered re-run), never for the initial result the host already
+  injected — that one is already in the model's context because it
+  was the model's own call.
 
-`pnpm build` en `mcp-app/` compila TODO — JS, CSS y los estilos de
-React Flow — en un único `dist/mcp-app.html` autocontenido
-(`vite-plugin-singlefile`); `pnpm run build:sync` además lo copia a
+`pnpm build` in `mcp-app/` compiles EVERYTHING — JS, CSS, and React
+Flow's styles — into a single self-contained `dist/mcp-app.html`
+(`vite-plugin-singlefile`); `pnpm run build:sync` also copies it to
 [`crates/memory-tools/assets/mcp-app.html`](crates/memory-tools/assets/mcp-app.html),
-que es lo que `include_str!` empotra en el binario. El build de
-Vercel (sección siguiente) solo compila Rust — nunca ejecuta `pnpm` —
-así que ese HTML compilado **tiene que estar comiteado**;
+which is what `include_str!` embeds into the binary. The Vercel build
+(next section) only compiles Rust — it never runs `pnpm` — so that
+compiled HTML **must be committed**;
 [`.github/workflows/mcp-app.yml`](.github/workflows/mcp-app.yml)
-reconstruye la UI en cada push/PR y falla si la copia en el repo no
-coincide con un build fresco, para que eso nunca quede desincronizado
-en `main`. Detalles de arquitectura del propio starter en
-[`mcp-app/docs/`](mcp-app/docs/).
+rebuilds the UI on every push/PR and fails if the copy in the repo
+doesn't match a fresh build, so it can never drift on `main`. Starter
+architecture details live in [`mcp-app/docs/`](mcp-app/docs/).
 
 ### `skill_ingest`
 
-Ingiere skills desde una fuente externa **sin que el contenido pase por
-el contexto del modelo cliente, ni por ningún LLM del servidor**: el
-servidor descarga, detecta el formato, empaqueta y commitea; al
-cliente solo le llega el resumen del resultado. Es el mismo principio
-que `memory_embed` — delegar el trabajo pesado al servidor.
+Ingests skills from an external source **without the content ever
+passing through the client model's context, or through any
+server-side LLM**: the server downloads, detects the format, packages,
+and commits; the client only receives a summary of the result. Same
+principle as `memory_embed` — delegate the heavy work to the server.
 
 ```json
 {"name":"skill_ingest","arguments":{
@@ -278,345 +269,369 @@ que `memory_embed` — delegar el trabajo pesado al servidor.
 }}
 ```
 
-- `source`: URL de repo, subcarpeta (`.../tree/main/skills`) o archivo
-  de GitHub, el atajo `owner/repo`, o una URL directa a un archivo.
-- `format` (opcional): `auto` (por defecto), `agentic-skills`
-  (convención `SKILL.md` por subdirectorio, la de `npx skills add`),
-  `shadcn` (`components/ui/*.tsx`), `okf` (ya es OKF → commit con los
-  bytes exactos) o `raw` (envolver markdown tal cual).
-- `dry_run` (opcional): devuelve el plan (unidades, títulos, acciones,
-  avisos) sin escribir nada.
+- `source`: a GitHub repo URL, subfolder (`.../tree/main/skills`) or
+  file URL, the `owner/repo` shorthand, or a direct file URL.
+- `format` (optional): `auto` (default), `agentic-skills` (the
+  per-subdirectory `SKILL.md` convention used by `npx skills add`),
+  `shadcn` (`components/ui/*.tsx`), `okf` (already OKF → commit the
+  exact bytes), or `raw` (wrap the markdown as-is).
+- `dry_run` (optional): returns the plan (units, titles, actions,
+  warnings) without writing anything.
 
-La conversión es SIEMPRE determinista: se genera solo la cabecera OKF
-(`type: skill`, `title`, `tags`, `source`, `license`) y el contenido
-original se conserva ÍNTEGRO, etiquetado `verbatim-import`. No existe
-un modo de síntesis con LLM — se evaluó y se descartó a propósito:
-reescribir con un modelo no resuelve nada de licencia (una reescritura
-sigue siendo obra derivada) y además cuesta cuota/tokens en cada
-ingesta. El contenido de una skill ES la skill.
+Conversion is ALWAYS deterministic: only the OKF header is generated
+(`type: skill`, `title`, `tags`, `source`, `license`), and the
+original content is preserved IN FULL, tagged `verbatim-import`. There
+is no LLM synthesis mode — it was considered and deliberately dropped:
+rewriting with a model doesn't resolve any licensing concern (a
+rewrite is still a derivative work) and it costs quota/tokens on every
+ingest. The content of a skill IS the skill.
 
-Un repo con varias skills (`skills/*/SKILL.md`) produce un concepto
-por skill en una sola llamada, con el mismo mecanismo interno que
-`memory_bulk_commit` (no atómico: cada unidad se aplica o se descarta
-por su cuenta y el resumen lo cuenta todo). La reingesta es
-idempotente si nada cambió; si el concepto ya existe con otro
-contenido, la unidad se descarta con un aviso — actualizar exige
-`memory_commit` con `expected_hash`, como cualquier otra escritura.
+A repo with multiple skills (`skills/*/SKILL.md`) produces one concept
+per skill in a single call, using the same internal mechanism as
+`memory_bulk_commit` (non-atomic: each unit is applied or dropped on
+its own, and the summary reports everything). Re-ingesting is
+idempotent if nothing changed; if the concept already exists with
+different content, that unit is dropped with a warning — updating it
+requires `memory_commit` with `expected_hash`, like any other write.
 
-La herramienta solo se anuncia en despliegues con el adaptador de
-descarga configurado (`vercel-entry`); `mcp-stdio` y `mcp-http`
-locales son `std`-only y no la exponen. `GITHUB_TOKEN` (opcional)
-sube el límite de peticiones de la API de GitHub y permite repos
-privados.
+The tool is only advertised on deployments with the download adapter
+configured (`vercel-entry`); local `mcp-stdio` and `mcp-http` are
+`std`-only and don't expose it. `GITHUB_TOKEN` (optional) raises the
+GitHub API rate limit and allows access to private repos.
 
-#### Licencia y contenido sospechoso: señales deterministas, sin modelo
+#### License and suspicious content: deterministic signals, no model
 
-La respuesta de `skill_ingest` incluye dos señales que **nunca
-bloquean nada**, calculadas sin llamar a ningún LLM (barato: solo texto
-y una consulta HTTP ya necesaria):
+The `skill_ingest` response includes two signals that **never block
+anything**, computed without calling any LLM (cheap: plain text plus
+one HTTP call that's already required):
 
-- **`license`**: identificador SPDX de la fuente (campo
-  `license.spdx_id` de la API de repos de GitHub — la misma llamada
-  que ya se hace para resolver la rama por defecto). `null` si GitHub
-  no lo detecta. Es puramente informativo: muchas fuentes de skills
-  (pensadas para `npx skills add` y similares) se publican
-  precisamente para copiarse, así que exigir una licencia confirmada
-  aquí sería fricción sin valor real.
-- **`warnings`** por unidad: heurísticos de texto (sin modelo, sin red)
-  sobre contenido potencialmente malicioso en lo que se va a ingerir
-  como instrucciones para un agente — frases de prompt injection
-  conocidas (`"ignore previous instructions"` y similares), un
-  `curl`/`wget` canalizado directo a un shell, o un bloque largo con
-  pinta de base64. Revísalos tú (o un subagente) antes de confiar en el
-  contenido; el servidor nunca decide por ti.
+- **`license`**: the source's SPDX identifier (`license.spdx_id` from
+  the GitHub repos API — the same call already made to resolve the
+  default branch). `null` if GitHub doesn't detect one. Purely
+  informational: many skill sources (built for `npx skills add` and
+  similar tools) are published specifically to be copied, so requiring
+  a confirmed license here would be friction with no real value.
+- **`warnings`** per unit: text-only heuristics (no model, no network)
+  over content that's about to be ingested as instructions for an
+  agent — known prompt-injection phrases (`"ignore previous
+  instructions"` and similar), a `curl`/`wget` piped straight into a
+  shell, or a long block that looks like base64. Review these yourself
+  (or with a subagent) before trusting the content; the server never
+  decides for you.
 
-Owners de confianza (`SKILL_INGEST_TRUSTED_OWNERS`, por defecto solo
-`anthropics`) siguen pasando por el heurístico, pero sus avisos no
-viajan en la respuesta — sus repos de skills ya pasan por revisión
-propia, así que el mismo escrutinio ahí sería ruido.
+Trusted owners (`SKILL_INGEST_TRUSTED_OWNERS`, defaults to
+`anthropics` only) still go through the heuristic, but their warnings
+don't travel in the response — their skill repos already go through
+their own review, so the same scrutiny here would just be noise.
 
 ### Spec-driven development: `spec_propose` / `spec_tasks` / `spec_status`
 
-Tres herramientas para el mismo patrón que popularizaron [OpenSpec](https://github.com/Fission-AI/OpenSpec)
-y [GitHub Spec Kit](https://github.com/github/spec-kit) — acordar requisitos y
-diseño ANTES de escribir código — pero sobre la memoria compartida en vez de
-archivos locales: cualquier cliente MCP (Claude Code, ChatGPT, u otro) puede
-proponer el spec, y **cualquier otro** (en otra sesión, en otro momento,
-incluso en otro agente) puede retomarlo o preguntar el progreso, porque el
-estado no vive en el contexto de una conversación — vive en el grafo.
+Three tools for the same pattern popularized by
+[OpenSpec](https://github.com/Fission-AI/OpenSpec) and
+[GitHub Spec Kit](https://github.com/github/spec-kit) — agree on
+requirements and design BEFORE writing code — but over shared memory
+instead of local files: any MCP client (Claude Code, ChatGPT, or
+another) can propose the spec, and **any other** (in a different
+session, at a different time, even a different agent) can resume it or
+ask about progress, because the state doesn't live in one
+conversation's context — it lives in the graph.
 
-No hay tipos ni tablas nuevas: un `spec` es un concepto `type: spec` con
-secciones "Requisitos"/"Diseño"; una `task` es `type: task` enlazada de vuelta
-con `[[implements:<spec_id>]]` y, opcionalmente, a otras tareas con
-`[[depends_on:<task_id>]]`. El estado de ambos es un tag `status-*`
-(`status-proposed`, `status-pending`, `status-in_progress`, `status-done`,
-`status-blocked`), así que avanzar una tarea es un `memory_patch` normal
-(`remove_tags`/`add_tags`) — no hace falta una cuarta herramienta para eso.
+No new types or tables: a `spec` is a `type: spec` concept with
+"Requirements"/"Design" sections; a `task` is `type: task`, linked back
+with `[[implements:<spec_id>]]` and, optionally, to other tasks with
+`[[depends_on:<task_id>]]`. Status for both is a `status-*` tag
+(`status-proposed`, `status-pending`, `status-in_progress`,
+`status-done`, `status-blocked`), so advancing a task is a plain
+`memory_patch` (`remove_tags`/`add_tags`) — no need for a fourth tool.
 
 ```json
 {"name":"spec_propose","arguments":{
-  "concept_id":"specs/busqueda-hibrida-real",
-  "title":"Hybrid search en una sola consulta SQL",
-  "requirements":"Combinar ranking textual y semántico en un solo ORDER BY...",
-  "design":"Normalizar ambas distancias a [0,1] y sumarlas con un peso configurable..."
+  "concept_id":"specs/real-hybrid-search",
+  "title":"Hybrid search in a single SQL query",
+  "requirements":"Combine textual and semantic ranking in one ORDER BY...",
+  "design":"Normalize both distances to [0,1] and sum them with a configurable weight..."
 }}
 ```
 
 ```json
 {"name":"spec_tasks","arguments":{
-  "spec_id":"specs/busqueda-hibrida-real",
+  "spec_id":"specs/real-hybrid-search",
   "tasks":[
-    {"title":"Normalizar distancia de coseno a 0-1"},
-    {"title":"Añadir peso configurable", "description":"Via budget o argumento de memory_search",
-     "depends_on":["Normalizar distancia de coseno a 0-1"]}
+    {"title":"Normalize cosine distance to 0-1"},
+    {"title":"Add a configurable weight", "description":"Via budget or a memory_search argument",
+     "depends_on":["Normalize cosine distance to 0-1"]}
   ]
 }}
 ```
 
-`depends_on` acepta el título de otra tarea de este MISMO lote (como arriba),
-o el `concept_id` de una tarea ya existente (dependencia cruzada con otro
-`spec_tasks` anterior, incluso de otro spec).
+`depends_on` accepts either the title of another task in this SAME
+batch (as above), or the `concept_id` of an existing task
+(cross-referencing a prior `spec_tasks` call, even from a different
+spec).
 
 ```json
-{"name":"spec_status","arguments":{"spec_id":"specs/busqueda-hibrida-real"}}
+{"name":"spec_status","arguments":{"spec_id":"specs/real-hybrid-search"}}
 ```
 
-`spec_status` devuelve el estado del propio spec, cuántas tareas hay por
-estado, el progreso (0-1), y dos listas separadas calculadas con `backlinks()`
-(ya existente) sin releer cada tarea una por una:
-- **`next_pending`**: tareas pendientes que YA se pueden empezar — todas sus
-  `depends_on` están `done` (o no tienen ninguna).
-- **`waiting_on_dependencies`** (recuento): pendientes que aún esperan por
-  otra tarea. No aparecen en `next_pending` hasta que su dependencia se
-  marque `done`.
+`spec_status` returns the spec's own status, how many tasks exist per
+status, progress (0-1), and two lists computed from the already
+existing `backlinks()` without re-reading every task one by one:
+- **`next_pending`**: pending tasks that are ready to start now — all
+  their `depends_on` are `done` (or there are none).
+- **`waiting_on_dependencies`** (a count): pending tasks still waiting
+  on another task. They don't appear in `next_pending` until their
+  dependency is marked `done`.
 
-#### Gauntlet de evidencia antes de `status-done`
+#### Evidence gauntlet before `status-done`
 
-El paso a `status-done` de una tarea está **enforced**, no solo documentado:
-`memory_patch` rechaza el patch si el cuerpo del documento no tiene ya una
-sección `## Evidencia` con contenido real (comandos ejecutados y resultados
-con números, no un título vacío). Es el patrón EVIDENCE de
-[old-coder](https://github.com/AmazingAng/old-coder) — "el humano no lee la
-implementación, su confianza viene de dos artefactos: una especificación
-ejecutable aprobada antes de escribir código, y un reporte de evidencia
-después" — aplicado sobre el flujo `spec_propose`/`spec_tasks`/`spec_status`
-ya existente, sin tool nuevo ni esquema nuevo: `spec_propose` ya cubre el
-gate SPEC (requisitos + diseño aprobados antes de implementar); este gate
-cubre EVIDENCE.
+The transition to `status-done` for a task is **enforced, not just
+documented**: `memory_patch` rejects the patch if the document body
+doesn't already have a `## Evidence` section with real content
+(commands run and results with numbers, not an empty heading). This is
+the EVIDENCE pattern from
+[old-coder](https://github.com/AmazingAng/old-coder) — "the human
+doesn't read the implementation; their confidence comes from two
+artifacts: an executable specification approved before writing code,
+and an evidence report afterward" — applied on top of the existing
+`spec_propose`/`spec_tasks`/`spec_status` flow, with no new tool or
+schema: `spec_propose` already covers the SPEC gate (requirements +
+design approved before implementing); this gate covers EVIDENCE.
 
 ```json
 {"name":"memory_commit","arguments":{
-  "concept_id":"specs/busqueda-hibrida-real/tasks/01-normalizar-coseno",
-  "expected_hash":"<hash del memory_resolve previo>",
-  "markdown":"<markdown existente>\n## Evidencia\n\ncargo test -p store-core: 12 passed; 0 failed. coverage líneas cambiadas: 100% (9/9).\n",
-  "reason":"evidencia del gauntlet"
+  "concept_id":"specs/real-hybrid-search/tasks/01-normalize-cosine",
+  "expected_hash":"<hash from the previous memory_resolve>",
+  "markdown":"<existing markdown>\n## Evidence\n\ncargo test -p store-core: 12 passed; 0 failed. line coverage on changed lines: 100% (9/9).\n",
+  "reason":"gauntlet evidence"
 }}
 ```
 
-Solo entonces acepta `memory_patch` el `add_tags: ["status-done"]`. La
-heurística es deliberadamente simple (cuenta caracteres no vacíos tras el
-encabezado) — no sustituye un gauntlet real de CI (tests, cobertura,
-mutación), solo evita que una tarea se marque `done` sin dejar rastro de
-por qué. El propio workflow de CI
-([`.github/workflows/rust.yml`](.github/workflows/rust.yml)) añade la capa
-de lint del gauntlet: `cargo clippy --workspace --all-targets -- -D
-warnings`, que falla (exit nonzero) en vez de solo reportar — la regla de
-old-coder de que "imprimir el % y salir con 0 es un reporte, no una
-restricción".
+Only then does `memory_patch` accept `add_tags: ["status-done"]`. The
+heuristic is deliberately simple (counts non-empty characters after
+the heading) — it's not a substitute for a real CI gauntlet (tests,
+coverage, mutation), it just prevents a task from being marked `done`
+without leaving a trace of why. The CI workflow itself
+([`.github/workflows/rust.yml`](.github/workflows/rust.yml)) adds the
+gauntlet's lint layer: `cargo clippy --workspace --all-targets -- -D
+warnings`, which fails (nonzero exit) instead of just reporting — the
+old-coder rule that "printing the percentage and exiting 0 is a
+report, not a restriction."
 
-## Desplegar en Vercel
+## Deploying to Vercel
 
-1. En el dashboard de Vercel: **Add New Project** → importa
-   `pmaojo/okf-mcp` desde GitHub.
-2. **Importante:** en la configuración del proyecto, fija
-   **Root Directory** = `crates/vercel-entry` — ahí es donde vive el
-   `Cargo.toml` + `api/mcp.rs` que el *builder* de Rust de Vercel
-   espera encontrar (el repo entero es un *workspace* de Cargo; este
-   crate es el adaptador que sabe hablar con Vercel).
-3. Configura las variables de entorno necesarias:
-   - `POSTGRES_URL` (obligatoria): cadena de conexión PostgreSQL usada
-     por `SupabaseStore` y por el endpoint de outbox.
-   - `ALLOWED_ORIGINS` (muy recomendada): lista de origins permitidos,
-     separada por comas. Sin ella, cualquier origin de navegador se
-     acepta.
-   - `JWKS_URL` y `JWT_AUDIENCE` (recomendadas en producción): activan
-     validación criptográfica de JWTs; sin `JWKS_URL`, el adaptador MCP
-     corre en modo local/desarrollo abierto.
-   - `OAUTH_ISSUER` y `SUPABASE_ANON_KEY`: habilitan el proxy OAuth y la
-     pantalla de consentimiento hacia Supabase.
-   - `GEMINI_API_KEY` (opcional): primer proveedor de búsqueda
-     semántica/embeddings; sin ella (o sin ningún proveedor
-     configurado), la búsqueda degrada a coincidencia textual. No la
-     usa `skill_ingest` — esa herramienta no llama a ningún LLM.
-   - `MISTRAL_API_KEY`, `COHERE_API_KEY` (opcionales): respaldo
-     automático de embeddings si Gemini falla — ver la tabla de
-     proveedores de embeddings más abajo.
-   - `GITHUB_TOKEN` (opcional): lo usa `skill_ingest` para subir el
-     límite de peticiones de la API de GitHub y acceder a repos
-     privados al descargar fuentes.
-   - `SKILL_INGEST_TRUSTED_OWNERS` (opcional): lista separada por comas
-     de owners cuyo escrutinio de contenido sospechoso en
-     `skill_ingest` se omite en la respuesta; por defecto solo
-     `anthropics`.
-4. Si usas la integración de Supabase en el marketplace de Vercel,
-   mapea sus credenciales a los nombres anteriores. El código actual
-   espera `POSTGRES_URL` para la conexión de base de datos.
+1. In the Vercel dashboard: **Add New Project** → import
+   `pmaojo/okf-mcp` from GitHub.
+2. **Important:** in the project settings, set **Root Directory** =
+   `crates/vercel-entry` — that's where the `Cargo.toml` + `api/mcp.rs`
+   that Vercel's Rust builder expects live (the whole repo is a Cargo
+   *workspace*; this crate is the adapter that knows how to talk to
+   Vercel).
+3. Configure the required environment variables:
+   - `POSTGRES_URL` (required): PostgreSQL connection string used by
+     `SupabaseStore` and the outbox endpoint.
+   - `ALLOWED_ORIGINS` (strongly recommended): comma-separated list of
+     allowed origins. Without it, any browser origin is accepted.
+   - `JWKS_URL` and `JWT_AUDIENCE` (recommended in production): enable
+     cryptographic JWT validation; without `JWKS_URL`, the MCP adapter
+     runs in open local/development mode.
+   - `OAUTH_ISSUER` and `SUPABASE_ANON_KEY`: enable the OAuth proxy and
+     the Supabase consent screen.
+   - `GEMINI_API_KEY` (optional): first semantic search/embeddings
+     provider; without it (or any provider configured), search
+     degrades to text matching. Not used by `skill_ingest` — that tool
+     never calls an LLM.
+   - `MISTRAL_API_KEY`, `COHERE_API_KEY` (optional): automatic
+     embeddings fallback if Gemini fails — see the embeddings provider
+     table below.
+   - `GITHUB_TOKEN` (optional): used by `skill_ingest` to raise the
+     GitHub API rate limit and access private repos when downloading
+     sources.
+   - `SKILL_INGEST_TRUSTED_OWNERS` (optional): comma-separated list of
+     owners whose suspicious-content scrutiny in `skill_ingest` is
+     omitted from the response; defaults to `anthropics` only.
+4. If you use the Supabase integration from the Vercel marketplace,
+   map its credentials to the names above. The current code expects
+   `POSTGRES_URL` for the database connection.
 
 [`crates/vercel-entry/vercel.json`](crates/vercel-entry/vercel.json)
-reescribe `/mcp` → `/api/mcp` (y el descubrimiento OAuth,
-`/.well-known/oauth-protected-resource` → `/api/mcp`) para que la URL
-pública sea la que promete el resto de esta documentación. Vive DENTRO
-de `crates/vercel-entry`, no en la raíz del repo: como el **Root
-Directory** del proyecto está fijado ahí (punto anterior), Vercel solo
-lee `vercel.json` relativo a esa carpeta — un `vercel.json` en la raíz
-del repo se ignora en silencio.
+rewrites `/mcp` → `/api/mcp` (and OAuth discovery,
+`/.well-known/oauth-protected-resource` → `/api/mcp`) so the public URL
+matches the rest of this documentation. It lives INSIDE
+`crates/vercel-entry`, not at the repo root: since the project's
+**Root Directory** is set there (previous point), Vercel only reads
+`vercel.json` relative to that folder — a `vercel.json` at the repo
+root is silently ignored.
 
-## Prototipo: GitHub como fuente de verdad (`github-store`)
+## Prototype: GitHub as source of truth (`github-store`)
 
-`GithubStore` explora sustituir Postgres por un repositorio de GitHub
-como almacén primario: los documentos son archivos markdown en una
-rama, el CAS lo cierra el parámetro `sha` de la API de contents, la
-historia de revisiones viaja en trailers `Memory-Rev:` de los mensajes
-de commit, y el lote atómico usa la API de git data (tree → commit →
-update de ref sin force, todo-o-nada real).
+`GithubStore` explores replacing Postgres with a GitHub repository as
+the primary store: documents are markdown files on a branch, CAS is
+enforced by the `sha` parameter of the contents API, revision history
+travels in `Memory-Rev:` commit message trailers, and the atomic batch
+uses the git data API (tree → commit → non-force ref update, real
+all-or-nothing).
 
-Pasa **la misma suite de contrato** que `InMemoryStore` y
-`SupabaseStore` (`store_core::contract::run_all`), ejecutada contra
-una API de GitHub falsa en memoria
-(`crates/github-store/tests/contract.rs`); el smoke contra la API real
-es `cargo run -p github-store --example smoke -- owner/repo` (escribe
-de verdad: usar un repo de pruebas).
+It passes **the same contract suite** as `InMemoryStore` and
+`SupabaseStore` (`store_core::contract::run_all`), run against a fake
+in-memory GitHub API (`crates/github-store/tests/contract.rs`); the
+real-API smoke test is `cargo run -p github-store --example smoke --
+owner/repo` (it writes for real — use a test repo).
 
-### Cómo activarlo
+### Enabling it
 
-La variable `OKF_STORE` selecciona el backend en los entry points:
+The `OKF_STORE` variable selects the backend at the entry points:
 
-- `mcp-stdio`: `OKF_STORE=github` (defecto: `memory`)
-- `vercel-entry`: `OKF_STORE=github` (defecto: `supabase`)
+- `mcp-stdio`: `OKF_STORE=github` (default: `memory`)
+- `vercel-entry`: `OKF_STORE=github` (default: `supabase`)
 
-Variables de entorno de `GithubStore::from_env()`:
+`GithubStore::from_env()` environment variables:
 
-| Variable | Obligatoria | Formato | Defecto |
-| -------- | ----------- | ------- | ------- |
-| `GITHUB_REPO` | Sí | `owner/repo` | — |
-| `GITHUB_TOKEN` | Sí | token PAT o fine-grained | — |
-| `GITHUB_BRANCH` | No | nombre de rama | `main` |
-| `GITHUB_PATH` | No | prefijo de directorio | `memoria` |
+| Variable | Required | Format | Default |
+| -------- | -------- | ------ | ------- |
+| `GITHUB_REPO` | Yes | `owner/repo` | — |
+| `GITHUB_TOKEN` | Yes | PAT or fine-grained token | — |
+| `GITHUB_BRANCH` | No | branch name | `main` |
+| `GITHUB_PATH` | No | directory prefix | `memoria` |
 
-Para resolver esto, el servidor implementa el modo de almacenamiento compuesto **`IndexedStore`** (se activa automáticamente si `OKF_STORE=github` y `POSTGRES_URL` están configurados en el entorno): las escrituras van sincrónicamente a GitHub y el índice semántico se actualiza en Supabase. 
+To reconcile the two stores, the server implements the composite
+**`IndexedStore`** storage mode (activated automatically when
+`OKF_STORE=github` and `POSTGRES_URL` are both set): writes go
+synchronously to GitHub, and the semantic index is updated in
+Supabase.
 
-Además, el daemon de `outbox-worker`, el Cron de Vercel y el webhook de GitHub (`/api/github-webhook`, ver más abajo) incorporan un **bucle de reconciliación** (`reconcile_github_to_supabase`) que alinea Supabase con el estado real del repositorio de GitHub (reparando el índice ante caídas o cambios directos hechos en la web de GitHub).
+In addition, the `outbox-worker` daemon, the Vercel Cron job, and the
+GitHub webhook (`/api/github-webhook`, see below) all run a
+**reconciliation loop** (`reconcile_github_to_supabase`) that aligns
+Supabase with the real state of the GitHub repository (repairing the
+index after outages or direct edits made on GitHub's web UI).
 
-En modo `IndexedStore`, `GithubStore` ya escribe cada commit/delete directamente en `{GITHUB_PATH}/{concept_id}.md` (git-data API); `outbox-worker::github_sync` (Contents API, ver la sección de Outbox) escribe en la misma ruta — comparten la función que resuelve `GITHUB_PATH` para que nunca puedan apuntar a carpetas distintas — pero se salta ese paso automáticamente cuando `OKF_STORE=github`, porque GitHub ya recibió la escritura y repetirla ahí sería un commit duplicado.
+In `IndexedStore` mode, `GithubStore` already writes every commit/delete
+directly to `{GITHUB_PATH}/{concept_id}.md` (git-data API);
+`outbox-worker::github_sync` (Contents API, see the Outbox section
+below) writes to the same path — they share the function that resolves
+`GITHUB_PATH` so they can never point at different folders — but it
+skips that step automatically when `OKF_STORE=github`, since GitHub
+already received the write and repeating it there would be a duplicate
+commit.
 
+## Outbox, GitHub, and embeddings
 
-## Outbox, GitHub y embeddings
+Milestone 4 is implemented with a **Transactional Outbox** pattern:
+persisted writes generate pending events, and a separate worker
+processes them in batches with `SKIP LOCKED` to allow concurrency
+without stepping on other workers.
 
-El hito 4 se implementa con un patrón **Transactional Outbox**: las
-escrituras persistidas generan eventos pendientes, y un worker separado
-los procesa por lotes con `SKIP LOCKED` para permitir concurrencia sin
-pisarse.
+Three ways to trigger it:
 
-Hay tres formas de dispararlo:
+- `cargo run -p outbox-worker`: a long-running daemon meant for
+  Fly.io, Railway, a container, or a VPS. Retries processing every few
+  seconds when there's no work.
+- `/api/outbox` in `vercel-entry`: a serverless handler meant for
+  Vercel Cron. Runs one batch per invocation; the cron is declared in
+  `crates/vercel-entry/vercel.json` (once a day by default — this is
+  the safety net, not the fast path).
+- `/api/github-webhook` in `vercel-entry`: reacts to a real `push` on
+  the GitHub repository and runs `reconcile_github_to_supabase`
+  instantly, instead of waiting for the next cron tick. See the
+  subsection below.
 
-- `cargo run -p outbox-worker`: daemon de larga duración pensado para
-  Fly.io, Railway, un contenedor o un VPS. Repite el procesamiento cada
-  pocos segundos cuando no hay trabajo.
-- `/api/outbox` en `vercel-entry`: handler serverless pensado para
-  Vercel Cron. Ejecuta un lote por invocación; el cron está declarado en
-  `crates/vercel-entry/vercel.json` (por defecto, una vez al día — es la
-  red de seguridad, no el camino rápido).
-- `/api/github-webhook` en `vercel-entry`: reacciona a un `push` real en
-  el repositorio de GitHub y ejecuta `reconcile_github_to_supabase` al
-  instante, en vez de esperar al próximo tick del cron. Ver la
-  subsección siguiente.
+Environment variables:
 
-Variables de entorno:
+| Variable | Required | Use |
+| -------- | -------- | --- |
+| `POSTGRES_URL` | Yes | PostgreSQL/Supabase connection to read and mark events. |
+| `GITHUB_TOKEN` | No | Token to sync documents with GitHub. If missing, that sync step is skipped. |
+| `GITHUB_REPO` | No | Target repository, `user/repo` format. If missing, GitHub sync is skipped. |
+| `GITHUB_PATH` | No | Directory prefix (same `memoria` default as `GithubStore::from_env`, above). Shares the same resolution as reads, so writes and reconciliation never look at different folders. |
+| `GEMINI_API_KEY` | No | Generates embeddings for `pgvector` (first provider); if missing or it fails, falls back to `MISTRAL_API_KEY`/`COHERE_API_KEY` if configured — see the embeddings section below. If none are present, that step is skipped. |
+| `MISTRAL_API_KEY`, `COHERE_API_KEY` | No | Automatic embeddings fallback if Gemini fails or isn't configured. |
+| `ONCE` | No | In the local daemon, process one batch and exit when present. |
+| `CRON_SECRET` | Recommended on Vercel | Protects `/api/outbox` with `Authorization: Bearer <CRON_SECRET>`. Without it, the endpoint is open — fine for development. |
+| `GITHUB_WEBHOOK_SECRET` | Required for `/api/github-webhook` | Verifies the `X-Hub-Signature-256` (HMAC-SHA256) signature GitHub sends with each delivery. Without it, the endpoint returns `503` and processes nothing — unlike `CRON_SECRET`, there's no open mode here. |
 
-| Variable | Obligatoria | Uso |
-| -------- | ----------- | --- |
-| `POSTGRES_URL` | Sí | Conexión PostgreSQL/Supabase para leer y marcar eventos. |
-| `GITHUB_TOKEN` | No | Token para sincronizar documentos con GitHub. Si falta, se omite esa sincronización. |
-| `GITHUB_REPO` | No | Repositorio destino en formato `usuario/repositorio`. Si falta, se omite GitHub. |
-| `GITHUB_PATH` | No | Prefijo de directorio (mismo default `memoria` que `GithubStore::from_env`, ver arriba). Comparte la misma resolución que la lectura, para que escritura y reconciliación nunca miren carpetas distintas. |
-| `GEMINI_API_KEY` | No | Genera embeddings para `pgvector` (primer proveedor); si falta o falla, cae a `MISTRAL_API_KEY`/`COHERE_API_KEY` si están configuradas — ver la sección de embeddings más abajo. Si ninguna está presente, se omite esa parte. |
-| `MISTRAL_API_KEY`, `COHERE_API_KEY` | No | Respaldo automático de embeddings si Gemini falla o no está configurada. |
-| `ONCE` | No | En el daemon local, procesa un lote y sale cuando está presente. |
-| `CRON_SECRET` | Recomendado en Vercel | Protege `/api/outbox` con `Authorization: Bearer <CRON_SECRET>`. Sin él, el endpoint queda abierto para desarrollo. |
-| `GITHUB_WEBHOOK_SECRET` | Obligatoria para `/api/github-webhook` | Verifica la firma `X-Hub-Signature-256` (HMAC-SHA256) que GitHub envía en cada entrega. Sin ella, el endpoint responde `503` y no procesa nada — a diferencia de `CRON_SECRET`, aquí no hay modo abierto. |
-
-Cuando `OKF_STORE=github` (`IndexedStore` activo), `process_batch` **no**
-repite la sincronización con GitHub para los eventos `commit`/`delete`
-del outbox — `IndexedStore` ya escribió ahí de forma síncrona antes de
-encolar el evento, así que repetirlo sería un commit duplicado por cada
-escritura. Este corte lo decide
+When `OKF_STORE=github` (`IndexedStore` active), `process_batch` does
+**not** repeat the GitHub sync for `commit`/`delete` outbox events —
+`IndexedStore` already wrote there synchronously before enqueueing the
+event, so repeating it would be a duplicate commit per write. This cut
+is decided by
 [`outbox_worker::github_sync_credentials`](crates/outbox-worker/src/lib.rs),
-que ambos disparadores (`main.rs` y `api/outbox.rs`) consultan en vez de
-leer `GITHUB_TOKEN`/`GITHUB_REPO` directamente. El paso de embeddings del
-outbox no se ve afectado — sigue funcionando como red de reintento si el
-embedding inline del commit falló.
+which both triggers (`main.rs` and `api/outbox.rs`) consult instead of
+reading `GITHUB_TOKEN`/`GITHUB_REPO` directly. The embeddings step of
+the outbox is unaffected — it still works as a retry net if the
+commit's inline embedding failed.
 
-El crate `gemini-embeddings` centraliza el fallback multi-proveedor de
-embeddings (Gemini, con Mistral y Cohere como respaldo automático —
-ver la sección siguiente) y lo reutilizan tanto `supabase-store` para
-búsqueda semántica como `outbox-worker` para materializar embeddings:
-los dos DEBEN pasar por el mismo punto de entrada para que nunca
-puedan divergir en qué proveedor llamaron ni en qué modelo etiquetaron
-el vector resultante.
+The `gemini-embeddings` crate centralizes the multi-provider embeddings
+fallback (Gemini, with Mistral and Cohere as automatic backups — see
+next section) and is reused by both `supabase-store` for semantic
+search and `outbox-worker` to materialize embeddings: both MUST go
+through the same entry point so they can never diverge on which
+provider was called or which model tagged the resulting vector.
 
-#### Fallback multi-proveedor de embeddings
+#### Multi-provider embeddings fallback
 
-Los embeddings de proveedores distintos **no son comparables entre
-sí** aunque compartan dimensionalidad: cada modelo aprende su propio
-espacio vectorial, y comparar por coseno un vector de un proveedor
-contra el de otro no da un error, da un ranking sin ningún significado
-(por esta misma razón `skill_ingest` no sintetiza contenido con
-ningún LLM — ver la sección de `skill_ingest` más arriba). Por eso el
-fallback de embeddings no es un simple "probar el siguiente" — cada
-vector se persiste junto al identificador exacto del proveedor+modelo
-que lo produjo (columna `embeddings.embedding_model`), y
-`search_semantic` **solo** compara vectores con el mismo
-`embedding_model` que la consulta. Un documento indexado con el
-proveedor de respaldo mientras Gemini estaba caído simplemente queda
-fuera del ranking semántico de una consulta embebida con otro
-proveedor (sigue siendo encontrable por coincidencia de texto) hasta
-que se re-indexe — degradación segura, nunca corrupción silenciosa.
+Embeddings from different providers are **not comparable with each
+other** even at the same dimensionality: every model learns its own
+vector space, and comparing a vector from one provider against another
+by cosine similarity doesn't error out — it produces a ranking with no
+meaning (the same reason `skill_ingest` never synthesizes content with
+an LLM — see the `skill_ingest` section above). So the embeddings
+fallback isn't a simple "try the next one" — every vector is persisted
+alongside the exact provider+model identifier that produced it
+(`embeddings.embedding_model` column), and `search_semantic` **only**
+compares vectors with the same `embedding_model` as the query. A
+document indexed with the backup provider while Gemini was down simply
+falls out of the semantic ranking for a query embedded with a
+different provider (it's still findable via text matching) until it's
+re-indexed — safe degradation, never silent corruption.
 
-| Variable | Proveedor | Modelo | Dimensiones |
-| -------- | --------- | ------ | ------------ |
-| `GEMINI_API_KEY` | Gemini (primero) | `gemini-embedding-001` (truncado) | 768 |
-| `MISTRAL_API_KEY` | Mistral (respaldo) | `mistral-embed` | 1024 |
-| `COHERE_API_KEY` | Cohere (respaldo) | `embed-english-v3.0` | 1024 |
+| Variable | Provider | Model | Dimensions |
+| -------- | -------- | ----- | ---------- |
+| `GEMINI_API_KEY` | Gemini (primary) | `gemini-embedding-001` (truncated) | 768 |
+| `MISTRAL_API_KEY` | Mistral (fallback) | `mistral-embed` | 1024 |
+| `COHERE_API_KEY` | Cohere (fallback) | `embed-english-v3.0` | 1024 |
 
-### Webhook de GitHub (reconciliación instantánea)
+### GitHub webhook (instant reconciliation)
 
-Sin el webhook, un borrado o edición hecho directamente en GitHub (fuera
-de las herramientas MCP) tarda hasta el próximo tick del cron en
-reflejarse en Supabase — con el cron diario por defecto, hasta 24h en
-las que la búsqueda seguiría devolviendo un concepto ya borrado. El
-webhook cierra esa ventana a segundos.
+Without the webhook, a delete or edit made directly on GitHub (outside
+the MCP tools) can take up to the next cron tick to show up in
+Supabase — with the default daily cron, up to 24h during which search
+would keep returning an already-deleted concept. The webhook closes
+that window to seconds.
 
-Configuración, en el repositorio de GitHub que apunta `GITHUB_REPO`
-(**no** en este repo de código — el webhook se registra donde vive el
-contenido):
+Configuration, in the GitHub repository that `GITHUB_REPO` points to
+(**not** this code repository — the webhook is registered where the
+content lives):
 
-1. Genera un secreto: `openssl rand -hex 32`.
-2. Configúralo como `GITHUB_WEBHOOK_SECRET` en las variables de entorno
-   de Vercel.
-3. En el repo de contenido → Settings → Webhooks → Add webhook:
-   - Payload URL: `https://<tu-dominio>/api/github-webhook`
+1. Generate a secret: `openssl rand -hex 32`.
+2. Set it as `GITHUB_WEBHOOK_SECRET` in Vercel's environment variables.
+3. In the content repo → Settings → Webhooks → Add webhook:
+   - Payload URL: `https://<your-domain>/api/github-webhook`
    - Content type: `application/json`
-   - Secret: el mismo valor del paso 1
+   - Secret: the same value from step 1
    - Which events: "Just the push event"
 
-El handler verifica la firma en tiempo constante, ignora eventos que no
-sean `push` o que no sean sobre `GITHUB_BRANCH` (por defecto `main`), y
-delega en la misma `reconcile_github_to_supabase` que usa el cron — no
-hay lógica de reconciliación duplicada entre ambos disparadores.
+The handler verifies the signature in constant time, ignores events
+that aren't `push` or aren't on `GITHUB_BRANCH` (default `main`), and
+delegates to the same `reconcile_github_to_supabase` used by the cron
+— there's no duplicated reconciliation logic between the two triggers.
 
 ## Tutorial
 
-En [`tutorial/`](tutorial/) — en español, un capítulo por invariante,
-con la estructura: problema → invariante → implementación mínima →
-versión rota → por qué falla → memoria y asignación → tests → frontera
-de producción → principios SOLID en juego → ejercicios.
+In [`tutorial/`](tutorial/) — in Spanish, one chapter per invariant,
+following the structure: problem → invariant → minimal implementation
+→ broken version → why it fails → memory and allocation → tests →
+production boundary → SOLID principles at play → exercises.
+
+## Contributing
+
+- Run `cargo test` and `./scripts/check-docs.sh` before opening a PR.
+- `cargo clippy --workspace --all-targets -- -D warnings` must be
+  clean — CI enforces it as a hard gate, not a report.
+- Keep the dependency rule above: no external production dependency
+  in the `std`-only core or ports; anything new goes in an adapter.
+- `cargo deny check` must pass against [`deny.toml`](deny.toml)
+  (advisories, licenses, duplicates, sources).
+
+## License
+
+[MIT](LICENSE)
