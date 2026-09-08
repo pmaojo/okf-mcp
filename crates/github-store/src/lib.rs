@@ -99,6 +99,58 @@ fn b64(s: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(s.as_bytes())
 }
 
+/// Número máximo de reintentos ante un rate limit de GitHub (403
+/// secundario o 429) antes de dejar que el error suba y falle el
+/// `commit` entero — GitHub sigue siendo bloqueante, esto solo evita
+/// que una cuota momentánea tumbe la escritura cuando el propio
+/// GitHub ya nos dijo cuánto esperar.
+const MAX_RATE_LIMIT_RETRIES: u32 = 4;
+/// Tope a la espera que honramos de `Retry-After`/`x-ratelimit-reset`,
+/// para no bloquear una función serverless indefinidamente si GitHub
+/// pide una espera absurda.
+const MAX_RETRY_DELAY_SECS: u64 = 30;
+
+/// Si la respuesta es un rate limit de GitHub (429, o 403 con las
+/// cabeceras de cuota que GitHub manda en ese caso — nunca un 403 de
+/// permisos real, que no las trae) devuelve cuánto esperar antes de
+/// reintentar. `None` para cualquier otro estado, incluido un 403 sin
+/// esas cabeceras.
+fn rate_limit_delay(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+) -> Option<std::time::Duration> {
+    if status != reqwest::StatusCode::TOO_MANY_REQUESTS
+        && status != reqwest::StatusCode::FORBIDDEN
+    {
+        return None;
+    }
+    if let Some(secs) = headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        return Some(std::time::Duration::from_secs(secs.clamp(1, MAX_RETRY_DELAY_SECS)));
+    }
+    let remaining_zero = headers
+        .get("x-ratelimit-remaining")
+        .and_then(|v| v.to_str().ok())
+        == Some("0");
+    if !remaining_zero {
+        return None;
+    }
+    let reset_epoch: i64 = headers
+        .get("x-ratelimit-reset")
+        .and_then(|v| v.to_str().ok())?
+        .parse()
+        .ok()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let wait = (reset_epoch - now).clamp(1, MAX_RETRY_DELAY_SECS as i64) as u64;
+    Some(std::time::Duration::from_secs(wait))
+}
+
 fn from_b64(s: &str) -> Result<String, StoreError> {
     let compact: String = s.chars().filter(|c| !c.is_whitespace()).collect();
     let bytes = base64::engine::general_purpose::STANDARD
@@ -390,22 +442,33 @@ impl GithubStore {
     }
 
     async fn get_json<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T, StoreError> {
-        let resp = self
-            .request(self.client.get(url))
-            .send()
-            .await
-            .map_err(|e| StoreError::Backend(format!("GET {url}: {e}")))?;
-        let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| StoreError::Backend(format!("GET {url}: {e}")))?;
-        if !status.is_success() {
-            let corto: String = body.chars().take(200).collect();
-            return Err(StoreError::Backend(format!("GET {url}: HTTP {status}: {corto}")));
+        let mut attempt = 0u32;
+        loop {
+            let resp = self
+                .request(self.client.get(url))
+                .send()
+                .await
+                .map_err(|e| StoreError::Backend(format!("GET {url}: {e}")))?;
+            let status = resp.status();
+            if attempt < MAX_RATE_LIMIT_RETRIES {
+                if let Some(delay) = rate_limit_delay(status, resp.headers()) {
+                    attempt += 1;
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+            }
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| StoreError::Backend(format!("GET {url}: {e}")))?;
+            if !status.is_success() {
+                let corto: String = body.chars().take(200).collect();
+                return Err(StoreError::Backend(format!("GET {url}: HTTP {status}: {corto}")));
+            }
+            return serde_json::from_str(&body).map_err(|e| {
+                StoreError::Backend(format!("GET {url}: respuesta no deserializable: {e}"))
+            });
         }
-        serde_json::from_str(&body)
-            .map_err(|e| StoreError::Backend(format!("GET {url}: respuesta no deserializable: {e}")))
     }
 
     // ---- snapshot -----------------------------------------------------
@@ -552,26 +615,37 @@ impl GithubStore {
             body["sha"] = serde_json::Value::String(sha.to_string());
         }
         let url = self.url(&format!("contents/{path}"));
-        let resp = self
-            .request(self.client.put(&url))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| StoreError::Backend(format!("PUT {url}: {e}")))?;
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| StoreError::Backend(format!("PUT {url}: {e}")))?;
-        if !status.is_success() {
-            // 409: la rama o el archivo avanzaron debajo — el CAS de
-            // git rechazó la escritura. Invalidamos la caché para que
-            // el siguiente intento vea la cabeza real.
-            *self.cache.lock().unwrap() = None;
-            return Err(StoreError::Backend(format!("PUT {url}: HTTP {status}: {text}")));
+        let mut attempt = 0u32;
+        loop {
+            let resp = self
+                .request(self.client.put(&url))
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| StoreError::Backend(format!("PUT {url}: {e}")))?;
+            let status = resp.status();
+            if attempt < MAX_RATE_LIMIT_RETRIES {
+                if let Some(delay) = rate_limit_delay(status, resp.headers()) {
+                    attempt += 1;
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+            }
+            let text = resp
+                .text()
+                .await
+                .map_err(|e| StoreError::Backend(format!("PUT {url}: {e}")))?;
+            if !status.is_success() {
+                // 409: la rama o el archivo avanzaron debajo — el CAS de
+                // git rechazó la escritura. Invalidamos la caché para que
+                // el siguiente intento vea la cabeza real.
+                *self.cache.lock().unwrap() = None;
+                return Err(StoreError::Backend(format!("PUT {url}: HTTP {status}: {text}")));
+            }
+            return serde_json::from_str(&text).map_err(|e| {
+                StoreError::Backend(format!("PUT {url}: respuesta no deserializable: {e}"))
+            });
         }
-        serde_json::from_str(&text)
-            .map_err(|e| StoreError::Backend(format!("PUT {url}: respuesta no deserializable: {e}")))
     }
 
     async fn delete_file(
@@ -586,24 +660,34 @@ impl GithubStore {
             "branch": self.branch,
         });
         let url = self.url(&format!("contents/{path}"));
-        let resp = self
-            .request(self.client.delete(&url))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| StoreError::Backend(format!("DELETE {url}: {e}")))?;
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| StoreError::Backend(format!("DELETE {url}: {e}")))?;
-        if !status.is_success() {
-            *self.cache.lock().unwrap() = None;
-            return Err(StoreError::Backend(format!("DELETE {url}: HTTP {status}: {text}")));
+        let mut attempt = 0u32;
+        loop {
+            let resp = self
+                .request(self.client.delete(&url))
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| StoreError::Backend(format!("DELETE {url}: {e}")))?;
+            let status = resp.status();
+            if attempt < MAX_RATE_LIMIT_RETRIES {
+                if let Some(delay) = rate_limit_delay(status, resp.headers()) {
+                    attempt += 1;
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+            }
+            let text = resp
+                .text()
+                .await
+                .map_err(|e| StoreError::Backend(format!("DELETE {url}: {e}")))?;
+            if !status.is_success() {
+                *self.cache.lock().unwrap() = None;
+                return Err(StoreError::Backend(format!("DELETE {url}: HTTP {status}: {text}")));
+            }
+            return serde_json::from_str(&text).map_err(|e| {
+                StoreError::Backend(format!("DELETE {url}: respuesta no deserializable: {e}"))
+            });
         }
-        serde_json::from_str(&text).map_err(|e| {
-            StoreError::Backend(format!("DELETE {url}: respuesta no deserializable: {e}"))
-        })
     }
 
     fn view_of(&self, id: &ConceptId, doc: &LiveDoc) -> DocumentView {
@@ -1238,24 +1322,34 @@ impl GithubStore {
         url: &str,
         body: &serde_json::Value,
     ) -> Result<T, StoreError> {
-        let resp = self
-            .request(self.client.post(url))
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| StoreError::Backend(format!("POST {url}: {e}")))?;
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| StoreError::Backend(format!("POST {url}: {e}")))?;
-        if !status.is_success() {
-            let corto: String = text.chars().take(200).collect();
-            return Err(StoreError::Backend(format!("POST {url}: HTTP {status}: {corto}")));
+        let mut attempt = 0u32;
+        loop {
+            let resp = self
+                .request(self.client.post(url))
+                .json(body)
+                .send()
+                .await
+                .map_err(|e| StoreError::Backend(format!("POST {url}: {e}")))?;
+            let status = resp.status();
+            if attempt < MAX_RATE_LIMIT_RETRIES {
+                if let Some(delay) = rate_limit_delay(status, resp.headers()) {
+                    attempt += 1;
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+            }
+            let text = resp
+                .text()
+                .await
+                .map_err(|e| StoreError::Backend(format!("POST {url}: {e}")))?;
+            if !status.is_success() {
+                let corto: String = text.chars().take(200).collect();
+                return Err(StoreError::Backend(format!("POST {url}: HTTP {status}: {corto}")));
+            }
+            return serde_json::from_str(&text).map_err(|e| {
+                StoreError::Backend(format!("POST {url}: respuesta no deserializable: {e}"))
+            });
         }
-        serde_json::from_str(&text).map_err(|e| {
-            StoreError::Backend(format!("POST {url}: respuesta no deserializable: {e}"))
-        })
     }
 }
 
