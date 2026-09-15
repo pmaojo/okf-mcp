@@ -63,3 +63,7 @@ path = "api/github-webhook.rs"
 [[bin]]
 name = "telegram"
 path = "api/telegram.rs"
+
+[[bin]]
+name = "telegram-activate"
+path = "api/telegram-activate.rs"
