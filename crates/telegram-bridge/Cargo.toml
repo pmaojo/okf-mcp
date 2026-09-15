@@ -1,0 +1,22 @@
+# ADAPTADOR: dependencias externas permitidas (mismo criterio que
+# `gemini-embeddings`: cliente HTTP mínimo hacia una API externa,
+# compartido por los binarios de `vercel-entry` que necesitan hablar
+# con Telegram y OpenRouter).
+[package]
+name = "telegram-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+mcp-core = { path = "../mcp-core" }
+json-mini = { path = "../json-mini" }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
