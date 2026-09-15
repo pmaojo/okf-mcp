@@ -2156,6 +2156,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "telegram-bridge"
+version = "0.1.0"
+dependencies = [
+ "json-mini",
+ "mcp-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2474,6 +2487,7 @@ dependencies = [
  "hmac",
  "ingest-core",
  "ingest-http",
+ "json-mini",
  "jsonwebtoken",
  "mcp-core",
  "mcp-http",
@@ -2488,6 +2502,7 @@ dependencies = [
  "sqlx",
  "store-core",
  "supabase-store",
+ "telegram-bridge",
  "tokio",
  "tower",
  "tower-http",

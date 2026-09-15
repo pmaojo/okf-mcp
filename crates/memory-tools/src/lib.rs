@@ -52,7 +52,14 @@ pub struct MemoryTools<R> {
     repo: R,
     actor: Principal,
     budget: Budget,
-    fetcher: Option<Box<dyn SourceFetcher>>,
+    // `+ Send`: sin esto, `MemoryTools<R>` no es `Send` aunque el
+    // repositorio `R` sí lo sea — y un handler async que necesite
+    // mantener `&mut MemoryTools<R>` viva a través de un `.await`
+    // (p. ej. el webhook de Telegram en `vercel-entry`, que espera a
+    // OpenRouter entre leer y escribir el grafo) no compila sin este
+    // bound. `GithubFetcher` (la única implementación real) ya es
+    // `Send` de sobra: solo envuelve un `reqwest::Client`.
+    fetcher: Option<Box<dyn SourceFetcher + Send>>,
     /// Owners de fuentes cuyo contenido ya se considera revisado (p.
     /// ej. `anthropics`): [`ingest_core::scan_suspicious_patterns`] se
     /// sigue ejecutando igual, pero sus avisos no se incluyen en la
@@ -92,7 +99,7 @@ where
     /// skill. `trusted_owners` son los owners cuyo escrutinio de
     /// contenido sospechoso se omite en la respuesta (ver el campo del
     /// mismo nombre).
-    pub fn with_ingest(mut self, fetcher: Box<dyn SourceFetcher>, trusted_owners: Vec<String>) -> Self {
+    pub fn with_ingest(mut self, fetcher: Box<dyn SourceFetcher + Send>, trusted_owners: Vec<String>) -> Self {
         self.fetcher = Some(fetcher);
         self.trusted_owners = trusted_owners;
         self

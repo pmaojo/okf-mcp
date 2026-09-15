@@ -26,16 +26,90 @@ use axum::routing::{get, post};
 use axum::Router;
 use graph_core::NeighborSource;
 use mcp_core::{McpServer, ToolHandler};
-use mcp_http::{route, HttpRequest};
+use mcp_http::{route, HttpRequest, HttpResponse};
 use memory_tools::MemoryTools;
 use memory_model::{Budget, Principal};
 use std::convert::Infallible;
 use store_core::{MemoryRepository, StoreMaintenance};
 use supabase_store::SupabaseStore;
+use telegram_bridge::TelegramConfig;
 use tower::ServiceBuilder;
 use tower_http::cors::{AllowHeaders, AllowOrigin, CorsLayer};
 use vercel_runtime::axum::VercelLayer;
 use vercel_runtime::{run, Error};
+
+/// Tools que escriben en el grafo y merecen un aviso a Telegram cuando
+/// tienen éxito — el mismo criterio que `read_only_hint: Some(false)`
+/// codifica en las `annotations` de cada `ToolSpec` (ver
+/// `memory-tools::write_annotations`), repetido aquí como lista plana
+/// porque en esta capa solo se ve el JSON crudo de la petición, no el
+/// `ToolHandler` que las declara.
+const NOTIFY_ON_SUCCESS: &[&str] = &[
+    "memory_commit",
+    "memory_patch",
+    "memory_delete",
+    "memory_bulk_commit",
+    "memory_bulk_patch",
+    "memory_consolidate",
+    "spec_propose",
+    "spec_tasks",
+    "skill_ingest",
+];
+
+/// Notificación PUSH best-effort a Telegram tras una escritura
+/// exitosa. Sin `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` configuradas,
+/// o si la petición no era una llamada exitosa a una tool de
+/// [`NOTIFY_ON_SUCCESS`], no hace nada. Corre en su propia tarea de
+/// tokio, desenganchada de la petición HTTP real: un fallo mandando a
+/// Telegram (o Telegram caído) NUNCA debe convertir una escritura que
+/// sí tuvo éxito en el grafo en una respuesta de error para el
+/// cliente MCP.
+fn notify_on_write(http_req: &HttpRequest, resp: &HttpResponse) {
+    if resp.status != 200 {
+        return;
+    }
+    let Some(telegram) = TelegramConfig::from_env() else { return };
+    let Some(chat_id) = telegram.chat_id.clone() else { return };
+
+    let Ok(req_json) = serde_json::from_slice::<serde_json::Value>(&http_req.body) else { return };
+    if req_json.get("method").and_then(|m| m.as_str()) != Some("tools/call") {
+        return;
+    }
+    let Some(tool_name) = req_json.get("params").and_then(|p| p.get("name")).and_then(|n| n.as_str())
+    else {
+        return;
+    };
+    if !NOTIFY_ON_SUCCESS.contains(&tool_name) {
+        return;
+    }
+
+    let Ok(resp_json) = serde_json::from_str::<serde_json::Value>(&resp.body) else { return };
+    let is_error = resp_json
+        .get("result")
+        .and_then(|r| r.get("isError"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    if is_error {
+        return;
+    }
+
+    let concept_id = req_json
+        .get("params")
+        .and_then(|p| p.get("arguments"))
+        .and_then(|a| a.get("concept_id").or_else(|| a.get("spec_id")))
+        .and_then(|v| v.as_str())
+        .unwrap_or("?")
+        .to_string();
+    let tool_name = tool_name.to_string();
+    let text = format!("okf-memory: {tool_name} -> {concept_id}");
+
+    tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        if let Err(e) = telegram_bridge::send_message(&client, &telegram, &chat_id, &text).await {
+            eprintln!("okf-mcp: fallo notificando {tool_name} a Telegram: {e}");
+        }
+    });
+}
 
 /// Lista separada por comas en la variable de entorno
 /// `ALLOWED_ORIGINS` del proyecto Vercel.
@@ -164,7 +238,7 @@ async fn mcp_handler(method: Method, headers: HeaderMap, body: Bytes) -> Respons
 
     // 2. Seleccionar backend e instanciar servicios
     let store_kind = std::env::var("OKF_STORE").unwrap_or_else(|_| "supabase".into());
-    match store_kind.as_str() {
+    let resp: HttpResponse = match store_kind.as_str() {
         "github" => {
             let gh_store = match github_store::GithubStore::from_env() {
                 Ok(s) => s,
@@ -202,24 +276,30 @@ async fn mcp_handler(method: Method, headers: HeaderMap, body: Bytes) -> Respons
                 .with_ingest(Box::new(ingest_http::GithubFetcher::from_env()), trusted_owners());
             handle_mcp(&http_req, &budget, &origins, tools)
         }
-    }
+    };
+
+    notify_on_write(&http_req, &resp);
+
+    let status = StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    (status, [("content-type", resp.content_type)], resp.body).into_response()
 }
 
-/// Ejecuta la petición MCP contra un `MemoryTools<R>` genérico.
+/// Ejecuta la petición MCP contra un `MemoryTools<R>` genérico. Sin
+/// convertir a `axum::Response` todavía — `mcp_handler` necesita el
+/// `HttpResponse` crudo (status + body de texto) para decidir si
+/// dispara [`notify_on_write`] antes de envolverlo.
 fn handle_mcp<R>(
     http_req: &HttpRequest,
     budget: &Budget,
     origins: &[String],
     tools: MemoryTools<R>,
-) -> Response
+) -> HttpResponse
 where
     R: MemoryRepository + StoreMaintenance + NeighborSource<Error = Infallible>,
     MemoryTools<R>: ToolHandler,
 {
     let mut server = McpServer::new("okf-memory-vercel", env!("CARGO_PKG_VERSION"), tools);
-    let resp = route(http_req, budget, origins, &mut server);
-    let status = StatusCode::from_u16(resp.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    (status, [("content-type", resp.content_type)], resp.body).into_response()
+    route(http_req, budget, origins, &mut server)
 }
 
 #[tokio::main]
