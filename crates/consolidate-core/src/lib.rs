@@ -178,6 +178,19 @@ pub fn render_digest(digest: &SessionDigest, budget: &Budget) -> Result<String, 
     out.push_str(digest.summary.trim());
     out.push('\n');
 
+    // Va ANTES de "Decisiones"/"Entidades relacionadas": `okf_core::scan_links`
+    // conserva solo la primera aparición de cada destino (con su
+    // relación). Si un concept_id está en `superseded` Y también en
+    // `entities`/`decisions`, el enlace `[[superseded:...]]` tiene que
+    // ganar esa carrera, o `memory_backlinks` perdería la relación
+    // "superseded" a favor de un enlace sin tipar.
+    if !digest.superseded.is_empty() {
+        out.push_str("\n## Superseded\n");
+        for id in &digest.superseded {
+            out.push_str(&format!("- [[superseded:{}]]\n", id.as_str()));
+        }
+    }
+
     if !digest.decisions.is_empty() {
         out.push_str("\n## Decisiones\n");
         for d in &digest.decisions {
@@ -196,13 +209,6 @@ pub fn render_digest(digest: &SessionDigest, budget: &Budget) -> Result<String, 
                 Some(r) => out.push_str(&format!("- [[{}]] ({})\n", e.concept_id.as_str(), collapse_line(r))),
                 None => out.push_str(&format!("- [[{}]]\n", e.concept_id.as_str())),
             }
-        }
-    }
-
-    if !digest.superseded.is_empty() {
-        out.push_str("\n## Superseded\n");
-        for id in &digest.superseded {
-            out.push_str(&format!("- [[superseded:{}]]\n", id.as_str()));
         }
     }
 
@@ -271,6 +277,27 @@ mod tests {
         let linked: Vec<&str> = parsed.links.iter().map(|l| l.target.as_str()).collect();
         assert!(linked.contains(&entity_id.as_str()));
         assert!(linked.contains(&decision_id.as_str()));
+    }
+
+    #[test]
+    fn superseded_relation_wins_when_same_concept_is_also_an_entity() {
+        // Regresión: si el mismo concept_id aparece en `entities` (o
+        // `decisions`) Y en `superseded`, el enlace tipado
+        // `superseded:` tiene que ganar la deduplicación de
+        // `scan_links` — de lo contrario memory_backlinks perdería la
+        // relación "superseded" a favor del enlace sin tipar.
+        let shared_id = ConceptId::parse("notes/suelta").unwrap();
+        let d = SessionDigest {
+            title: "Sesión que incorpora una nota".to_string(),
+            summary: "resumen".to_string(),
+            entities: vec![DigestEntity { concept_id: shared_id.clone(), relation: Some("se incorporó".to_string()) }],
+            decisions: Vec::new(),
+            superseded: vec![shared_id.clone()],
+        };
+        let markdown = render_digest(&d, &Budget::default()).unwrap();
+        let parsed = okf_core::parse_document(&markdown, &Budget::default()).unwrap();
+        let link = parsed.links.iter().find(|l| l.target.as_str() == shared_id.as_str()).unwrap();
+        assert_eq!(link.rel.as_deref(), Some("superseded"));
     }
 
     #[test]
