@@ -30,7 +30,7 @@ use consolidate_core::{ConsolidateError, DigestDecision, DigestEntity, SessionDi
 use graph_core::NeighborSource;
 use ingest_core::{IngestError, PlannedAction, SkillFormat, SourceFetcher};
 use json_mini::{arr, n, obj, s, Value};
-use mcp_core::{ToolError, ToolHandler, ToolSpec, UiResource};
+use mcp_core::{ToolAnnotations, ToolError, ToolHandler, ToolSpec, UiResource};
 use memory_model::{Budget, ConceptId, ContentId, Principal};
 use ontology_core::{
     materialize, parse_ontology_document, triples_from_document, Object, Ontology, PropertyAxiom,
@@ -1591,6 +1591,119 @@ fn schema<const N: usize, const M: usize>(
     ])
 }
 
+// --- `outputSchema` (spec 2025-06-18) ---------------------------------
+//
+// A diferencia de `schema()` (para `inputSchema`, siempre plano), la
+// forma de cada resultado tiene objetos y arrays anidados — estos
+// helpers son los bloques con los que se arman sin repetir
+// `"type":"object"`/`"properties"` a mano en cada `ToolSpec`. Las
+// formas están tomadas de `mcp-app/src/lib/mcp-types.ts` (espejo TS
+// mantenido a mano del lado del cliente): si un campo cambia aquí,
+// cambia también allí.
+
+/// Un JSON Schema de un solo `"type"` primitivo, sin propiedades.
+fn ty(t: &str) -> Value {
+    obj([("type", s(t))])
+}
+
+/// `{"type":"object","properties":{...}}`, sin `required`: estos
+/// esquemas documentan la forma para tipar `structuredContent`, no
+/// validan estrictamente — omitir `required` es intencional.
+fn obj_schema(props: &[(&str, Value)]) -> Value {
+    let map: std::collections::BTreeMap<String, Value> =
+        props.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+    obj([("type", s("object")), ("properties", Value::Object(map))])
+}
+
+/// `{"type":"array","items":<item>}`.
+fn arr_schema(item: Value) -> Value {
+    obj([("type", s("array")), ("items", item)])
+}
+
+/// Forma de un `SearchHit`: la fila compacta que devuelven
+/// `memory_search`/`memory_list`/`memory_backlinks` (como `source`).
+fn search_hit_schema() -> Value {
+    obj_schema(&[
+        ("concept_id", ty("string")),
+        ("hash", ty("string")),
+        ("type", ty("string")),
+        ("title", ty("string")),
+        ("tags", arr_schema(ty("string"))),
+        ("uri", ty("string")),
+    ])
+}
+
+/// Forma compartida por `memory_search` y `memory_list`.
+fn search_result_schema() -> Value {
+    obj_schema(&[("results", arr_schema(search_hit_schema())), ("count", ty("number"))])
+}
+
+/// Forma compartida por `memory_commit`, `memory_patch` y
+/// `memory_consolidate` (esta última sin `dry_run`, pero un campo de
+/// más en la respuesta real no invalida el esquema: no declaramos
+/// `required` ni `additionalProperties: false`).
+fn commit_like_schema() -> Value {
+    obj_schema(&[
+        ("concept_id", ty("string")),
+        ("hash", ty("string")),
+        ("version", ty("number")),
+        ("created", ty("boolean")),
+        ("no_change", ty("boolean")),
+        ("revision_seq", ty("number")),
+        ("dry_run", ty("boolean")),
+    ])
+}
+
+/// Forma de un item de `memory_bulk_commit`/`memory_bulk_patch`: unión
+/// de `done`/`failed`/`skipped` aplanada en un solo objeto con todos
+/// los campos opcionales, en vez de `oneOf` — más simple de leer para
+/// un cliente que solo quiere tipar, no validar en frontera.
+fn bulk_item_schema() -> Value {
+    obj_schema(&[
+        ("status", ty("string")),
+        ("hash", ty("string")),
+        ("version", ty("number")),
+        ("created", ty("boolean")),
+        ("no_change", ty("boolean")),
+        ("error", ty("object")),
+    ])
+}
+
+fn skipped_item_schema() -> Value {
+    obj_schema(&[("item", ty("string")), ("reason", ty("string"))])
+}
+
+/// Perfil de anotaciones para las herramientas de solo lectura del
+/// grafo de memoria (búsqueda, resolución, historial, diagnóstico):
+/// no escriben, repetir la llamada con los mismos argumentos no tiene
+/// efecto adicional, y operan sobre el grafo local — nada de mundo
+/// abierto.
+fn read_only_annotations() -> ToolAnnotations {
+    ToolAnnotations {
+        read_only_hint: Some(true),
+        destructive_hint: Some(false),
+        idempotent_hint: Some(true),
+        open_world_hint: Some(false),
+    }
+}
+
+/// Perfil de anotaciones para herramientas de escritura sobre el
+/// grafo local (`open_world_hint: false`). `destructive` distingue
+/// una escritura que puede perder contenido existente (commit/patch/
+/// delete, que reemplazan el documento o sus campos) de una que solo
+/// añade (embeddings, crear specs/tareas nuevas). `idempotent` es
+/// `false` en casi todos los casos porque están protegidas por CAS
+/// (`expected_hash`): repetir la misma llamada tras el primer éxito
+/// falla por conflicto en vez de no-op.
+fn write_annotations(destructive: bool, idempotent: bool) -> ToolAnnotations {
+    ToolAnnotations {
+        read_only_hint: Some(false),
+        destructive_hint: Some(destructive),
+        idempotent_hint: Some(idempotent),
+        open_world_hint: Some(false),
+    }
+}
+
 impl<R> ToolHandler for MemoryTools<R>
 where
     R: MemoryRepository + StoreMaintenance + NeighborSource<Error = Infallible> + TripleStore,
@@ -1616,6 +1729,9 @@ where
                     [],
                 ),
                 ui_resource_uri: Some("ui://okf-memory/memory_search"),
+                title: Some("Search Memory"),
+                output_schema: Some(search_result_schema()),
+                annotations: Some(read_only_annotations()),
             },
             ToolSpec {
                 name: "memory_resolve",
@@ -1629,6 +1745,40 @@ where
                     ["concept_id"],
                 ),
                 ui_resource_uri: Some("ui://okf-memory/memory_resolve"),
+                title: Some("Resolve Concept"),
+                output_schema: Some(obj_schema(&[
+                    (
+                        "document",
+                        obj_schema(&[
+                            ("concept_id", ty("string")),
+                            ("hash", ty("string")),
+                            ("version", ty("number")),
+                            ("type", ty("string")),
+                            ("title", ty("string")),
+                            ("tags", arr_schema(ty("string"))),
+                            ("markdown", ty("string")),
+                        ]),
+                    ),
+                    (
+                        "neighborhood",
+                        arr_schema(obj_schema(&[
+                            ("concept_id", ty("string")),
+                            ("depth", ty("number")),
+                            ("exists", ty("boolean")),
+                            ("uri", ty("string")),
+                            ("parent", ty("string")),
+                        ])),
+                    ),
+                    (
+                        "truncated",
+                        obj_schema(&[
+                            ("by_nodes", ty("boolean")),
+                            ("by_depth", ty("boolean")),
+                            ("by_bytes", ty("boolean")),
+                        ]),
+                    ),
+                ])),
+                annotations: Some(read_only_annotations()),
             },
             ToolSpec {
                 name: "memory_reason",
@@ -1647,6 +1797,46 @@ where
                     ["concept_id"],
                 ),
                 ui_resource_uri: Some("ui://okf-memory/memory_reason"),
+                title: Some("Reason (OWL-RL)"),
+                output_schema: Some(obj_schema(&[
+                    ("root", ty("string")),
+                    ("asserted_count", ty("number")),
+                    ("derived_count", ty("number")),
+                    (
+                        "triples",
+                        arr_schema(obj_schema(&[
+                            ("subject", ty("string")),
+                            ("predicate", ty("string")),
+                            ("object", obj_schema(&[("kind", ty("string")), ("value", ty("string"))])),
+                            ("derived", ty("boolean")),
+                        ])),
+                    ),
+                    (
+                        "neighborhood",
+                        arr_schema(obj_schema(&[
+                            ("concept_id", ty("string")),
+                            ("depth", ty("number")),
+                            ("exists", ty("boolean")),
+                        ])),
+                    ),
+                    ("ontology_id", ty("string")),
+                    ("persisted", ty("boolean")),
+                    (
+                        "truncated",
+                        obj_schema(&[
+                            ("traversal_by_nodes", ty("boolean")),
+                            ("traversal_by_depth", ty("boolean")),
+                            ("traversal_by_bytes", ty("boolean")),
+                            ("reasoning_by_iterations", ty("boolean")),
+                            ("reasoning_by_triples", ty("boolean")),
+                        ]),
+                    ),
+                ])),
+                // No es read-only: por defecto (`persist: true`) guarda
+                // los triples derivados. Sí es idempotente — razonar
+                // dos veces sobre el mismo estado produce los mismos
+                // triples derivados, no un efecto acumulativo.
+                annotations: Some(write_annotations(false, true)),
             },
             ToolSpec {
                 name: "memory_commit",
@@ -1662,6 +1852,13 @@ where
                     ["concept_id", "markdown", "reason"],
                 ),
                 ui_resource_uri: Some("ui://okf-memory/memory_commit"),
+                title: Some("Commit Document"),
+                output_schema: Some(commit_like_schema()),
+                // Reemplaza el documento entero: puede perder contenido
+                // si el markdown nuevo no lo conserva. CAS
+                // (`expected_hash`) impide repetir la misma llamada dos
+                // veces sin releer — no idempotente.
+                annotations: Some(write_annotations(true, false)),
             },
             ToolSpec {
                 name: "memory_consolidate",
@@ -1680,6 +1877,13 @@ where
                     ["title", "summary"],
                 ),
                 ui_resource_uri: None,
+                title: Some("Consolidate Session"),
+                output_schema: Some(commit_like_schema()),
+                // Crea/actualiza un documento de sesión (commit-like);
+                // no borra ni reescribe otros conceptos, solo los
+                // enlaza como `superseded` (provenance). CAS al
+                // actualizar: no idempotente.
+                annotations: Some(write_annotations(false, false)),
             },
             ToolSpec {
                 name: "memory_history",
@@ -1693,6 +1897,22 @@ where
                     ["concept_id"],
                 ),
                 ui_resource_uri: Some("ui://okf-memory/memory_history"),
+                title: Some("Revision History"),
+                output_schema: Some(obj_schema(&[
+                    ("concept_id", ty("string")),
+                    (
+                        "revisions",
+                        arr_schema(obj_schema(&[
+                            ("seq", ty("number")),
+                            ("base_hash", ty("string")),
+                            ("result_hash", ty("string")),
+                            ("actor", ty("string")),
+                            ("client_id", ty("string")),
+                            ("reason", ty("string")),
+                        ])),
+                    ),
+                ])),
+                annotations: Some(read_only_annotations()),
             },
             ToolSpec {
                 name: "memory_delete",
@@ -1706,6 +1926,18 @@ where
                     ["concept_id", "expected_hash", "reason"],
                 ),
                 ui_resource_uri: Some("ui://okf-memory/memory_delete"),
+                title: Some("Delete Concept"),
+                output_schema: Some(obj_schema(&[
+                    ("concept_id", ty("string")),
+                    ("hash", ty("string")),
+                    ("version", ty("number")),
+                    ("revision_seq", ty("number")),
+                ])),
+                // Borrado lógico (marca `type: deleted`, no purga la
+                // historia), pero sigue siendo el fin del ciclo de vida
+                // del concepto para el resto de tools — destructivo.
+                // CAS: no idempotente.
+                annotations: Some(write_annotations(true, false)),
             },
             ToolSpec {
                 name: "memory_list",
@@ -1718,6 +1950,9 @@ where
                     [],
                 ),
                 ui_resource_uri: Some("ui://okf-memory/memory_list"),
+                title: Some("List Concepts"),
+                output_schema: Some(search_result_schema()),
+                annotations: Some(read_only_annotations()),
             },
             ToolSpec {
                 name: "memory_backlinks",
@@ -1729,6 +1964,18 @@ where
                     ["concept_id"],
                 ),
                 ui_resource_uri: Some("ui://okf-memory/memory_backlinks"),
+                title: Some("Backlinks"),
+                output_schema: Some(obj_schema(&[
+                    (
+                        "backlinks",
+                        arr_schema(obj_schema(&[
+                            ("source", search_hit_schema()),
+                            ("rel", ty("string")),
+                        ])),
+                    ),
+                    ("count", ty("number")),
+                ])),
+                annotations: Some(read_only_annotations()),
             },
             ToolSpec {
                 name: "memory_embed",
@@ -1741,6 +1988,25 @@ where
                     [],
                 ),
                 ui_resource_uri: Some("ui://okf-memory/memory_embed"),
+                title: Some("Generate Embeddings"),
+                output_schema: Some(obj_schema(&[
+                    ("embedded", arr_schema(ty("string"))),
+                    (
+                        "failed",
+                        arr_schema(obj_schema(&[("concept_id", ty("string")), ("error", ty("string"))])),
+                    ),
+                    ("remaining", ty("number")),
+                ])),
+                // No destructivo (solo añade vectores), estable si se
+                // repite sobre el mismo lote. Mundo abierto: delega en
+                // un proveedor de embeddings externo (ver
+                // `gemini-embeddings`), no solo en el grafo local.
+                annotations: Some(ToolAnnotations {
+                    read_only_hint: Some(false),
+                    destructive_hint: Some(false),
+                    idempotent_hint: Some(true),
+                    open_world_hint: Some(true),
+                }),
             },
             ToolSpec {
                 name: "memory_patch",
@@ -1759,6 +2025,11 @@ where
                     ["concept_id", "expected_hash", "reason"],
                 ),
                 ui_resource_uri: Some("ui://okf-memory/memory_patch"),
+                title: Some("Patch Metadata"),
+                output_schema: Some(commit_like_schema()),
+                // `remove`/`remove_tags` pueden perder metadatos
+                // existentes — destructivo. CAS: no idempotente.
+                annotations: Some(write_annotations(true, false)),
             },
             ToolSpec {
                 name: "memory_bulk_commit",
@@ -1771,6 +2042,12 @@ where
                     ["requests"],
                 ),
                 ui_resource_uri: Some("ui://okf-memory/memory_bulk_commit"),
+                title: Some("Bulk Commit"),
+                output_schema: Some(obj_schema(&[
+                    ("applied", ty("boolean")),
+                    ("items", arr_schema(bulk_item_schema())),
+                ])),
+                annotations: Some(write_annotations(true, false)),
             },
             ToolSpec {
                 name: "memory_bulk_patch",
@@ -1783,6 +2060,12 @@ where
                     ["patches"],
                 ),
                 ui_resource_uri: Some("ui://okf-memory/memory_bulk_patch"),
+                title: Some("Bulk Patch"),
+                output_schema: Some(obj_schema(&[
+                    ("applied", ty("boolean")),
+                    ("items", arr_schema(bulk_item_schema())),
+                ])),
+                annotations: Some(write_annotations(true, false)),
             },
             ToolSpec {
                 name: "memory_validate",
@@ -1794,18 +2077,61 @@ where
                     [],
                 ),
                 ui_resource_uri: Some("ui://okf-memory/memory_validate"),
+                title: Some("Validate Graph"),
+                output_schema: Some(obj_schema(&[
+                    (
+                        "broken_links",
+                        arr_schema(obj_schema(&[("source", ty("string")), ("target", ty("string"))])),
+                    ),
+                    ("broken_links_total", ty("number")),
+                    (
+                        "deleted_referenced",
+                        arr_schema(obj_schema(&[("source", ty("string")), ("target", ty("string"))])),
+                    ),
+                    ("deleted_referenced_total", ty("number")),
+                    ("missing_embeddings", arr_schema(ty("string"))),
+                    ("missing_embeddings_total", ty("number")),
+                ])),
+                annotations: Some(read_only_annotations()),
             },
             ToolSpec {
                 name: "memory_status",
                 description: include_str!("../assets/memory_status.txt"),
                 input_schema: schema([], []),
                 ui_resource_uri: Some("ui://okf-memory/memory_status"),
+                title: Some("Status"),
+                output_schema: Some(obj_schema(&[
+                    ("documents", ty("number")),
+                    ("deleted_documents", ty("number")),
+                    ("missing_embeddings", ty("number")),
+                    ("broken_links", ty("number")),
+                    ("deleted_referenced", ty("number")),
+                    ("outbox_pending", ty("number")),
+                    ("outbox_failed", ty("number")),
+                ])),
+                annotations: Some(read_only_annotations()),
             },
             ToolSpec {
                 name: "memory_stats",
                 description: include_str!("../assets/memory_stats.txt"),
                 input_schema: schema([], []),
                 ui_resource_uri: Some("ui://okf-memory/memory_stats"),
+                title: Some("Statistics"),
+                output_schema: Some(obj_schema(&[
+                    ("documents", ty("number")),
+                    ("deleted_documents", ty("number")),
+                    ("by_type", arr_schema(obj_schema(&[("type", ty("string")), ("count", ty("number"))]))),
+                    ("by_tag", arr_schema(obj_schema(&[("tag", ty("string")), ("count", ty("number"))]))),
+                    (
+                        "top_linked",
+                        arr_schema(obj_schema(&[
+                            ("concept_id", ty("string")),
+                            ("incoming_links", ty("number")),
+                        ])),
+                    ),
+                    ("orphans", arr_schema(ty("string"))),
+                ])),
+                annotations: Some(read_only_annotations()),
             },
             ToolSpec {
                 name: "spec_propose",
@@ -1821,6 +2147,14 @@ where
                     ["concept_id", "title", "requirements", "design"],
                 ),
                 ui_resource_uri: Some("ui://okf-memory/spec_propose"),
+                title: Some("Propose Spec"),
+                output_schema: Some(obj_schema(&[
+                    ("concept_id", ty("string")),
+                    ("hash", ty("string")),
+                    ("version", ty("number")),
+                    ("created", ty("boolean")),
+                ])),
+                annotations: Some(write_annotations(false, false)),
             },
             ToolSpec {
                 name: "spec_tasks",
@@ -1833,6 +2167,14 @@ where
                     ["spec_id", "tasks"],
                 ),
                 ui_resource_uri: Some("ui://okf-memory/spec_tasks"),
+                title: Some("Spec Tasks"),
+                output_schema: Some(obj_schema(&[
+                    ("spec_id", ty("string")),
+                    ("created", ty("number")),
+                    ("task_ids", arr_schema(ty("string"))),
+                    ("skipped", arr_schema(skipped_item_schema())),
+                ])),
+                annotations: Some(write_annotations(false, false)),
             },
             ToolSpec {
                 name: "spec_status",
@@ -1842,6 +2184,27 @@ where
                     ["spec_id"],
                 ),
                 ui_resource_uri: Some("ui://okf-memory/spec_status"),
+                title: Some("Spec Status"),
+                output_schema: Some(obj_schema(&[
+                    ("spec_id", ty("string")),
+                    ("spec_status", ty("string")),
+                    ("spec_title", ty("string")),
+                    ("tasks_total", ty("number")),
+                    (
+                        "by_status",
+                        obj_schema(&[
+                            ("pending", ty("number")),
+                            ("in_progress", ty("number")),
+                            ("done", ty("number")),
+                            ("blocked", ty("number")),
+                            ("unknown", ty("number")),
+                        ]),
+                    ),
+                    ("progress", ty("number")),
+                    ("next_pending", arr_schema(ty("string"))),
+                    ("waiting_on_dependencies", ty("number")),
+                ])),
+                annotations: Some(read_only_annotations()),
             },
         ];
         // `skill_ingest` solo se anuncia si el despliegue configuró un
@@ -1861,6 +2224,46 @@ where
                     ["source", "path_prefix"],
                 ),
                 ui_resource_uri: Some("ui://okf-memory/skill_ingest"),
+                title: Some("Ingest Skill"),
+                output_schema: Some(obj_schema(&[
+                    ("source_url", ty("string")),
+                    ("format", ty("string")),
+                    ("license", ty("string")),
+                    ("dry_run", ty("boolean")),
+                    (
+                        "units",
+                        arr_schema(obj_schema(&[
+                            ("concept_id", ty("string")),
+                            ("title", ty("string")),
+                            ("action", ty("string")),
+                            ("warnings", arr_schema(ty("string"))),
+                        ])),
+                    ),
+                    ("ingested", ty("number")),
+                    ("concept_ids", arr_schema(ty("string"))),
+                    (
+                        "items",
+                        arr_schema(obj_schema(&[
+                            ("concept_id", ty("string")),
+                            ("mode", ty("string")),
+                            ("hash", ty("string")),
+                            ("version", ty("number")),
+                            ("created", ty("boolean")),
+                            ("warnings", arr_schema(ty("string"))),
+                        ])),
+                    ),
+                    ("skipped", arr_schema(skipped_item_schema())),
+                ])),
+                // Escribe conceptos nuevos, pero la fuente es externa
+                // (un repo de GitHub u otra URL) — mundo abierto. No
+                // destructivo (solo crea); no idempotente por
+                // simplicidad (no garantiza deduplicar reintentos).
+                annotations: Some(ToolAnnotations {
+                    read_only_hint: Some(false),
+                    destructive_hint: Some(false),
+                    idempotent_hint: Some(false),
+                    open_world_hint: Some(true),
+                }),
             });
         }
         specs

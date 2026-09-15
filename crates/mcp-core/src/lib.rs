@@ -54,6 +54,46 @@ pub struct ToolSpec {
     /// para herramientas cuyo resultado no gana nada con una vista a
     /// medida — no todo tool necesita una.
     pub ui_resource_uri: Option<&'static str>,
+    /// Nombre corto para HUMANOS (distinto de `name`, que es para el
+    /// modelo/protocolo). Un host lo muestra en vez del `name` crudo
+    /// cuando lista herramientas a la persona. `None` si `name` ya es
+    /// suficientemente legible.
+    pub title: Option<&'static str>,
+    /// JSON Schema de `structuredContent` (spec 2025-06-18). Permite a
+    /// un cliente validar o tipar la respuesta sin adivinar el shape
+    /// desde `content[0].text`. `None` para herramientas sin resultado
+    /// estructurado estable (ninguna hoy, pero el contrato lo admite).
+    pub output_schema: Option<Value>,
+    /// Pistas de comportamiento (spec 2025-06-18) que un host usa para
+    /// decidir auto-aprobación o presentación — nunca para aplicar
+    /// seguridad real, son declarativas y no verificadas por el
+    /// protocolo. `None` dispersa las mismas herramientas de siempre
+    /// (`EchoTools` en los tests de este crate) sin cambiar una línea.
+    pub annotations: Option<ToolAnnotations>,
+}
+
+/// Pistas declarativas de comportamiento para una `ToolSpec`, según la
+/// sección `annotations` de la spec MCP 2025-06-18. Cada campo es
+/// `Option<bool>` porque "no se declaró" y "declarado false" son
+/// cosas distintas: un cliente que no ve el campo aplica el default
+/// de la spec (`readOnlyHint`/`idempotentHint`/`destructiveHint` no
+/// tienen el mismo default), así que declaramos explícitamente cada
+/// hint en vez de confiar en ese default implícito.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ToolAnnotations {
+    /// La herramienta no modifica su entorno (no escribe nada).
+    pub read_only_hint: Option<bool>,
+    /// La herramienta puede realizar cambios destructivos o
+    /// irreversibles (solo tiene sentido si `read_only_hint` es
+    /// `false` o no está declarado).
+    pub destructive_hint: Option<bool>,
+    /// Llamar la herramienta repetidas veces con los MISMOS argumentos
+    /// no tiene efecto adicional más allá de la primera vez.
+    pub idempotent_hint: Option<bool>,
+    /// La herramienta interactúa con un dominio abierto (el mundo
+    /// exterior, p. ej. la web) en vez de un entorno cerrado y
+    /// conocido (este grafo de memoria).
+    pub open_world_hint: Option<bool>,
 }
 
 /// Un recurso `ui://`: HTML autocontenido (spec MCP Apps / ext-apps,
@@ -291,6 +331,30 @@ impl<H: ToolHandler> McpServer<H> {
                     ("description", s(t.description)),
                     ("inputSchema", t.input_schema),
                 ];
+                if let Some(title) = t.title {
+                    fields.push(("title", s(title)));
+                }
+                if let Some(output_schema) = t.output_schema {
+                    fields.push(("outputSchema", output_schema));
+                }
+                if let Some(a) = t.annotations {
+                    let mut ann = Vec::new();
+                    if let Some(v) = a.read_only_hint {
+                        ann.push(("readOnlyHint".to_string(), Value::Bool(v)));
+                    }
+                    if let Some(v) = a.destructive_hint {
+                        ann.push(("destructiveHint".to_string(), Value::Bool(v)));
+                    }
+                    if let Some(v) = a.idempotent_hint {
+                        ann.push(("idempotentHint".to_string(), Value::Bool(v)));
+                    }
+                    if let Some(v) = a.open_world_hint {
+                        ann.push(("openWorldHint".to_string(), Value::Bool(v)));
+                    }
+                    if !ann.is_empty() {
+                        fields.push(("annotations", Value::Object(ann.into_iter().collect())));
+                    }
+                }
                 if let Some(uri) = t.ui_resource_uri {
                     // `_meta` se manda SIEMPRE, sin negociar ninguna
                     // capability en `initialize`: un cliente MCP Apps
@@ -373,7 +437,16 @@ impl<H: ToolHandler> McpServer<H> {
         let arguments = params.get("arguments").unwrap_or(&default_args);
 
         match self.handler.call(name, arguments) {
-            Ok(result) => ok_response(id, tool_result(&json_mini::to_string(&result), false)),
+            Ok(result) => {
+                let text = json_mini::to_string(&result);
+                // `structuredContent` solo tiene sentido para un
+                // objeto JSON (así lo exige el esquema CallToolResult);
+                // `content[0].text` se manda SIEMPRE igual, por
+                // compatibilidad con clientes que no leen el campo
+                // nuevo.
+                let structured = matches!(result, Value::Object(_)).then_some(result);
+                ok_response(id, tool_result(&text, structured, false))
+            }
             Err(ToolError::UnknownTool) => {
                 error_response(id, code::INVALID_PARAMS, &format!("herramienta desconocida: {name}"))
             }
@@ -383,20 +456,24 @@ impl<H: ToolHandler> McpServer<H> {
             // Fallo de dominio: respuesta correcta de protocolo con
             // isError=true. Así el MODELO ve el conflicto CAS y puede
             // releer y reintentar.
-            Err(ToolError::Failed(msg)) => ok_response(id, tool_result(&msg, true)),
+            Err(ToolError::Failed(msg)) => ok_response(id, tool_result(&msg, None, true)),
         }
     }
 }
 
 /// Resultado de herramienta según el esquema MCP `CallToolResult`.
-fn tool_result(text: &str, is_error: bool) -> Value {
-    obj([
+fn tool_result(text: &str, structured: Option<Value>, is_error: bool) -> Value {
+    let mut fields = vec![
         (
-            "content",
+            "content".to_string(),
             arr(vec![obj([("type", s("text")), ("text", s(text))])]),
         ),
-        ("isError", Value::Bool(is_error)),
-    ])
+        ("isError".to_string(), Value::Bool(is_error)),
+    ];
+    if let Some(structured) = structured {
+        fields.push(("structuredContent".to_string(), structured));
+    }
+    Value::Object(fields.into_iter().collect())
 }
 
 fn ok_response(id: Value, result: Value) -> Value {
@@ -427,6 +504,9 @@ mod tests {
                 description: "devuelve lo recibido",
                 input_schema: obj([("type", s("object"))]),
                 ui_resource_uri: None,
+                title: None,
+                output_schema: None,
+                annotations: None,
             }]
         }
         fn call(&mut self, name: &str, arguments: &Value) -> Result<Value, ToolError> {
@@ -454,6 +534,14 @@ mod tests {
                 description: "devuelve lo recibido",
                 input_schema: obj([("type", s("object"))]),
                 ui_resource_uri: Some("ui://test/echo-view"),
+                title: Some("Echo"),
+                output_schema: Some(obj([("type", s("object"))])),
+                annotations: Some(ToolAnnotations {
+                    read_only_hint: Some(true),
+                    destructive_hint: Some(false),
+                    idempotent_hint: Some(true),
+                    open_world_hint: Some(false),
+                }),
             }]
         }
         fn call(&mut self, _name: &str, arguments: &Value) -> Result<Value, ToolError> {
@@ -525,7 +613,31 @@ mod tests {
             // cliente que conecte.
             assert!(resp.contains("\"openai/outputTemplate\":\"ui://test/echo-view\""));
             assert!(resp.contains("\"openai/widgetAccessible\":true"));
+            assert!(resp.contains("\"title\":\"Echo\""));
+            assert!(resp.contains("\"outputSchema\":{\"type\":\"object\"}"));
+            assert!(resp.contains("\"readOnlyHint\":true"));
+            assert!(resp.contains("\"destructiveHint\":false"));
+            assert!(resp.contains("\"idempotentHint\":true"));
+            assert!(resp.contains("\"openWorldHint\":false"));
         }
+    }
+
+    #[test]
+    fn tools_call_incluye_structured_content_para_resultados_objeto() {
+        let resp = server()
+            .handle_message(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"x":1}}}"#)
+            .unwrap();
+        assert!(resp.contains("\"structuredContent\":{\"x\":1}"));
+        // `content[0].text` se mantiene igual, por compatibilidad.
+        assert!(resp.contains("{\\\"x\\\":1}"));
+    }
+
+    #[test]
+    fn tools_call_fallido_no_lleva_structured_content() {
+        let resp = server()
+            .handle_message(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"explota"}}"#)
+            .unwrap();
+        assert!(!resp.contains("structuredContent"));
     }
 
     #[test]
