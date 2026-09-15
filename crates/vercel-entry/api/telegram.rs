@@ -68,7 +68,7 @@ const MAX_HISTORY_TURNS: usize = 12;
 /// límite hasta el siguiente turno).
 const TURN_MARKER: &str = "\n### Turno ";
 
-const SYSTEM_PROMPT: &str = "Eres el asistente de okf-memory por Telegram: decides si responder directo o invocar UNA tool del grafo de memoria para responder con datos reales en vez de inventarlos. Sé conciso — esto se lee en un chat de Telegram, no en un IDE. Si no hace falta ninguna tool (saludo, pregunta general), responde directo.";
+const SYSTEM_PROMPT: &str = "Eres el asistente de okf-memory por Telegram: decides si responder directo o invocar UNA tool del grafo de memoria para responder con datos reales en vez de inventarlos. Sé conciso — esto se lee en un chat de Telegram, no en un IDE. Si no hace falta ninguna tool (saludo, pregunta general), responde directo. Formato: Telegram usa Markdown LEGACY, no CommonMark — negrita con *un solo asterisco* (nunca **dos**), cursiva con _un solo guion bajo_, sin encabezados '#' ni tablas; listas como líneas sueltas con '- '.";
 
 /// Compara `from.id` del mensaje contra `TELEGRAM_ALLOWED_USER_IDS`.
 /// Lista vacía o sin configurar = abierto (documentado como solo apto
@@ -139,8 +139,9 @@ async fn webhook_handler(headers: HeaderMap, body: Bytes) -> Response {
 
     let client = reqwest::Client::new();
     let reply = handle_message(&client, &openrouter, &mut tools, &message).await;
+    let formatted = telegram_markdown(&reply);
 
-    if let Err(e) = telegram_bridge::send_message(&client, &telegram, &message.chat_id, &reply).await {
+    if let Err(e) = telegram_bridge::send_message(&client, &telegram, &message.chat_id, &formatted).await {
         eprintln!("okf-telegram: fallo mandando respuesta a {}: {e}", message.chat_id);
     }
 
@@ -285,6 +286,17 @@ fn render_turn(n: usize, user_text: &str, tool_name: Option<&str>, reply: &str) 
     format!("{TURN_MARKER}{n}\n**Usuario:** {user_text}\n{tool_line}**Respuesta:** {reply}\n")
 }
 
+/// Red de seguridad para cuando el modelo ignora la instrucción de
+/// formato del prompt de sistema y devuelve `**negrita**` estilo
+/// CommonMark/GFM: Telegram (modo `Markdown` legacy) solo entiende UN
+/// asterisco para negrita — `**texto**` sin tocar se renderiza con
+/// los asteriscos de sobra a la vista, o directamente puede dejar una
+/// entidad sin cerrar. `str::replace` es suficiente: no hace falta un
+/// parser de Markdown para una sustitución literal de dos caracteres.
+fn telegram_markdown(text: &str) -> String {
+    text.replace("**", "*")
+}
+
 /// Conserva el preámbulo (frontmatter + lo que sea que venga antes del
 /// primer [`TURN_MARKER`]) y como mucho los últimos `max_turns`
 /// bloques de turno.
@@ -331,6 +343,12 @@ mod tests {
         assert!(!capped.contains("Turno 1\n"));
         assert!(capped.contains("Turno 15\n"));
         assert_eq!(capped.matches(TURN_MARKER).count(), 12);
+    }
+
+    #[test]
+    fn telegram_markdown_convierte_negrita_gfm_a_legacy() {
+        assert_eq!(telegram_markdown("**okf**: 50 conceptos"), "*okf*: 50 conceptos");
+        assert_eq!(telegram_markdown("sin negrita"), "sin negrita");
     }
 
     #[test]
