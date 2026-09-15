@@ -59,10 +59,15 @@ impl TelegramConfig {
     }
 }
 
-/// Manda `text` al chat `chat_id` vía `sendMessage`. `parse_mode` fijo
-/// a `None` (texto plano): un `concept_id` o un hash con guiones bajos
-/// rompería Markdown a medias si lo mandáramos como Markdown sin
-/// escapar.
+/// Manda `text` al chat `chat_id` vía `sendMessage`, con `parse_mode:
+/// "Markdown"` (el modo LEGACY de Telegram, no MarkdownV2: acepta
+/// `*negrita*`/`_cursiva*`/`` `code` `` sin exigir escapar cada
+/// `.`/`-`/`(`/`)` del texto, a diferencia de MarkdownV2). Un
+/// `concept_id` con `_` o un `*` suelto en el texto de un modelo
+/// puede dejar una entidad sin cerrar y que Telegram devuelva 400
+/// ("can't parse entities") — en ese caso reintenta UNA vez sin
+/// `parse_mode`, texto plano siempre es válido: perder el formato es
+/// aceptable, perder el mensaje no.
 pub async fn send_message(
     client: &reqwest::Client,
     config: &TelegramConfig,
@@ -72,12 +77,26 @@ pub async fn send_message(
     let url = format!("https://api.telegram.org/bot{}/sendMessage", config.bot_token);
     let resp = client
         .post(&url)
+        .json(&json!({ "chat_id": chat_id, "text": text, "parse_mode": "Markdown" }))
+        .send()
+        .await?;
+    if resp.status().is_success() {
+        return Ok(());
+    }
+    if resp.status().as_u16() != 400 {
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(TelegramError::Api { status, body });
+    }
+
+    let plain = client
+        .post(&url)
         .json(&json!({ "chat_id": chat_id, "text": text }))
         .send()
         .await?;
-    if !resp.status().is_success() {
-        let status = resp.status().as_u16();
-        let body = resp.text().await.unwrap_or_default();
+    if !plain.status().is_success() {
+        let status = plain.status().as_u16();
+        let body = plain.text().await.unwrap_or_default();
         return Err(TelegramError::Api { status, body });
     }
     Ok(())
