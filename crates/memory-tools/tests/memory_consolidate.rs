@@ -111,6 +111,37 @@ fn titulo_o_resumen_vacios_se_rechazan() {
 }
 
 #[test]
+fn superseded_enlaza_conceptos_obsoletos_sin_borrarlos() {
+    let mut tools = tools();
+    call(&mut tools, "memory_commit", r#"{"concept_id":"notes/suelta","markdown":"---\ntype: note\ntitle: Suelta\n---\nborrador\n","reason":"seed"}"#);
+
+    let out = call(
+        &mut tools,
+        "memory_consolidate",
+        r#"{"title":"Sesión que incorpora la nota suelta","summary":"resumen","superseded":["notes/suelta"]}"#,
+    );
+    let concept_id = out.get("concept_id").unwrap().as_str().unwrap().to_string();
+
+    let doc = call(&mut tools, "memory_resolve", &format!(r#"{{"concept_id":"{concept_id}"}}"#));
+    let markdown = doc.get("document").unwrap().get("markdown").unwrap().as_str().unwrap();
+    assert!(markdown.contains("[[superseded:notes/suelta]]"));
+
+    // notes/suelta sigue viva (no borrada), y ve el enlace entrante.
+    let resolved = call(&mut tools, "memory_resolve", r#"{"concept_id":"notes/suelta"}"#);
+    assert!(resolved.get("document").is_some());
+    let backlinks = call(&mut tools, "memory_backlinks", r#"{"concept_id":"notes/suelta"}"#);
+    let sources: Vec<&str> = backlinks
+        .get("backlinks")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b.get("source").unwrap().get("concept_id").unwrap().as_str().unwrap())
+        .collect();
+    assert!(sources.contains(&concept_id.as_str()));
+}
+
+#[test]
 fn concept_id_invalido_en_una_entidad_se_rechaza() {
     let mut tools = tools();
     let args = json_mini::parse(
