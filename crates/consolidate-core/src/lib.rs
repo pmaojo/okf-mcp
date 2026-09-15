@@ -63,6 +63,12 @@ pub struct SessionDigest {
     pub entities: Vec<DigestEntity>,
     /// Decisiones tomadas durante la sesión.
     pub decisions: Vec<DigestDecision>,
+    /// Conceptos que este resumen deja obsoletos (p. ej. notas sueltas
+    /// ya incorporadas aquí). Provenance explícita, no borrado: cada
+    /// uno se enlaza en el cuerpo con `[[superseded:<concept_id>]]`,
+    /// visible a `memory_backlinks` igual que cualquier otro enlace
+    /// tipado, para que quede trazable qué reemplazó a qué.
+    pub superseded: Vec<ConceptId>,
 }
 
 /// Por qué [`render_digest`] rechazó un `SessionDigest`.
@@ -150,6 +156,7 @@ fn sanitize_scalar(raw: &str) -> String {
 ///         text: "Consolidar sin LLM en el servidor".to_string(),
 ///         concept_id: None,
 ///     }],
+///     superseded: Vec::new(),
 /// };
 /// let markdown = render_digest(&digest, &Budget::default()).unwrap();
 /// assert!(markdown.starts_with("---\ntype: session-summary\n"));
@@ -192,6 +199,13 @@ pub fn render_digest(digest: &SessionDigest, budget: &Budget) -> Result<String, 
         }
     }
 
+    if !digest.superseded.is_empty() {
+        out.push_str("\n## Superseded\n");
+        for id in &digest.superseded {
+            out.push_str(&format!("- [[superseded:{}]]\n", id.as_str()));
+        }
+    }
+
     okf_core::parse_document(&out, budget).map_err(ConsolidateError::Okf)?;
     Ok(out)
 }
@@ -206,6 +220,7 @@ mod tests {
             summary: summary.to_string(),
             entities: Vec::new(),
             decisions: Vec::new(),
+            superseded: Vec::new(),
         }
     }
 
@@ -247,6 +262,7 @@ mod tests {
             summary: "resumen".to_string(),
             entities: vec![DigestEntity { concept_id: entity_id.clone(), relation: Some("se revisó".to_string()) }],
             decisions: vec![DigestDecision { text: "avisar a alice".to_string(), concept_id: Some(decision_id.clone()) }],
+            superseded: Vec::new(),
         };
         let markdown = render_digest(&d, &Budget::default()).unwrap();
         assert!(markdown.contains("[[projects/okf-mcp]] (se revisó)"));
@@ -255,6 +271,23 @@ mod tests {
         let linked: Vec<&str> = parsed.links.iter().map(|l| l.target.as_str()).collect();
         assert!(linked.contains(&entity_id.as_str()));
         assert!(linked.contains(&decision_id.as_str()));
+    }
+
+    #[test]
+    fn superseded_entries_render_as_typed_links() {
+        let old_id = ConceptId::parse("notes/scratch-2026-09-01").unwrap();
+        let d = SessionDigest {
+            title: "Sesión con superseded".to_string(),
+            summary: "resumen".to_string(),
+            entities: Vec::new(),
+            decisions: Vec::new(),
+            superseded: vec![old_id.clone()],
+        };
+        let markdown = render_digest(&d, &Budget::default()).unwrap();
+        assert!(markdown.contains("[[superseded:notes/scratch-2026-09-01]]"));
+        let parsed = okf_core::parse_document(&markdown, &Budget::default()).unwrap();
+        let linked: Vec<&str> = parsed.links.iter().map(|l| l.target.as_str()).collect();
+        assert!(linked.contains(&old_id.as_str()));
     }
 
     #[test]

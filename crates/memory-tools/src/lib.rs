@@ -553,6 +553,23 @@ where
             .collect()
     }
 
+    /// Traduce el argumento `superseded` (array de `concept_id`
+    /// strings) a `Vec<ConceptId>`, o vacío si se omite.
+    fn parse_digest_superseded(args: &Value) -> Result<Vec<ConceptId>, ToolError> {
+        let Some(items) = args.get("superseded").and_then(|v| v.as_array()) else {
+            return Ok(Vec::new());
+        };
+        items
+            .iter()
+            .map(|item| {
+                let raw = item
+                    .as_str()
+                    .ok_or_else(|| ToolError::InvalidArguments("'superseded' debe ser un array de strings".to_string()))?;
+                Self::concept_id(raw)
+            })
+            .collect()
+    }
+
     /// Traduce un rechazo de [`consolidate_core::render_digest`] a un
     /// fallo legible por el MODELO.
     fn consolidate_error(err: ConsolidateError) -> ToolError {
@@ -581,6 +598,7 @@ where
         let summary = Self::require_str(args, "summary")?;
         let entities = Self::parse_digest_entities(args)?;
         let decisions = Self::parse_digest_decisions(args)?;
+        let superseded = Self::parse_digest_superseded(args)?;
 
         let id = match Self::arg_str(args, "concept_id") {
             Some(raw) => Self::concept_id(&raw)?,
@@ -601,7 +619,7 @@ where
             }
         };
 
-        let digest = SessionDigest { title, summary, entities, decisions };
+        let digest = SessionDigest { title, summary, entities, decisions, superseded };
         let markdown = consolidate_core::render_digest(&digest, &self.budget)
             .map_err(Self::consolidate_error)?;
 
@@ -1654,6 +1672,7 @@ where
                         ("summary", "string", "resumen en prosa de lo ocurrido; puede contener [[enlaces]] OKF normales"),
                         ("entities", "array", "entidades relacionadas: lista de {concept_id, relation?} (relation en prosa libre)"),
                         ("decisions", "array", "decisiones tomadas: lista de {text, concept_id?}"),
+                        ("superseded", "array", "concept_ids que este resumen deja obsoletos, enlazados como [[superseded:<concept_id>]] (provenance, no borra esos conceptos)"),
                         ("concept_id", "string", "id lógico del documento de sesión (por defecto sessions/<slug-del-título>)"),
                         ("reason", "string", "motivo para la historia de revisiones (por defecto 'consolidación de sesión')"),
                         ("expected_hash", "string", "hash SHA-256 hex leído previamente, obligatorio para actualizar una sesión ya existente"),

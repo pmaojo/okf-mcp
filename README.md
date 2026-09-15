@@ -175,7 +175,7 @@ agent pulls them from whatever source it needs, per session.
 | `memory_resolve` | exact Markdown + a bounded neighborhood of `[[links]]` |
 | `memory_reason` | bounded OWL-RL/RDFS reasoning (`ontology-core`) over the neighborhood: subclasses, transitivity, symmetry, inverse properties |
 | `memory_commit` | compare-and-swap write (`expected_hash`) with `dry_run` |
-| `memory_consolidate` | consolidate a session (title/summary/entities/decisions authored by the agent) as `type: session-summary`, validated and rendered to OKF with no server-side LLM |
+| `memory_consolidate` | consolidate a session (title/summary/entities/decisions authored by the agent) as `type: session-summary`, validated and rendered to OKF with no server-side LLM; `superseded` links the concepts it makes obsolete as provenance, without deleting them |
 | `memory_history` | revisions newest to oldest, paginated |
 | `memory_delete` | logical deletion with `expected_hash` |
 | `memory_list` | list concept metadata under a prefix without reading content |
