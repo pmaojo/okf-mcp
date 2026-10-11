@@ -62,7 +62,70 @@ fn agrega_mas_episodios_que_una_pagina() {
     assert!(md.contains("n_obs: 120"), "{md}");
     assert!(md.contains("successes: 96"), "{md}");
     assert!(md.contains("rate: 0.800000"), "{md}");
-    assert!(md.contains("rule_version: v1"), "{md}");
+    assert!(md.contains("rule_version: v2"), "{md}");
+    // confidence = n/(n+10) = 120/130; separation = (2·q−1)² con q = (96+5)/130.
+    assert!(md.contains("confidence: 0.923077"), "{md}");
+    assert!(md.contains("separation: 0.306746"), "{md}");
+}
+
+/// Memoria sin episodios: la pasada no escribe nada, ni siquiera un run.
+#[test]
+fn memoria_vacia_no_escribe_ni_un_run() {
+    let mut t = tools();
+    let out = call(&mut t, "memory_distill", "{}");
+    assert_eq!(num(&out, "facts"), 0);
+    assert_eq!(num(&out, "created"), 0);
+    assert_eq!(num(&out, "unchanged"), 0);
+    assert_eq!(out.get("run"), Some(&Value::Null));
+    assert_eq!(num(&call(&mut t, "memory_list", r#"{"path_prefix":"runs"}"#), "count"), 0);
+}
+
+/// Un hecho y un run borrados lógicamente se RECREAN en la pasada
+/// siguiente (contrato de store: `expected = None` sobre un borrado
+/// lo recrea y continúa la historia), sin conflicto ni error.
+#[test]
+fn recrea_hechos_y_runs_borrados_logicamente() {
+    let mut t = tools();
+    for i in 0..4 {
+        episode(&mut t, i, i % 2 == 0);
+    }
+    let first = call(&mut t, "memory_distill", "{}");
+    let run = first.get("run").unwrap().as_str().unwrap().to_string();
+    let fact = "facts/skill_success_rate/manipulation-grasp/glass_cup/sim";
+
+    for id in [run.as_str(), fact] {
+        let doc = call(&mut t, "memory_resolve", &format!(r#"{{"concept_id":"{id}"}}"#));
+        let hash = doc.get("document").unwrap().get("hash").unwrap().as_str().unwrap().to_string();
+        call(
+            &mut t,
+            "memory_delete",
+            &format!(r#"{{"concept_id":"{id}","expected_hash":"{hash}","reason":"prueba"}}"#),
+        );
+    }
+
+    let again = call(&mut t, "memory_distill", "{}");
+    assert!(again.get("failed").unwrap().as_array().unwrap().is_empty());
+    assert_eq!(num(&again, "created"), 2, "hecho y run vuelven a existir");
+    assert_eq!(again.get("run").unwrap().as_str().unwrap(), run, "mismo id de run");
+    let doc = call(&mut t, "memory_resolve", &format!(r#"{{"concept_id":"{fact}"}}"#));
+    assert!(doc.get("document").unwrap().get("markdown").unwrap().as_str().unwrap().contains("n_obs: 4"));
+}
+
+#[test]
+fn interaction_pattern_no_tiene_separation_y_usa_la_misma_confianza() {
+    let mut t = tools();
+    for i in 0..5 {
+        episode(&mut t, i, false);
+    }
+    call(&mut t, "memory_distill", "{}");
+    let doc = call(
+        &mut t,
+        "memory_resolve",
+        r#"{"concept_id":"facts/interaction_pattern/manipulation-grasp/glass_cup/slip"}"#,
+    );
+    let md = doc.get("document").unwrap().get("markdown").unwrap().as_str().unwrap();
+    assert!(md.contains("confidence: 0.333333"), "5/(5+10): {md}");
+    assert!(!md.contains("separation:"), "{md}");
 }
 
 #[test]

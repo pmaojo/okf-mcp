@@ -356,9 +356,12 @@ free text is allowed but never aggregated
 - one `semantic-fact` per `skill/target/context` (`skill_success_rate`)
   and per `skill/target/failure_reason` (`interaction_pattern`), with
   `n_obs`, `rate`, `rate_shrunk` (prior 0.5, weight 10), `confidence`
-  and typed `[[derived_from:episodes/...]]` links to the supporting
+  (the weight of the evidence, `n/(n+10)`, the same in every fact kind),
+  `separation` (how far the shrunk rate is from a coin flip, rate facts
+  only) and typed `[[derived_from:episodes/...]]` links to the supporting
   episodes — `memory_backlinks` walks from a fact back to its proof;
-- one `consolidation-run` listing the facts it produced.
+- one `consolidation-run` listing the facts it produced (a pass that
+  produces no fact writes nothing, not even a run).
 
 Guarantees, each covered by tests: same episodes give the same bytes
 (no clock, no randomness, input order irrelevant); a second pass writes
