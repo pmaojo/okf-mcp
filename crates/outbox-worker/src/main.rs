@@ -24,12 +24,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mode = outbox_worker::GithubMode::from_env();
     match mode {
         outbox_worker::GithubMode::Off => {
-            println!("Modo Supabase-only: GitHub no se lee ni se escribe (para un espejo de salida, OKF_GITHUB_MIRROR=1).");
+            println!("Modo Supabase-only: GitHub no se lee ni se escribe (configura GITHUB_TOKEN y GITHUB_REPO para el espejo de salida; OKF_GITHUB_MIRROR=0 lo apaga).");
         }
         outbox_worker::GithubMode::Mirror => {
-            if github_token.is_none() || github_repo.is_none() {
-                println!("ADVERTENCIA: OKF_GITHUB_MIRROR=1 pero faltan GITHUB_TOKEN o GITHUB_REPO. Se saltará el espejo.");
-            }
+            println!("Espejo de salida activo: Supabase -> GitHub. Supabase sigue siendo la fuente de verdad.");
         }
         outbox_worker::GithubMode::Primary => {
             println!("OKF_STORE=github: el paso A del batch (Contents API) se salta — IndexedStore ya escribió en GitHub de forma síncrona vía git-data API.");

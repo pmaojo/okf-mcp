@@ -23,7 +23,7 @@ Spanish). Generated API docs (`cargo doc`) are published at
 - MCP Apps — an interactive React UI ([`mcp-app/`](mcp-app/), brutalist theme) for 18 of the 19 tools, each with its own `ui://` resource (optional — see below).
 - Lightweight reasoning (`ontology-core`, tutorial chapter 18) — triples derived from existing frontmatter/links, a bounded OWL-RL/RDFS fixed point, persisted via `TripleStore` (`triples` table in Supabase) with no `oxigraph` and no external dependencies. Ontologies are declared **once** as a `type: ontology` document and reused by `ontology_id` — `ToolHandler::instructions()` tells the agent this at `initialize`, before it invents axioms of its own.
 - Deterministic fact distillation (`semantic-core`, `memory_distill`) — structured `type: episode` concepts are aggregated into `type: semantic-fact` rows (success rate, observation count, Bayesian-shrunk confidence, `derived_from` provenance) under `facts/` and `runs/` only, with no server-side LLM. See [Distilling facts](#distilling-facts-memory_distill).
-- **Supabase is the only store by default.** GitHub is no longer read or written unless you opt in (`OKF_STORE=github` for the legacy source-of-truth mode, or `OKF_GITHUB_MIRROR=1` for a one-way export). See [GitHub is opt-in](#github-is-opt-in).
+- **Supabase is the source of truth.** It still mirrors every commit/delete out to GitHub (outbox + cron) when `GITHUB_TOKEN`/`GITHUB_REPO` are set, and can import edits made on GitHub incrementally (`OKF_GITHUB_INBOUND=1`) — but GitHub is never trusted as the full state unless `OKF_STORE=github`. See [GitHub: mirror and import](#github-mirror-and-import).
 - Ranked lexical search fallback (`memory-store`) — when no embeddings provider is configured, `memory_search` no longer returns unranked substring matches: hits are scored by field (title > tags > id > body, body capped so a long document can't win purely on repetition) so the most relevant concept surfaces first even without semantic search.
 
 ## Architecture
@@ -466,26 +466,40 @@ warnings`, which fails (nonzero exit) instead of just reporting — the
 old-coder rule that "printing the percentage and exiting 0 is a
 report, not a restriction."
 
-## GitHub is opt-in
+## GitHub: mirror and import
 
 Supabase holds everything: `blobs` (the full Markdown of every
 version), `heads` (type, title, tags, version, soft-delete),
 `revisions` (history with actor and reason), `links` (typed),
-`embeddings`, `triples` and the `outbox`. Since GitHub's API has rate
-limits and nobody reads the mirrored Markdown, it is off by default:
+`embeddings`, `triples` and the `outbox`. GitHub is a readable copy,
+never a dependency of the write path.
 
-| Mode | Variables | Behaviour |
-| ---- | --------- | --------- |
-| Supabase-only (default) | none | GitHub is never read or written; `/api/github-webhook` answers `410`. |
-| One-way mirror | `OKF_GITHUB_MIRROR=1` + `GITHUB_REPO` + `GITHUB_TOKEN` | the outbox copies each commit/delete to GitHub; Supabase stays the source of truth and GitHub is **never** reconciled back. |
-| Legacy source of truth | `OKF_STORE=github` | the `IndexedStore` mode described below. |
+| Direction | Switch | Behaviour |
+| --------- | ------ | --------- |
+| Supabase → GitHub (mirror) | on whenever `GITHUB_TOKEN` + `GITHUB_REPO` are set; `OKF_GITHUB_MIRROR=0` turns it off | the outbox (the existing Vercel cron, or the daemon) copies each commit/delete to `{GITHUB_PATH}/{concept_id}.md`. It skips the write when GitHub already has identical bytes, so content that came *from* GitHub is not echoed back as an empty commit. |
+| GitHub → Supabase (import) | `OKF_GITHUB_INBOUND=1` + `GITHUB_WEBHOOK_SECRET` + webhook on the content repo | on a push, only the files that push mentions are imported (details below). Off by default: the webhook answers `410`. |
+| Legacy source of truth | `OKF_STORE=github` | the `IndexedStore` mode described below, with the full GitHub → Supabase reconciliation. |
 
-To move an existing deployment off GitHub: remove `OKF_STORE=github`
-from the Vercel environment (and the GitHub webhook of the content
-repo), redeploy, and compare `memory_stats` against the repository
-before relying on it — the only data that Supabase may lack is an edit
-made directly on GitHub that was never reconciled. `GITHUB_TOKEN`
-stays useful for `skill_ingest` downloads, which is independent.
+**Incremental import.** For each file in the push (added, modified or
+removed, read at the push's final commit): identical bytes → nothing
+happens (this is also what makes the mirror loop-free); different
+bytes → a normal commit, so it is validated as OKF, indexes links and
+embeddings, and the previous version stays in `revisions` (GitHub wins
+as a *new revision*, nothing is lost); file gone → logical delete of
+that one concept. Anything the push does not mention is untouched, so
+facts and other Supabase-only data survive. At most 100 files per
+push are imported, and the response flags `incomplete` when GitHub
+truncated the payload (it lists at most 20 commits). The full
+reconciliation is *not* used outside `OKF_STORE=github` because it
+treats GitHub as the whole truth: it would soft-delete everything that
+exists only in Supabase.
+
+To move an existing deployment off the legacy mode: remove
+`OKF_STORE=github` from the Vercel environment, redeploy, and compare
+`memory_stats` against the repository before relying on it — the only
+data Supabase may lack is an edit made directly on GitHub that was
+never reconciled. Keep the webhook if you set `OKF_GITHUB_INBOUND=1`.
+`GITHUB_TOKEN` is also used by `skill_ingest` downloads.
 
 ## Deploying to Vercel
 

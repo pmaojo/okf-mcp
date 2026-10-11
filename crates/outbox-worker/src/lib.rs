@@ -13,6 +13,7 @@
 #![forbid(unsafe_code)]
 
 mod github_sync;
+pub mod inbound;
 mod reconciliation;
 
 pub use reconciliation::reconcile_github_to_supabase;
@@ -38,18 +39,22 @@ pub fn schema_sql() -> &'static str {
     include_str!("../../../crates/supabase-store/schema.sql")
 }
 
-/// Papel de GitHub en el despliegue. Por defecto NINGUNO: Supabase es
-/// el único almacén (datos, historia, enlaces, embeddings) y GitHub
-/// no se lee ni se escribe. Un límite de la API de GitHub nunca puede
-/// tumbar la memoria si GitHub no está en el camino.
+/// Papel de GitHub en el despliegue. Supabase es SIEMPRE el almacén
+/// principal salvo con `OKF_STORE=github`; esto decide qué se copia a
+/// GitHub y qué se lee de él.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GithubMode {
-    /// Sin GitHub (por defecto): ni espejo ni reconciliación.
+    /// Sin GitHub: ni espejo ni reconciliación (no hay credenciales
+    /// o el espejo está apagado a propósito con `OKF_GITHUB_MIRROR=0`).
     Off,
-    /// Espejo de SALIDA opt-in (`OKF_GITHUB_MIRROR=1`): cada
-    /// commit/delete de Supabase se copia a GitHub vía Contents API.
-    /// Supabase sigue siendo la fuente de verdad: NUNCA se reconcilia
-    /// GitHub → Supabase en este modo.
+    /// Espejo de SALIDA: cada commit/delete de Supabase se copia a
+    /// GitHub vía Contents API desde el outbox (el cron ya existente
+    /// o el worker). Es el modo por defecto en cuanto hay
+    /// `GITHUB_TOKEN` + `GITHUB_REPO`, como siempre. Supabase manda:
+    /// NUNCA se reconcilia GitHub → Supabase en este modo (esa
+    /// reconciliación trata a GitHub como verdad absoluta y borraría
+    /// lo que solo existe en Supabase). Lo que sí admite es la
+    /// importación incremental de pushes: ver [`inbound`].
     Mirror,
     /// GitHub es la fuente de verdad (`OKF_STORE=github`, el modo
     /// antiguo `IndexedStore`): se reconcilia GitHub → Supabase.
@@ -57,21 +62,26 @@ pub enum GithubMode {
 }
 
 impl GithubMode {
-    /// Decide el modo a partir de los valores de `OKF_STORE` y
-    /// `OKF_GITHUB_MIRROR` (función pura: testeable sin tocar el
-    /// entorno del proceso).
+    /// Decide el modo a partir de `OKF_STORE`, `OKF_GITHUB_MIRROR` y
+    /// de si hay credenciales (`GITHUB_TOKEN` y `GITHUB_REPO`).
+    /// Función pura: testeable sin tocar el entorno del proceso.
     ///
     /// ```
     /// use outbox_worker::GithubMode;
-    /// assert_eq!(GithubMode::from_values(None, None), GithubMode::Off);
-    /// assert_eq!(GithubMode::from_values(Some("supabase"), None), GithubMode::Off);
-    /// assert_eq!(GithubMode::from_values(None, Some("1")), GithubMode::Mirror);
-    /// assert_eq!(GithubMode::from_values(Some("github"), Some("1")), GithubMode::Primary);
+    /// // Sin credenciales no hay GitHub.
+    /// assert_eq!(GithubMode::from_values(None, None, false), GithubMode::Off);
+    /// // Con credenciales, espejo de salida (el comportamiento de siempre).
+    /// assert_eq!(GithubMode::from_values(None, None, true), GithubMode::Mirror);
+    /// assert_eq!(GithubMode::from_values(Some("supabase"), None, true), GithubMode::Mirror);
+    /// // Se puede apagar a propósito.
+    /// assert_eq!(GithubMode::from_values(None, Some("0"), true), GithubMode::Off);
+    /// // El modo antiguo manda sobre todo lo demás.
+    /// assert_eq!(GithubMode::from_values(Some("github"), Some("0"), false), GithubMode::Primary);
     /// ```
-    pub fn from_values(okf_store: Option<&str>, mirror: Option<&str>) -> GithubMode {
+    pub fn from_values(okf_store: Option<&str>, mirror: Option<&str>, has_credentials: bool) -> GithubMode {
         if okf_store == Some("github") {
             GithubMode::Primary
-        } else if matches!(mirror, Some("1") | Some("true") | Some("yes")) {
+        } else if has_credentials && !matches!(mirror, Some("0") | Some("false") | Some("no") | Some("off")) {
             GithubMode::Mirror
         } else {
             GithubMode::Off
@@ -80,26 +90,38 @@ impl GithubMode {
 
     /// Lee el modo del entorno del proceso.
     pub fn from_env() -> GithubMode {
+        let has_credentials =
+            std::env::var("GITHUB_TOKEN").is_ok() && std::env::var("GITHUB_REPO").is_ok();
         GithubMode::from_values(
             std::env::var("OKF_STORE").ok().as_deref(),
             std::env::var("OKF_GITHUB_MIRROR").ok().as_deref(),
+            has_credentials,
         )
     }
 }
 
+/// ¿Está activa la importación incremental de pushes de GitHub
+/// (`OKF_GITHUB_INBOUND=1`)? Apagada por defecto.
+///
+/// ```
+/// use outbox_worker::inbound_enabled_from;
+/// assert!(!inbound_enabled_from(None));
+/// assert!(inbound_enabled_from(Some("1")));
+/// assert!(!inbound_enabled_from(Some("0")));
+/// ```
+pub fn inbound_enabled_from(value: Option<&str>) -> bool {
+    matches!(value, Some("1") | Some("true") | Some("yes"))
+}
+
+/// Lee `OKF_GITHUB_INBOUND` del entorno.
+pub fn inbound_enabled() -> bool {
+    inbound_enabled_from(std::env::var("OKF_GITHUB_INBOUND").ok().as_deref())
+}
+
 /// Credenciales de GitHub para el paso A de [`process_batch`]: solo
 /// en [`GithubMode::Mirror`]. En `Off` no hay paso A; en `Primary`
-/// (`OKF_STORE=github`) se omite porque `IndexedStore` ya escribió.
-///
-/// En modo `IndexedStore` (`OKF_STORE=github`), GitHub ya es la
-/// fuente de verdad: cada commit/delete se escribe ahí de forma
-/// síncrona (git-data API) ANTES de que `IndexedStore` intente el
-/// espejo best-effort a Supabase — y ese espejo es justamente quien
-/// encola el evento del outbox que `process_batch` procesaría aquí.
-/// Sin este corte, el paso A repetiría esa misma escritura vía la API
-/// de Contents, duplicando cada commit/delete en el repo. El resto
-/// del batch (paso B: embeddings) sigue funcionando igual — sirve de
-/// red de reintento si el embedding inline del commit falló.
+/// (`OKF_STORE=github`) se omite porque `IndexedStore` ya escribió
+/// de forma síncrona y repetirlo duplicaría cada commit.
 pub fn github_sync_credentials() -> (Option<String>, Option<String>) {
     if GithubMode::from_env() != GithubMode::Mirror {
         return (None, None);
