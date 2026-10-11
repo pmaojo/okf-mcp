@@ -209,6 +209,11 @@ impl MemoryRepository for InMemoryStore {
                     continue;
                 }
             }
+            if let Some(after) = &query.after {
+                if id.as_str() <= after.as_str() {
+                    continue;
+                }
+            }
             let view = self.view(id, head, budget)?;
             if let Some(t) = &query.doc_type {
                 if view.doc_type != *t {
@@ -799,6 +804,7 @@ mod tests {
             tag: tag.map(String::from),
             path_prefix: None,
             limit: None,
+            after: None,
         };
 
         assert_eq!(s.search(&q(Some("rust"), None, None), &budget).unwrap().len(), 2);

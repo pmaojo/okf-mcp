@@ -851,6 +851,11 @@ impl MemoryRepository for GithubStore {
                     continue;
                 }
             }
+            if let Some(after) = &query.after {
+                if id.as_str() <= after.as_str() {
+                    continue;
+                }
+            }
             if let Some(t) = &query.doc_type {
                 if doc.doc_type != *t {
                     continue;
