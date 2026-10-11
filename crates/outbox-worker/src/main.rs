@@ -21,10 +21,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (github_token, github_repo) = outbox_worker::github_sync_credentials();
     let embedding_keys = gemini_embeddings::EmbeddingKeys::from_env();
 
-    if env::var("OKF_STORE").as_deref() == Ok("github") {
-        println!("OKF_STORE=github: el paso A del batch (Contents API) se salta — IndexedStore ya escribió en GitHub de forma síncrona vía git-data API.");
-    } else if github_token.is_none() || github_repo.is_none() {
-        println!("ADVERTENCIA: GITHUB_TOKEN o GITHUB_REPO no configurados. Se saltará la sincronización con Git.");
+    let mode = outbox_worker::GithubMode::from_env();
+    match mode {
+        outbox_worker::GithubMode::Off => {
+            println!("Modo Supabase-only: GitHub no se lee ni se escribe (para un espejo de salida, OKF_GITHUB_MIRROR=1).");
+        }
+        outbox_worker::GithubMode::Mirror => {
+            if github_token.is_none() || github_repo.is_none() {
+                println!("ADVERTENCIA: OKF_GITHUB_MIRROR=1 pero faltan GITHUB_TOKEN o GITHUB_REPO. Se saltará el espejo.");
+            }
+        }
+        outbox_worker::GithubMode::Primary => {
+            println!("OKF_STORE=github: el paso A del batch (Contents API) se salta — IndexedStore ya escribió en GitHub de forma síncrona vía git-data API.");
+        }
     }
     if !embedding_keys.any_configured() {
         println!("ADVERTENCIA: ningún proveedor de embeddings configurado (GEMINI_API_KEY / MISTRAL_API_KEY / COHERE_API_KEY). Se saltará la generación de embeddings.");
@@ -44,16 +53,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let run_once = env::var("ONCE").is_ok();
     let client = reqwest::Client::new();
 
-    let github_store = github_store::GithubStore::from_env();
-    if github_store.is_err() {
-        println!("ADVERTENCIA: No se pudo inicializar GithubStore. Se saltará la reconciliación GitHub -> Supabase.");
-    }
+    // Reconciliar GitHub -> Supabase solo si GitHub es la fuente de
+    // verdad (OKF_STORE=github). En Supabase-only y en espejo de
+    // salida, Supabase manda y GitHub no se lee.
+    let github_store = if mode == outbox_worker::GithubMode::Primary {
+        let gs = github_store::GithubStore::from_env().ok();
+        if gs.is_none() {
+            println!("ADVERTENCIA: No se pudo inicializar GithubStore. Se saltará la reconciliación GitHub -> Supabase.");
+        }
+        gs
+    } else {
+        None
+    };
 
     let mut ticks_since_reconcile = 0;
 
     loop {
         if ticks_since_reconcile == 0 {
-            if let Ok(ref gh_store) = github_store {
+            if let Some(ref gh_store) = github_store {
                 if let Err(e) = outbox_worker::reconcile_github_to_supabase(
                     &pool,
                     &client,

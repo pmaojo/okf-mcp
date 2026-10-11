@@ -45,6 +45,16 @@ fn firma_valida(secret: &str, body: &[u8], header: Option<&str>) -> bool {
 }
 
 async fn webhook_handler(headers: HeaderMap, body: Bytes) -> Response {
+    // Por defecto Supabase es la única fuente de verdad: reconciliar
+    // desde GitHub podría REVERTIR datos más nuevos. Solo con
+    // `OKF_STORE=github` este endpoint trabaja.
+    if outbox_worker::GithubMode::from_env() != outbox_worker::GithubMode::Primary {
+        return (
+            StatusCode::GONE,
+            "GitHub no es fuente de verdad en este despliegue (Supabase-only); elimina este webhook",
+        )
+            .into_response();
+    }
     let Ok(secret) = std::env::var("GITHUB_WEBHOOK_SECRET") else {
         return (StatusCode::SERVICE_UNAVAILABLE, "GITHUB_WEBHOOK_SECRET no configurado")
             .into_response();
