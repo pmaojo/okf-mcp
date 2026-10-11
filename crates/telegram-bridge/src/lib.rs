@@ -20,6 +20,8 @@
 //! tiene un `ToolHandler` a mano — mismo principio de separación que
 //! `mcp_http::route` frente a `mcp-core`.
 
+#![forbid(unsafe_code)]
+
 use mcp_core::ToolSpec;
 use serde_json::{json, Value as JsonValue};
 
