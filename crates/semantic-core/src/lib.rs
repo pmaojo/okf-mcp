@@ -43,7 +43,14 @@ use std::fmt;
 /// Versión de las reglas de agregación y de la fórmula de confianza.
 /// Va en cada hecho: cambiar la fórmula exige subirla, y los hechos
 /// de la versión anterior dejan de ser byte-iguales a propósito.
-pub const RULE_VERSION: &str = "v1";
+///
+/// - `v2`: `confidence` pasa a ser SOLO el peso de la evidencia
+///   (`n / (n + w)`) en todos los tipos de hecho, y la distancia a
+///   la moneda al aire sale a un campo propio (`separation`). En `v1`
+///   `confidence` multiplicaba ambas cosas en `skill_success_rate`, de
+///   modo que una habilidad medida mil veces con un 50 % real daba 0, y
+///   el mismo campo significaba cosas distintas según el tipo.
+pub const RULE_VERSION: &str = "v2";
 
 /// Prefijo de los hechos derivados.
 pub const FACTS_PREFIX: &str = "facts";
@@ -196,26 +203,38 @@ pub fn shrunk_rate(successes: u64, n: u64, p: &Params) -> f64 {
     (successes as f64 + p.prior_mean * p.prior_weight) / (n as f64 + p.prior_weight)
 }
 
-/// Confianza en `[0, 1]`: `n / (n + w) · (2q − 1)²`, con `q` la tasa
-/// encogida.
+/// Confianza en `[0, 1]`: el peso de la evidencia, `n / (n + w)`.
 ///
-/// El primer factor crece con las observaciones (2 datos pesan
-/// mucho menos que 200); el segundo es 0 cuando la tasa está cerca
-/// de 0,5 —un resultado que no distingue el éxito del fallo— y 1 en
-/// los extremos. La fórmula exacta importa menos que hacer visible
-/// la incertidumbre, pero está versionada por [`RULE_VERSION`].
+/// Mide CUÁNTO se ha observado, igual para todos los tipos de hecho:
+/// 2 datos pesan mucho menos que 200. No depende de si la tasa es
+/// alta o baja: una habilidad medida mil veces con un 50 % real es un
+/// hecho muy bien establecido. Para saber si la tasa distingue el
+/// éxito del fallo, ver [`separation`].
 ///
 /// ```
 /// use semantic_core::{confidence, Params};
 /// let p = Params::default();
-/// assert_eq!(confidence(0, 0, &p), 0.0);
-/// assert!(confidence(200, 200, &p) > confidence(2, 2, &p));
+/// assert_eq!(confidence(0, &p), 0.0);
+/// assert!(confidence(200, &p) > confidence(2, &p));
+/// assert!(confidence(1000, &p) > 0.98);
 /// ```
-pub fn confidence(successes: u64, n: u64, p: &Params) -> f64 {
+pub fn confidence(n: u64, p: &Params) -> f64 {
+    n as f64 / (n as f64 + p.prior_weight)
+}
+
+/// Distancia de la tasa encogida a la moneda al aire, en `[0, 1]`:
+/// `(2q − 1)²`. 0 cuando `q = 0,5` (el resultado no predice nada) y 1
+/// en los extremos. Solo tiene sentido en `skill_success_rate`.
+///
+/// ```
+/// use semantic_core::{separation, Params};
+/// let p = Params::default();
+/// assert!(separation(50, 100, &p) < 1e-9);
+/// assert!(separation(100, 100, &p) > separation(60, 100, &p));
+/// ```
+pub fn separation(successes: u64, n: u64, p: &Params) -> f64 {
     let q = shrunk_rate(successes, n, p);
-    let evidence = n as f64 / (n as f64 + p.prior_weight);
-    let separation = (2.0 * q - 1.0) * (2.0 * q - 1.0);
-    evidence * separation
+    (2.0 * q - 1.0) * (2.0 * q - 1.0)
 }
 
 /// Clase de hecho derivado. Vocabulario CERRADO: un agente no puede
@@ -262,8 +281,11 @@ pub struct Fact {
     pub rate: f64,
     /// Tasa encogida hacia el prior.
     pub rate_shrunk: f64,
-    /// Confianza, ver [`confidence`].
+    /// Confianza (peso de la evidencia), ver [`confidence`].
     pub confidence: f64,
+    /// Distancia de la tasa a 0,5, ver [`separation`]; `None` en
+    /// `interaction_pattern`, que no tiene tasa.
+    pub separation: Option<f64>,
     /// Motivo de fallo más frecuente (empate: el menor
     /// alfabéticamente), si hubo fallos con motivo.
     pub top_failure_reason: Option<String>,
@@ -404,16 +426,17 @@ pub fn aggregate(episodes: &[Episode], params: &Params) -> BTreeMap<(FactKind, S
 }
 
 fn build_fact(kind: FactKind, key: String, g: &Group, n: u64, params: &Params) -> Fact {
-    let (rate, rate_shrunk, conf) = match kind {
+    let (rate, rate_shrunk, sep) = match kind {
         FactKind::SkillSuccessRate => (
             g.successes as f64 / n as f64,
             shrunk_rate(g.successes, n, params),
-            confidence(g.successes, n, params),
+            Some(separation(g.successes, n, params)),
         ),
         // Un patrón de fallo solo cuenta fallos: no tiene tasa de
-        // éxito. La confianza es puramente el peso de la evidencia.
-        FactKind::InteractionPattern => (0.0, 0.0, n as f64 / (n as f64 + params.prior_weight)),
+        // éxito ni distancia a 0,5.
+        FactKind::InteractionPattern => (0.0, 0.0, None),
     };
+    let conf = confidence(n, params);
     // Máximo por frecuencia; el empate lo gana el menor alfabéticamente.
     let top_failure_reason = g
         .reasons
@@ -443,6 +466,7 @@ fn build_fact(kind: FactKind, key: String, g: &Group, n: u64, params: &Params) -
         rate,
         rate_shrunk,
         confidence: conf,
+        separation: sep,
         top_failure_reason,
         last_supporting_event,
         supporting,
@@ -471,6 +495,9 @@ pub fn render_fact(fact: &Fact, params: &Params, budget: &Budget) -> Result<Stri
             out.push_str(&format!("failures: {}\n", fact.failures));
             out.push_str(&format!("rate: {}\n", fnum(fact.rate)));
             out.push_str(&format!("rate_shrunk: {}\n", fnum(fact.rate_shrunk)));
+            if let Some(sep) = fact.separation {
+                out.push_str(&format!("separation: {}\n", fnum(sep)));
+            }
         }
         FactKind::InteractionPattern => {}
     }
@@ -483,8 +510,9 @@ pub fn render_fact(fact: &Fact, params: &Params, budget: &Budget) -> Result<Stri
     out.push_str(&format!("prior_mean: {}\n", fnum(params.prior_mean)));
     out.push_str(&format!("prior_weight: {}\n", fnum(params.prior_weight)));
     out.push_str("---\n");
+    let unit = if fact.n_obs == 1 { "observación" } else { "observaciones" };
     out.push_str(&format!(
-        "Hecho derivado de {} observaciones (regla {RULE_VERSION}). No editar a mano: se recalcula desde los episodios.\n",
+        "Hecho derivado de {} {unit} (regla {RULE_VERSION}). No editar a mano: se recalcula desde los episodios.\n",
         fact.n_obs
     ));
     out.push_str("\n## Soporte\n");
@@ -510,7 +538,7 @@ pub struct DistillPlan {
 /// el run de auditoría.
 ///
 /// `episodes_skipped` (episodios sin estructura suficiente) solo se
-/// registra en el run. El id del run es el SHA-256 truncado de todo
+/// registra en el run. Sin ningún hecho no hay run. El id del run es el SHA-256 truncado de todo
 /// lo que contiene la pasada, así que una pasada idéntica a la
 /// anterior produce el MISMO run y no escribe nada nuevo.
 pub fn distill(
@@ -546,9 +574,14 @@ pub fn distill(
         }
         ids.len()
     };
-    let run = render_run(&writes, episodes_used, episodes_skipped, params, budget)?;
     let facts_len = writes.len();
-    writes.push(DerivedWrite { id: run_id, markdown: run });
+    // Una pasada que no produce ningún hecho no tiene nada que
+    // auditar: no deja run (evita crear un run vacío en una memoria
+    // sin episodios).
+    if facts_len > 0 {
+        let run = render_run(&writes, episodes_used, episodes_skipped, params, budget)?;
+        writes.push(DerivedWrite { id: run_id, markdown: run });
+    }
     Ok(DistillPlan { writes, facts: facts_len, episodes_used })
 }
 
@@ -722,16 +755,42 @@ mod tests {
     }
 
     #[test]
-    fn confidence_grows_with_evidence_and_dies_near_coin_flip() {
+    fn confidence_is_evidence_weight_and_separation_is_distance_from_coin_flip() {
         let p = Params::default();
-        assert!(confidence(200, 200, &p) > confidence(2, 2, &p));
-        assert!(confidence(50, 100, &p) < 1e-9, "tasa 0,5 ⇒ confianza ~0");
+        assert!(confidence(200, &p) > confidence(2, &p));
+        // Una tasa del 50 % medida mil veces es un hecho bien
+        // establecido: confianza alta aunque no separe éxito de fallo.
+        assert!(confidence(1000, &p) > 0.98);
+        assert!(separation(500, 1000, &p) < 1e-9);
         for n in 0..300u64 {
+            assert!((0.0..=1.0).contains(&confidence(n, &p)));
             for s in 0..=n {
-                let c = confidence(s, n, &p);
-                assert!((0.0..=1.0).contains(&c));
+                assert!((0.0..=1.0).contains(&separation(s, n, &p)));
             }
         }
+    }
+
+    /// La confianza significa lo mismo en los dos tipos de hecho.
+    #[test]
+    fn confidence_has_the_same_meaning_in_both_kinds() {
+        let eps: Vec<Episode> = (0..20).map(|i| ep(i, "g", "c", i % 2 == 0)).collect();
+        let facts = aggregate(&eps, &Params::default());
+        let rate = &facts[&(FactKind::SkillSuccessRate, "g/c/default".to_string())];
+        let pattern = &facts[&(FactKind::InteractionPattern, "g/c/slip".to_string())];
+        assert!((rate.confidence - confidence(20, &Params::default())).abs() < 1e-12);
+        assert!((pattern.confidence - confidence(10, &Params::default())).abs() < 1e-12);
+        assert!(rate.separation.is_some());
+        assert!(pattern.separation.is_none());
+    }
+
+    #[test]
+    fn singular_and_plural_in_the_fact_body() {
+        let one = distill(&[ep(1, "g", "c", true)], 0, &Params::default(), &Budget::default()).unwrap();
+        let md = &one.writes.iter().find(|w| w.id.as_str().starts_with("facts/")).unwrap().markdown;
+        assert!(md.contains("derivado de 1 observación (regla"), "{md}");
+        let two = distill(&[ep(1, "g", "c", true), ep(2, "g", "c", true)], 0, &Params::default(), &Budget::default()).unwrap();
+        let md = &two.writes.iter().find(|w| w.id.as_str().starts_with("facts/")).unwrap().markdown;
+        assert!(md.contains("derivado de 2 observaciones (regla"), "{md}");
     }
 
     #[test]
@@ -762,11 +821,11 @@ mod tests {
         assert!(fact.markdown.contains("rate_shrunk: "));
     }
 
+    /// Sin episodios no hay nada que auditar: ni hechos ni run.
     #[test]
-    fn empty_input_yields_only_a_run() {
+    fn empty_input_writes_nothing() {
         let plan = distill(&[], 0, &Params::default(), &Budget::default()).unwrap();
         assert_eq!(plan.facts, 0);
-        assert_eq!(plan.writes.len(), 1);
-        assert!(plan.writes[0].id.as_str().starts_with("runs/"));
+        assert!(plan.writes.is_empty());
     }
 }
