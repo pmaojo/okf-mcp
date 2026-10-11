@@ -22,6 +22,8 @@ Spanish). Generated API docs (`cargo doc`) are published at
 - Transactional Outbox (`outbox-worker` with concurrent `SKIP LOCKED` processing, GitHub sync, and `pgvector` embeddings).
 - MCP Apps — an interactive React UI ([`mcp-app/`](mcp-app/), brutalist theme) for 18 of the 19 tools, each with its own `ui://` resource (optional — see below).
 - Lightweight reasoning (`ontology-core`, tutorial chapter 18) — triples derived from existing frontmatter/links, a bounded OWL-RL/RDFS fixed point, persisted via `TripleStore` (`triples` table in Supabase) with no `oxigraph` and no external dependencies. Ontologies are declared **once** as a `type: ontology` document and reused by `ontology_id` — `ToolHandler::instructions()` tells the agent this at `initialize`, before it invents axioms of its own.
+- Deterministic fact distillation (`semantic-core`, `memory_distill`) — structured `type: episode` concepts are aggregated into `type: semantic-fact` rows (success rate, observation count, Bayesian-shrunk confidence, `derived_from` provenance) under `facts/` and `runs/` only, with no server-side LLM. See [Distilling facts](#distilling-facts-memory_distill).
+- **Supabase is the source of truth.** It still mirrors every commit/delete out to GitHub (outbox + cron) when `GITHUB_TOKEN`/`GITHUB_REPO` are set, and can import edits made on GitHub incrementally (`OKF_GITHUB_INBOUND=1`) — but GitHub is never trusted as the full state unless `OKF_STORE=github`. See [GitHub: mirror and import](#github-mirror-and-import).
 - Ranked lexical search fallback (`memory-store`) — when no embeddings provider is configured, `memory_search` no longer returns unranked substring matches: hits are scored by field (title > tags > id > body, body capped so a long document can't win purely on repetition) so the most relevant concept surfaces first even without semantic search.
 
 ## Architecture
@@ -49,6 +51,7 @@ Spanish). Generated API docs (`cargo doc`) are published at
 │ memory-store InMemoryStore for development and tests               │
 │ ingest-core  skill_ingest detection/planning + ports               │
 │ consolidate-core deterministic session-summary validation/render   │
+│ semantic-core    deterministic episodes -> facts (facts/, runs/)   │
 └───────────────┬────────────────────────────────────────────────────┘
                 │
                 ▼
@@ -167,7 +170,7 @@ Installing SKILLS (content, not the server) is a call to the
 installation step: the server ships with no preloaded skills; the
 agent pulls them from whatever source it needs, per session.
 
-## The 20 tools
+## The 21 tools
 
 | Tool | What it does |
 | --- | --- |
@@ -176,9 +179,10 @@ agent pulls them from whatever source it needs, per session.
 | `memory_reason` | bounded OWL-RL/RDFS reasoning (`ontology-core`) over the neighborhood: subclasses, transitivity, symmetry, inverse properties |
 | `memory_commit` | compare-and-swap write (`expected_hash`) with `dry_run` |
 | `memory_consolidate` | consolidate a session (title/summary/entities/decisions authored by the agent) as `type: session-summary`, validated and rendered to OKF with no server-side LLM; `superseded` links the concepts it makes obsolete as provenance, without deleting them |
+| `memory_distill` | deterministic aggregation of `type: episode` concepts into `type: semantic-fact` rows plus an auditable `consolidation-run`; writes only under `facts/` and `runs/`, idempotent, `dry_run` and `prune` |
 | `memory_history` | revisions newest to oldest, paginated |
 | `memory_delete` | logical deletion with `expected_hash` |
-| `memory_list` | list concept metadata under a prefix without reading content |
+| `memory_list` | list concept metadata under a prefix without reading content; `after` is a keyset cursor (last `concept_id` of the previous page) |
 | `memory_backlinks` | get inbound links to a concept |
 | `memory_embed` | force generation and indexing of pending embeddings |
 | `memory_patch` | selectively update frontmatter fields without touching the body |
@@ -194,15 +198,15 @@ agent pulls them from whatever source it needs, per session.
 
 ## Interactive UI (`mcp-app/`)
 
-19 of the 20 tools (the 13 original `memory_*` tools plus
+19 of the 21 tools (the 13 original `memory_*` tools plus
 `memory_reason`, `memory_bulk_patch`, `spec_propose`, `spec_tasks`,
 `spec_status`, and `skill_ingest` when advertised) return
 `ui_resource_uri: Some("ui://okf-memory/<name>")` — a URI **unique per
 tool**, not a shared one: several MCP Apps hosts reuse an already-open
 iframe when the URI doesn't change between calls, so a per-tool URI is
 what guarantees each invocation opens the right view (see tutorial
-chapter 15, section 6). `memory_consolidate` is the only one without
-its own view (`ui_resource_uri: None`): its result is the same compact
+chapter 15, section 6). `memory_consolidate` and `memory_distill` are the only ones without
+their own view (`ui_resource_uri: None`): its result is the same compact
 JSON as `memory_commit`, with nothing to gain from a dedicated iframe.
 A compliant MCP Apps client renders that URI in an iframe instead of
 raw JSON.
@@ -325,6 +329,50 @@ Trusted owners (`SKILL_INGEST_TRUSTED_OWNERS`, defaults to
 don't travel in the response — their skill repos already go through
 their own review, so the same scrutiny here would just be noise.
 
+### Distilling facts: `memory_distill`
+
+Based on *Episodic-to-Semantic Consolidation Without Identity Drift*
+(arXiv 2607.01988): consolidation is not a mutation of the agent or of
+curated concepts, it is a pure function `f: episodes -> facts` whose
+output lives in a separate id space.
+
+Record one `type: episode` per attempt (plain `memory_commit`):
+
+```markdown
+---
+type: episode
+title: grasp attempt 12
+skill: manipulation.grasp
+target: glass_cup
+context: sim
+outcome: failure
+failure_reason: slip
+---
+free text is allowed but never aggregated
+```
+
+`memory_distill` then writes, **only** under `facts/` and `runs/`:
+
+- one `semantic-fact` per `skill/target/context` (`skill_success_rate`)
+  and per `skill/target/failure_reason` (`interaction_pattern`), with
+  `n_obs`, `rate`, `rate_shrunk` (prior 0.5, weight 10), `confidence`
+  and typed `[[derived_from:episodes/...]]` links to the supporting
+  episodes — `memory_backlinks` walks from a fact back to its proof;
+- one `consolidation-run` listing the facts it produced.
+
+Guarantees, each covered by tests: same episodes give the same bytes
+(no clock, no randomness, input order irrelevant); a second pass writes
+nothing (facts are recomputed from live episodes rather than
+accumulated, so a crashed pass cannot double count); the write
+surface is confined by type (`semantic_core::DerivedId` only accepts
+`facts/` and `runs/`); episodes without the structured fields are
+skipped, never guessed from prose; and the pass aborts without writing
+if there are more than 20 000 episodes under the prefix, because
+aggregating a partial sample would produce false facts. Facts are
+information, not authority: nothing in the server acts on them. Use
+`memory_delete` to retire episodes — `prune` then soft-deletes facts
+left without support, and deleted items stay out of search.
+
 ### Spec-driven development: `spec_propose` / `spec_tasks` / `spec_status`
 
 Three tools for the same pattern popularized by
@@ -417,6 +465,41 @@ gauntlet's lint layer: `cargo clippy --workspace --all-targets -- -D
 warnings`, which fails (nonzero exit) instead of just reporting — the
 old-coder rule that "printing the percentage and exiting 0 is a
 report, not a restriction."
+
+## GitHub: mirror and import
+
+Supabase holds everything: `blobs` (the full Markdown of every
+version), `heads` (type, title, tags, version, soft-delete),
+`revisions` (history with actor and reason), `links` (typed),
+`embeddings`, `triples` and the `outbox`. GitHub is a readable copy,
+never a dependency of the write path.
+
+| Direction | Switch | Behaviour |
+| --------- | ------ | --------- |
+| Supabase → GitHub (mirror) | on whenever `GITHUB_TOKEN` + `GITHUB_REPO` are set; `OKF_GITHUB_MIRROR=0` turns it off | the outbox (the existing Vercel cron, or the daemon) copies each commit/delete to `{GITHUB_PATH}/{concept_id}.md`. It skips the write when GitHub already has identical bytes, so content that came *from* GitHub is not echoed back as an empty commit. |
+| GitHub → Supabase (import) | `OKF_GITHUB_INBOUND=1` + `GITHUB_WEBHOOK_SECRET` + webhook on the content repo | on a push, only the files that push mentions are imported (details below). Off by default: the webhook answers `410`. |
+| Legacy source of truth | `OKF_STORE=github` | the `IndexedStore` mode described below, with the full GitHub → Supabase reconciliation. |
+
+**Incremental import.** For each file in the push (added, modified or
+removed, read at the push's final commit): identical bytes → nothing
+happens (this is also what makes the mirror loop-free); different
+bytes → a normal commit, so it is validated as OKF, indexes links and
+embeddings, and the previous version stays in `revisions` (GitHub wins
+as a *new revision*, nothing is lost); file gone → logical delete of
+that one concept. Anything the push does not mention is untouched, so
+facts and other Supabase-only data survive. At most 100 files per
+push are imported, and the response flags `incomplete` when GitHub
+truncated the payload (it lists at most 20 commits). The full
+reconciliation is *not* used outside `OKF_STORE=github` because it
+treats GitHub as the whole truth: it would soft-delete everything that
+exists only in Supabase.
+
+To move an existing deployment off the legacy mode: remove
+`OKF_STORE=github` from the Vercel environment, redeploy, and compare
+`memory_stats` against the repository before relying on it — the only
+data Supabase may lack is an edit made directly on GitHub that was
+never reconciled. Keep the webhook if you set `OKF_GITHUB_INBOUND=1`.
+`GITHUB_TOKEN` is also used by `skill_ingest` downloads.
 
 ## Deploying to Vercel
 

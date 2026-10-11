@@ -151,6 +151,7 @@ impl SupabaseStore {
                    EXISTS (SELECT 1 FROM unnest(h.tags) t WHERE t ILIKE $5)
                ))
                AND ($7::text IS NULL OR h.doc_type <> $7)
+               AND ($8::text IS NULL OR h.concept_id > $8)
              ORDER BY h.concept_id
              LIMIT $6",
         )
@@ -161,6 +162,7 @@ impl SupabaseStore {
         .bind(query.text.as_ref().map(|t| format!("%{}%", t)).as_deref())
         .bind(limit)
         .bind(query.exclude_type.as_deref())
+        .bind(query.after.as_deref())
         .fetch_all(&self.pool)
         .await
         .map_err(|e| StoreError::Backend(e.to_string()))

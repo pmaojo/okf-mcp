@@ -21,6 +21,7 @@ members = [
     "crates/okf-core",
     "crates/ontology-core",
     "crates/outbox-worker",
+    "crates/semantic-core",
     "crates/store-core",
     "crates/supabase-store",
     "crates/telegram-bridge",

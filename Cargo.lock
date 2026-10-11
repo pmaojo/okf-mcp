@@ -1139,6 +1139,7 @@ dependencies = [
  "memory-store",
  "okf-core",
  "ontology-core",
+ "semantic-core",
  "store-core",
 ]
 
@@ -1687,6 +1688,15 @@ checksum = "6ce2691df843ecc5d231c0b14ece2acc3efb62c0a398c7e1d875f3983ce020e3"
 dependencies = [
  "core-foundation-sys",
  "libc",
+]
+
+[[package]]
+name = "semantic-core"
+version = "0.1.0"
+dependencies = [
+ "hash-core",
+ "memory-model",
+ "okf-core",
 ]
 
 [[package]]

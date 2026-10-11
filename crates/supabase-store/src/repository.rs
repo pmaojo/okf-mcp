@@ -407,7 +407,9 @@ impl MemoryRepository for SupabaseStore {
         let rows = crate::block_on! {
             let keyword = self.search_keyword(query, limit).await?;
 
-            if let Some(text) = query.text.as_deref() {
+            // Con cursor (`after`) es un listado determinista por id:
+            // el ranking semántico no tiene orden por clave.
+            if let (Some(text), None) = (query.text.as_deref(), query.after.as_deref()) {
                 if self.embedding_keys.any_configured() {
                     let client = reqwest::Client::new();
                     match embed_query(&client, &self.embedding_keys, text).await {

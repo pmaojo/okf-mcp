@@ -26,6 +26,22 @@ fn concept_path(concept_id: &str) -> String {
 #[derive(Debug, Deserialize)]
 struct GithubContentResponse {
     sha: String,
+    /// Base64 con saltos de línea cada 60 columnas; ausente en
+    /// archivos muy grandes.
+    content: Option<String>,
+}
+
+/// ¿El archivo de GitHub (base64 con saltos de línea) tiene
+/// exactamente los bytes de `markdown`? Si es así no hace falta
+/// escribir: evita commits vacíos o "eco" cuando el contenido llegó a
+/// Supabase DESDE GitHub (importación de un push) y el espejo de
+/// salida intenta devolverlo.
+fn same_content(github_b64: &str, markdown: &str) -> bool {
+    let compact: String = github_b64.chars().filter(|c| !c.is_whitespace()).collect();
+    BASE64_STANDARD
+        .decode(compact)
+        .map(|bytes| bytes == markdown.as_bytes())
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Serialize)]
@@ -64,7 +80,16 @@ pub async fn sync_to_github(
     // reintento del outbox (que tarda 5 rondas de sleep(5s)).
     const MAX_INTENTOS: u32 = 3;
     for intento in 1..=MAX_INTENTOS {
-        let sha = fetch_sha(client, &url, &headers).await?;
+        let head = fetch_head(client, &url, &headers).await?;
+        if head
+            .as_ref()
+            .and_then(|h| h.content.as_deref())
+            .is_some_and(|c| same_content(c, markdown))
+        {
+            println!("Concepto {concept_id} ya está en GitHub con el mismo contenido. Saltando escritura.");
+            return Ok(());
+        }
+        let sha = head.map(|h| h.sha);
 
         let put_req = GithubPutRequest {
             message: reason.to_string(),
@@ -98,20 +123,28 @@ pub async fn sync_to_github(
     unreachable!("el bucle siempre devuelve en el último intento (éxito o error)");
 }
 
-/// SHA actual del archivo en GitHub, o `None` si todavía no existe
-/// (entonces el PUT lo crea en vez de actualizarlo).
+/// Cabeza actual del archivo en GitHub (sha y contenido), o `None` si
+/// todavía no existe (entonces el PUT lo crea en vez de actualizarlo).
+async fn fetch_head(
+    client: &reqwest::Client,
+    url: &str,
+    headers: &HeaderMap,
+) -> Result<Option<GithubContentResponse>, Box<dyn std::error::Error>> {
+    let get_resp = client.get(url).headers(headers.clone()).send().await?;
+    if get_resp.status().is_success() {
+        Ok(Some(get_resp.json().await?))
+    } else {
+        Ok(None)
+    }
+}
+
+/// SHA actual del archivo en GitHub, o `None` si no existe.
 async fn fetch_sha(
     client: &reqwest::Client,
     url: &str,
     headers: &HeaderMap,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let get_resp = client.get(url).headers(headers.clone()).send().await?;
-    if get_resp.status().is_success() {
-        let content: GithubContentResponse = get_resp.json().await?;
-        Ok(Some(content.sha))
-    } else {
-        Ok(None)
-    }
+    Ok(fetch_head(client, url, headers).await?.map(|h| h.sha))
 }
 
 #[derive(Debug, Serialize)]
@@ -176,4 +209,20 @@ pub async fn delete_from_github(
     }
 
     unreachable!("el bucle siempre devuelve en el último intento (éxito o error)");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_content_ignora_los_saltos_de_linea_del_base64_de_github() {
+        let md = "---\ntype: note\ntitle: t\n---\ncuerpo largo ".repeat(10);
+        let b64 = BASE64_STANDARD.encode(md.as_bytes());
+        // GitHub parte el base64 en líneas de 60 columnas.
+        let wrapped: Vec<&str> = b64.as_bytes().chunks(60).map(|c| std::str::from_utf8(c).unwrap()).collect();
+        assert!(same_content(&wrapped.join("\n"), &md));
+        assert!(!same_content(&wrapped.join("\n"), "otro contenido"));
+        assert!(!same_content("!!!no es base64!!!", &md));
+    }
 }

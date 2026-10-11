@@ -72,6 +72,7 @@ pub fn run_all<R: MemoryRepository + StoreMaintenance>(mut mk: impl FnMut() -> R
     inexistente_es_none_y_notfound(mk());
     busqueda_respeta_filtros_y_limite(mk());
     busqueda_excluye_por_exclude_type(mk());
+    busqueda_pagina_con_cursor(mk());
     historia_reciente_primero_y_paginada(mk());
     borrar_exige_cas_y_oculta_el_documento(mk());
     recrear_tras_borrar_continua_la_historia(mk());
@@ -162,12 +163,46 @@ pub fn busqueda_respeta_filtros_y_limite<R: MemoryRepository>(mut repo: R) {
         tag: tag.map(String::from),
         path_prefix: None,
         limit,
+        after: None,
     };
     assert_eq!(repo.search(&q(Some("rust"), None, None, None), &budget).unwrap().len(), 2);
     assert_eq!(repo.search(&q(Some("rust"), Some("person"), None, None), &budget).unwrap().len(), 1);
     assert_eq!(repo.search(&q(None, None, Some("rust"), None), &budget).unwrap().len(), 1);
     assert_eq!(repo.search(&q(None, None, None, Some(1)), &budget).unwrap().len(), 1, "limit corta");
     assert!(repo.search(&q(Some("nada-de-esto"), None, None, None), &budget).unwrap().is_empty());
+}
+
+/// `after` pagina por clave: recorrer con el último id de cada página
+/// visita TODOS los documentos vivos, una vez cada uno y en orden de
+/// id — sin saltarse ninguno aunque haya más que `limit`.
+pub fn busqueda_pagina_con_cursor<R: MemoryRepository>(mut repo: R) {
+    for i in 0..7 {
+        commit(&mut repo, &format!("lote/n{i}"), None, &doc("Nota", "cuerpo")).unwrap();
+    }
+    let budget = Budget::default();
+    let mut seen: Vec<String> = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = repo
+            .search(
+                &SearchQuery {
+                    path_prefix: Some("lote".to_string()),
+                    limit: Some(3),
+                    after: cursor.clone(),
+                    ..SearchQuery::default()
+                },
+                &budget,
+            )
+            .unwrap();
+        if page.is_empty() {
+            break;
+        }
+        assert!(page.len() <= 3, "el límite se respeta por página");
+        cursor = Some(page.last().unwrap().concept_id.as_str().to_string());
+        seen.extend(page.iter().map(|h| h.concept_id.as_str().to_string()));
+    }
+    let expected: Vec<String> = (0..7).map(|i| format!("lote/n{i}")).collect();
+    assert_eq!(seen, expected, "todos, una vez, en orden de id");
 }
 
 /// `exclude_type` es lo contrario de `doc_type`: descarta esa clase en

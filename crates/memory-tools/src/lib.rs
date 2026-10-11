@@ -26,6 +26,10 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+/// Tope de episodios que `memory_distill` lee en una pasada. Superarlo
+/// aborta sin escribir: una muestra parcial produciría hechos falsos.
+const MAX_DISTILL_EPISODES: usize = 20_000;
+
 use consolidate_core::{ConsolidateError, DigestDecision, DigestEntity, SessionDigest};
 use graph_core::NeighborSource;
 use ingest_core::{IngestError, PlannedAction, SkillFormat, SourceFetcher};
@@ -126,6 +130,16 @@ where
         }
     }
 
+    fn arg_f64(args: &Value, key: &str) -> Result<Option<f64>, ToolError> {
+        match args.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(v) => v
+                .as_f64()
+                .map(Some)
+                .ok_or_else(|| ToolError::InvalidArguments(format!("'{key}' debe ser un número"))),
+        }
+    }
+
     fn concept_id(raw: &str) -> Result<ConceptId, ToolError> {
         ConceptId::parse(raw)
             .map_err(|e| ToolError::InvalidArguments(format!("concept_id inválido: {e}")))
@@ -181,6 +195,7 @@ where
             tag: Self::arg_str(args, "tag"),
             path_prefix: Self::arg_str(args, "path_prefix"),
             limit: Self::arg_usize(args, "limit")?,
+            after: Self::arg_str(args, "after"),
         };
         let hits = self.repo.search(&query, &self.budget).map_err(Self::domain_error)?;
         let items: Vec<Value> = hits
@@ -652,6 +667,181 @@ where
         ]))
     }
 
+    /// Destila los episodios estructurados en hechos derivados. Ver
+    /// `assets/memory_distill.txt` para el contrato de cara al modelo
+    /// y `semantic_core` para las garantías (determinismo,
+    /// idempotencia, escritura confinada a `facts/` y `runs/`).
+    ///
+    /// Esta función solo orquesta E/S: lee episodios paginando por
+    /// cursor, delega TODO el cálculo en `semantic_core::distill` y
+    /// escribe únicamente los [`semantic_core::DerivedWrite`] que
+    /// este devuelve (por tipo, bajo `facts/` o `runs/`).
+    fn memory_distill(&mut self, args: &Value) -> Result<Value, ToolError> {
+        let prefix = Self::arg_str(args, "path_prefix")
+            .unwrap_or_else(|| semantic_core::EPISODES_PREFIX.to_string());
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+        let prune = args.get("prune").and_then(|v| v.as_bool()).unwrap_or(true);
+        let defaults = semantic_core::Params::default();
+        let params = semantic_core::Params {
+            prior_mean: Self::arg_f64(args, "prior_mean")?.unwrap_or(defaults.prior_mean),
+            prior_weight: Self::arg_f64(args, "prior_weight")?.unwrap_or(defaults.prior_weight),
+        };
+        if !(0.0..=1.0).contains(&params.prior_mean) {
+            return Err(ToolError::InvalidArguments("'prior_mean' debe estar en [0, 1]".to_string()));
+        }
+        if !(params.prior_weight >= 0.0 && params.prior_weight.is_finite()) {
+            return Err(ToolError::InvalidArguments("'prior_weight' debe ser un número >= 0".to_string()));
+        }
+
+        // 1. Leer TODOS los episodios (paginando): agregar una
+        //    muestra parcial daría hechos falsos, así que si se supera
+        //    el tope se aborta sin escribir nada.
+        let mut episodes: Vec<semantic_core::Episode> = Vec::new();
+        let mut skipped = 0usize;
+        let mut scanned = 0usize;
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = self
+                .repo
+                .search(
+                    &SearchQuery {
+                        doc_type: Some("episode".to_string()),
+                        path_prefix: Some(prefix.clone()),
+                        limit: Some(self.budget.max_search_results),
+                        after: cursor.clone(),
+                        ..SearchQuery::default()
+                    },
+                    &self.budget,
+                )
+                .map_err(Self::domain_error)?;
+            let Some(last) = page.last() else { break };
+            cursor = Some(last.concept_id.as_str().to_string());
+            for hit in &page {
+                scanned += 1;
+                if scanned > MAX_DISTILL_EPISODES {
+                    return Err(ToolError::Failed(json_mini::to_string(&obj([
+                        ("kind", s("too_many_episodes")),
+                        (
+                            "detail",
+                            s(&format!(
+                                "más de {MAX_DISTILL_EPISODES} episodios bajo '{prefix}'; no se escribe nada porque agregar una muestra parcial daría hechos falsos. Estrecha 'path_prefix'."
+                            )),
+                        ),
+                    ]))));
+                }
+                let Some(view) = self.repo.get(&hit.concept_id).map_err(Self::domain_error)? else {
+                    continue;
+                };
+                let parsed = okf_core::parse_document(&view.raw, &self.budget).ok();
+                match parsed.and_then(|doc| semantic_core::extract(&hit.concept_id, &doc)) {
+                    Some(e) => episodes.push(e),
+                    None => skipped += 1,
+                }
+            }
+        }
+
+        // 2. Calcular el plan (puro y determinista).
+        let plan = semantic_core::distill(&episodes, skipped, &params, &self.budget)
+            .map_err(|e| ToolError::Failed(format!("distill: {e}")))?;
+
+        // 3. Aplicar: crear/actualizar solo lo que cambia.
+        let (mut created, mut updated, mut unchanged) = (0u64, 0u64, 0u64);
+        let mut failed: Vec<Value> = Vec::new();
+        for write in &plan.writes {
+            let id = write.id.as_concept_id();
+            let existing = self.repo.get(id).map_err(Self::domain_error)?;
+            if existing.as_ref().is_some_and(|v| &*v.raw == write.markdown.as_str()) {
+                unchanged += 1;
+                continue;
+            }
+            if dry_run {
+                if existing.is_some() { updated += 1 } else { created += 1 }
+                continue;
+            }
+            let expected = existing.as_ref().map(|v| v.content_id);
+            let res = self.repo.commit(
+                CommitRequest {
+                    concept_id: id.clone(),
+                    expected,
+                    markdown: write.markdown.clone(),
+                    reason: format!("memory_distill {}", semantic_core::RULE_VERSION),
+                },
+                &self.actor,
+                &self.budget,
+            );
+            match res {
+                Ok(_) if existing.is_some() => updated += 1,
+                Ok(_) => created += 1,
+                Err(e) => failed.push(obj([
+                    ("concept_id", s(id.as_str())),
+                    ("error", s(&e.to_string())),
+                ])),
+            }
+        }
+
+        // 4. Podar: hechos vivos que ya no salen del cálculo (todos
+        //    sus episodios se borraron). Borrado lógico, con CAS.
+        let keep: std::collections::BTreeSet<&str> =
+            plan.writes.iter().map(|w| w.id.as_str()).collect();
+        let mut pruned = 0u64;
+        if prune {
+            let mut cursor: Option<String> = None;
+            loop {
+                let page = self
+                    .repo
+                    .search(
+                        &SearchQuery {
+                            doc_type: Some("semantic-fact".to_string()),
+                            path_prefix: Some(semantic_core::FACTS_PREFIX.to_string()),
+                            limit: Some(self.budget.max_search_results),
+                            after: cursor.clone(),
+                            ..SearchQuery::default()
+                        },
+                        &self.budget,
+                    )
+                    .map_err(Self::domain_error)?;
+                let Some(last) = page.last() else { break };
+                cursor = Some(last.concept_id.as_str().to_string());
+                for hit in &page {
+                    if keep.contains(hit.concept_id.as_str()) {
+                        continue;
+                    }
+                    if dry_run {
+                        pruned += 1;
+                        continue;
+                    }
+                    match self.repo.delete(
+                        &hit.concept_id,
+                        hit.content_id,
+                        &self.actor,
+                        "memory_distill: ya no hay episodios que lo sostengan".to_string(),
+                    ) {
+                        Ok(_) => pruned += 1,
+                        Err(e) => failed.push(obj([
+                            ("concept_id", s(hit.concept_id.as_str())),
+                            ("error", s(&e.to_string())),
+                        ])),
+                    }
+                }
+            }
+        }
+
+        let run_id = plan.writes.last().map(|w| w.id.as_str().to_string());
+        Ok(obj([
+            ("dry_run", Value::Bool(dry_run)),
+            ("rule_version", s(semantic_core::RULE_VERSION)),
+            ("episodes_used", n(plan.episodes_used as f64)),
+            ("episodes_skipped", n(skipped as f64)),
+            ("facts", n(plan.facts as f64)),
+            ("created", n(created as f64)),
+            ("updated", n(updated as f64)),
+            ("unchanged", n(unchanged as f64)),
+            ("pruned", n(pruned as f64)),
+            ("run", run_id.as_deref().map(s).unwrap_or(Value::Null)),
+            ("failed", arr(failed)),
+        ]))
+    }
+
     fn memory_delete(&mut self, args: &Value) -> Result<Value, ToolError> {
         let id = Self::concept_id(&Self::require_str(args, "concept_id")?)?;
         let expected_hex = Self::require_str(args, "expected_hash")?;
@@ -678,6 +868,7 @@ where
             tag: None,
             path_prefix: Self::arg_str(args, "path_prefix"),
             limit: Self::arg_usize(args, "limit")?,
+            after: Self::arg_str(args, "after"),
         };
         let hits = self.repo.search(&query, &self.budget).map_err(Self::domain_error)?;
         let items: Vec<Value> = hits
@@ -1731,6 +1922,7 @@ where
                         ("not_type", "string", "excluye el campo 'type' del frontmatter (lo contrario de 'type'); los documentos borrados lógicamente YA se excluyen siempre, sin necesidad de este ni ningún otro filtro"),
                         ("tag", "string", "filtra por tag exacto"),
                         ("path_prefix", "string", "filtra por prefijo de ruta lógica (ej. 'people')"),
+                        ("after", "string", "cursor de paginación: solo ids mayores que este (último concept_id de la página anterior); con cursor el listado es por id, sin ranking semántico"),
                         ("limit", "integer", "máximo de resultados"),
                     ],
                     [],
@@ -1893,6 +2085,27 @@ where
                 annotations: Some(write_annotations(false, false)),
             },
             ToolSpec {
+                name: "memory_distill",
+                description: include_str!("../assets/memory_distill.txt"),
+                input_schema: schema(
+                    [
+                        ("path_prefix", "string", "dónde buscar episodios (por defecto 'episodes')"),
+                        ("dry_run", "boolean", "si es true, calcula y cuenta qué cambiaría sin escribir nada"),
+                        ("prune", "boolean", "borra (lógicamente) hechos que ya no tienen episodios vivos (por defecto true)"),
+                        ("prior_mean", "number", "tasa a la que se encoge con pocos datos, en [0,1] (por defecto 0.5)"),
+                        ("prior_weight", "number", "peso del prior en observaciones (por defecto 10)"),
+                    ],
+                    [],
+                ),
+                ui_resource_uri: None,
+                title: Some("Distill Facts"),
+                output_schema: None,
+                // Escribe SOLO bajo facts/ y runs/ y poda hechos
+                // derivados (borrado lógico); recalcula desde los
+                // episodios, así que repetirla es un no-op.
+                annotations: Some(write_annotations(true, true)),
+            },
+            ToolSpec {
                 name: "memory_history",
                 description: include_str!("../assets/memory_history.txt"),
                 input_schema: schema(
@@ -1952,6 +2165,7 @@ where
                 input_schema: schema(
                     [
                         ("path_prefix", "string", "prefijo de ruta por segmentos (ej: 'people')"),
+                        ("after", "string", "cursor de paginación: solo ids mayores que este (último concept_id de la página anterior)"),
                         ("limit", "integer", "máximo de resultados a retornar"),
                     ],
                     [],
@@ -2333,6 +2547,7 @@ where
             "memory_reason" => self.memory_reason(arguments),
             "memory_commit" => self.memory_commit(arguments),
             "memory_consolidate" => self.memory_consolidate(arguments),
+            "memory_distill" => self.memory_distill(arguments),
             "memory_history" => self.memory_history(arguments),
             "memory_delete" => self.memory_delete(arguments),
             "memory_list" => self.memory_list(arguments),

@@ -55,8 +55,14 @@ async fn outbox_handler(headers: HeaderMap) -> Response {
     let pool = db::get_db_pool(&db_url).await;
     let client = reqwest::Client::new();
 
-    let github_store = github_store::GithubStore::from_env();
-    if let Ok(ref gh_store) = github_store {
+    // Solo con `OKF_STORE=github` GitHub es fuente de verdad y se
+    // reconcilia hacia Supabase. Por defecto no se toca GitHub.
+    let github_store = if outbox_worker::GithubMode::from_env() == outbox_worker::GithubMode::Primary {
+        github_store::GithubStore::from_env().ok()
+    } else {
+        None
+    };
+    if let Some(ref gh_store) = github_store {
         if let Err(e) = outbox_worker::reconcile_github_to_supabase(
             &pool,
             &client,

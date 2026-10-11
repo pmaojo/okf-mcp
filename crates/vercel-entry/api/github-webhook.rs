@@ -1,8 +1,16 @@
 //! Webhook de GitHub: reacciona a un `push` sobre el repo de
-//! conceptos reconciliando Supabase AL INSTANTE, en vez de esperar al
-//! próximo tick del Cron de `api/outbox.rs` (que sigue existiendo
-//! como red de seguridad si la entrega del webhook falla o el evento
-//! se pierde).
+//! conceptos AL INSTANTE.
+//!
+//! Dos modos, según el entorno (ver `outbox_worker::GithubMode`):
+//! - `OKF_STORE=github` (modo antiguo, GitHub es la fuente de
+//!   verdad): reconcilia GitHub -> Supabase completo, en vez de
+//!   esperar al próximo tick del Cron de `api/outbox.rs`.
+//! - `OKF_GITHUB_INBOUND=1` (Supabase es la fuente de verdad):
+//!   importación INCREMENTAL, solo de los archivos que el push
+//!   menciona (`outbox_worker::inbound`). Nunca borra lo que solo
+//!   existe en Supabase.
+//!
+//! Sin ninguno de los dos responde 410.
 //!
 //! Configuración en GitHub: Settings -> Webhooks -> Add webhook
 //!   Payload URL: https://<tu-dominio>/api/github-webhook
@@ -45,6 +53,19 @@ fn firma_valida(secret: &str, body: &[u8], header: Option<&str>) -> bool {
 }
 
 async fn webhook_handler(headers: HeaderMap, body: Bytes) -> Response {
+    // Supabase es la fuente de verdad salvo con `OKF_STORE=github`.
+    // La reconciliación COMPLETA desde GitHub podría revertir o borrar
+    // datos más nuevos de Supabase, así que fuera de ese modo solo se
+    // admite la importación incremental (`OKF_GITHUB_INBOUND=1`).
+    let primary = outbox_worker::GithubMode::from_env() == outbox_worker::GithubMode::Primary;
+    let inbound = outbox_worker::inbound_enabled();
+    if !primary && !inbound {
+        return (
+            StatusCode::GONE,
+            "este despliegue no importa de GitHub (activa OKF_GITHUB_INBOUND=1) ni usa GitHub como fuente de verdad",
+        )
+            .into_response();
+    }
     let Ok(secret) = std::env::var("GITHUB_WEBHOOK_SECRET") else {
         return (StatusCode::SERVICE_UNAVAILABLE, "GITHUB_WEBHOOK_SECRET no configurado")
             .into_response();
@@ -92,6 +113,10 @@ async fn webhook_handler(headers: HeaderMap, body: Bytes) -> Response {
     let pool = db::get_db_pool(&db_url).await;
     let client = reqwest::Client::new();
 
+    if !primary {
+        return importar_push(&payload, pool, embedding_keys, &client).await;
+    }
+
     let github_store = match github_store::GithubStore::from_env() {
         Ok(store) => store,
         Err(e) => {
@@ -122,4 +147,50 @@ async fn main() -> Result<(), Error> {
     let router = Router::new().fallback(webhook_handler);
     let app = tower::ServiceBuilder::new().layer(VercelLayer::new()).service(router);
     run(app).await
+}
+
+/// Importación incremental (Supabase manda): lee de GitHub solo los
+/// archivos que el push menciona y los aplica con el commit normal
+/// del almacén. Un fallo en un archivo se reporta en la respuesta
+/// pero la respuesta sigue siendo 200: un 4xx/5xx haría que GitHub
+/// reintente y acabe desactivando el webhook.
+async fn importar_push(
+    payload: &serde_json::Value,
+    pool: sqlx::PgPool,
+    embedding_keys: gemini_embeddings::EmbeddingKeys,
+    client: &reqwest::Client,
+) -> Response {
+    if payload["deleted"].as_bool() == Some(true) {
+        return (StatusCode::OK, "rama borrada, ignorado").into_response();
+    }
+    let (Ok(token), Ok(github_repo)) = (std::env::var("GITHUB_TOKEN"), std::env::var("GITHUB_REPO")) else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "GITHUB_TOKEN y GITHUB_REPO son necesarios para leer los archivos del push",
+        )
+            .into_response();
+    };
+    let base_path = std::env::var("GITHUB_PATH").unwrap_or_else(|_| "memoria".into());
+
+    let mut store = supabase_store::SupabaseStore::new(pool, embedding_keys);
+    let report = outbox_worker::inbound::import_push(
+        &mut store,
+        client,
+        &token,
+        &github_repo,
+        &base_path,
+        payload,
+        &memory_model::Budget::default(),
+    )
+    .await;
+
+    let body = serde_json::json!({
+        "imported": report.imported,
+        "unchanged": report.unchanged,
+        "deleted": report.deleted,
+        "skipped": report.skipped,
+        "failed": report.failed,
+        "incomplete": report.incomplete,
+    });
+    (StatusCode::OK, [("content-type", "application/json")], body.to_string()).into_response()
 }

@@ -1,0 +1,14 @@
+# Regla del proyecto: ningún crate del núcleo declara dependencias
+# externas. Solo `std` y dependencias internas (path).
+[package]
+name = "semantic-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+memory-model = { path = "../memory-model" }
+okf-core = { path = "../okf-core" }
+hash-core = { path = "../hash-core" }

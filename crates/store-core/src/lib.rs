@@ -101,6 +101,11 @@ pub struct SearchQuery {
     /// Tope de resultados; siempre acotado además por
     /// `budget.max_search_results`.
     pub limit: Option<usize>,
+    /// Cursor de paginación por clave: solo ids ESTRICTAMENTE
+    /// mayores que este (orden por `concept_id`). Pasar el último id
+    /// de la página anterior da la siguiente. Con cursor la búsqueda
+    /// es un listado determinista por id: no hay ranking semántico.
+    pub after: Option<String>,
 }
 
 /// ¿`id` cae bajo `prefix`, contando por segmentos completos?
